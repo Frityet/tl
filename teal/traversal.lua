@@ -1,9 +1,9 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug; local type = type
 
 
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
-local TL_DEBUG_MAXLINE = tldebug.TL_DEBUG_MAXLINE
+local TL_DEBUG_MAXLINE = _tl_tldebug_TL_DEBUG_MAXLINE
 
 local types = require("teal.types")
 
@@ -21,7 +21,7 @@ local types = require("teal.types")
 
 local show_type = types.show_type
 
-
+local parser = require("teal.parser")
 
 
 
