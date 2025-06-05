@@ -2,10 +2,8 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local errors = require("teal.errors")
+local binary_search = require("teal.binary_search")
 
-
-local util = require("teal.util")
-local binary_search = util.binary_search
 
 local lexer = { Comment = {}, Token = {} }
 

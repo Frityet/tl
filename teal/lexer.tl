@@ -2,10 +2,8 @@
 -- Lexer
 --------------------------------------------------------------------------------
 local errors = require("teal.errors")
+local binary_search = require("teal.binary_search")
 local type Error = errors.Error
-
-local util = require("teal.util")
-local binary_search = util.binary_search
 
 local record lexer
    enum TokenKind

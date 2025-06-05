@@ -14,40 +14,31 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	teal/check/relations.tl teal/check/special_functions.tl \
 	teal/check/type_checker.tl teal/check/node_checker.tl \
 	teal/check/file_checker.tl teal/check/string_checker.tl \
+	teal/reader.tl teal/block-parser.tl \
 	teal/check/require_file.tl teal/package_loader.tl tl.tl
+
+SOURCES = teal/errors.tl teal/lexer.tl teal/binary_search.tl teal/embed/prelude.tl teal/embed/stdlib.tl tl.tl
 
 all: selfbuild suite
 
-########################################
-# Multi-stage bootstrap process:
-########################################
+%.lua.bak: %.lua
+	cp $< $@
 
-precompiler.lua: precompiler.tl
-	$(STABLE_TL) gen $< -o $@ || { rm $@; exit 1; }
+%.lua.1: %.tl
+	$(LUA) ./tl gen --check $< -o $@
 
-teal/precompiled/default_env.lua: precompiler.lua teal/default/prelude.d.tl teal/default/stdlib.d.tl tl.tl
-	lua precompiler.lua > teal/precompiled/default_env.lua || { rm $@; exit 1; }
+%.lua.2: %.tl %.lua.1
+	$(LUA) ./tl gen --check $< -o $@ || { for bak in $$(find . -name '*.lua.bak'); do cp $$bak `echo "$$bak" | sed 's/.bak$$//'`; done ; exit 1 ;}
 
-_temp/%.lua.1: %.tl $(PRECOMPILED)
-	@mkdir -p `dirname $@`
-	$(STABLE_TL) gen $(TLGENFLAGS) $< -o $@ || { rm $@; exit 1; }
-
-_temp/%.lua.2: %.tl _temp/%.lua.1 $(PRECOMPILED)
-	$(NEW_TL) gen $(TLGENFLAGS) $< -o $@ || extras/make.sh revert
-
-build1: $(addprefix _temp/,$(addsuffix .lua.1,$(basename $(SOURCES))))
+build1: $(addsuffix .lua.1,$(basename $(SOURCES)))
 
 replace1:
-	extras/make.sh move_1_to_lua
+	for f in $$(find . -name '*.lua.1'); do l=`echo "$$f" | sed 's/.1$$//'`; cp $$l $$l.bak; cp $$f $$l; done
 
-build2: $(addprefix _temp/,$(addsuffix .lua.2,$(basename $(SOURCES))))
+build2: $(addsuffix .lua.2,$(basename $(SOURCES)))
 
 selfbuild: build1 replace1 build2
-	extras/make.sh diff_1_and_2 || extras/make.sh revert
-
-########################################
-# Test suite:
-########################################
+	for f in $$(find . -name '*.lua.1'); do l=`echo "$$f" | sed 's/.1$$//'`; diff $$f $$l.2 || { for bak in $$(find . -name '*.lua.bak'); do cp $$bak `echo "$$bak" | sed 's/.bak$$//'`; done ; exit 1 ;}; done
 
 suite:
 	${BUSTED} -v $(TESTFLAGS) spec/lang
