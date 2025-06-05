@@ -1,15 +1,11 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 
-local attributes = require("teal.attributes")
-
-local is_attribute = attributes.is_attribute
-
 local errors = require("teal.errors")
 
 
-
 local types = require("teal.types")
+
 
 
 
@@ -36,9 +32,10 @@ local a_type = types.a_type
 local raw_type = types.raw_type
 local simple_types = types.simple_types
 
+local facts = require("teal.facts")
+
+
 local lexer = require("teal.lexer")
-
-
 
 
 
@@ -236,6 +233,14 @@ local parser = {}
 
 
 
+
+
+local attributes = {
+   ["const"] = true,
+   ["close"] = true,
+   ["total"] = true,
+}
+local is_attribute = attributes
 
 function parser.node_is_require_call(n)
    if not (n.e1 and n.e2) then
@@ -1653,28 +1658,9 @@ local function parse_return(ps, i)
    return i, node
 end
 
-local function store_field_in_record(ps, i, field_name, newt, def, comments, meta)
-   local field_order, fields, field_comments
-   if meta then
-      field_order, fields, field_comments = def.meta_field_order, def.meta_fields, def.meta_field_comments
-   else
-      field_order, fields, field_comments = def.field_order, def.fields, def.field_comments
-   end
-
-   if comments and not field_comments then
-      field_comments = {}
-      if meta then
-         def.meta_field_comments = field_comments
-      else
-         def.field_comments = field_comments
-      end
-   end
-
+local function store_field_in_record(ps, i, field_name, newt, fields, field_order)
    if not fields[field_name] then
       fields[field_name] = newt
-      if comments then
-         field_comments[field_name] = { comments }
-      end
       table.insert(field_order, field_name)
       return true
    end
@@ -1683,30 +1669,14 @@ local function store_field_in_record(ps, i, field_name, newt, def, comments, met
    local oldf = oldt.typename == "generic" and oldt.t or oldt
    local newf = newt.typename == "generic" and newt.t or newt
 
-   local function store_comment_for_poly(poly)
-      if comments then
-         if not field_comments[field_name] then
-            field_comments[field_name] = {}
-            for idx = 1, #poly.types - 1 do
-               field_comments[field_name][idx] = {}
-            end
-         end
-         table.insert(field_comments[field_name], comments)
-      elseif field_comments and field_comments[field_name] then
-         table.insert(field_comments[field_name], {})
-      end
-   end
-
    if newf.typename == "function" then
       if oldf.typename == "function" then
          local p = new_type(ps, i, "poly")
          p.types = { oldt, newt }
          fields[field_name] = p
-         store_comment_for_poly(p)
          return true
       elseif oldt.typename == "poly" then
          table.insert(oldt.types, newt)
-         store_comment_for_poly(oldt)
          return true
       end
    end
@@ -1724,52 +1694,6 @@ local function set_declname(def, declname)
          def.declname = declname
       end
    end
-end
-
-local function get_attached_comments(token)
-   if not token.comments then
-      return nil
-   end
-
-   local function is_long_comment(c)
-      return c.text:match("^%-%-%[(=*)%[") ~= nil
-   end
-   local last_comment = token.comments[#token.comments]
-
-
-   if is_long_comment(last_comment) then
-      local _, newlines = string.gsub(last_comment.text, "\n", "")
-      local diff_y = token.y - last_comment.y - newlines
-
-      if diff_y >= 0 and diff_y <= 1 then
-         return { last_comment }
-      else
-         return nil
-      end
-   end
-
-   local diff_y = token.y - last_comment.y
-   if diff_y < 0 or diff_y > 1 then
-      return nil
-   end
-   local first_n = 1
-   for i = #token.comments, 2, -1 do
-      local prev = token.comments[i - 1]
-      if is_long_comment(prev) then
-         first_n = i
-         break
-      end
-
-      if token.comments[i].y - prev.y > 1 then
-         first_n = i
-         break
-      end
-   end
-
-   local attached_comments =
-   table.move(token.comments, first_n, #token.comments, 1, {})
-
-   return attached_comments
 end
 
 local function parse_nested_type(ps, i, def, tn)
@@ -1795,7 +1719,7 @@ local function parse_nested_type(ps, i, def, tn)
 
    nt.newtype = new_typedecl(ps, istart, ndef)
 
-   store_field_in_record(ps, iv, v.tk, nt.newtype, def, get_attached_comments(ps.tokens[istart]))
+   store_field_in_record(ps, iv, v.tk, nt.newtype, def.fields, def.field_order)
    return i
 end
 
@@ -1805,15 +1729,7 @@ parse_enum_body = function(ps, i, def)
       local item
       i, item = verify_kind(ps, i, "string", "string")
       if item then
-         local name = unquote(item.tk)
-         def.enumset[name] = true
-         local comments = get_attached_comments(ps.tokens[i - 1])
-         if comments then
-            if not def.value_comments then
-               def.value_comments = {}
-            end
-            def.value_comments[name] = comments
-         end
+         def.enumset[unquote(item.tk)] = true
       end
    end
    return i, true
@@ -1993,7 +1909,7 @@ parse_record_body = function(ps, i, def)
 
       def.meta_fields = {}
       def.meta_field_order = {}
-      store_field_in_record(ps, i, "__is", typ, def, nil, "meta")
+      store_field_in_record(ps, i, "__is", typ, def.meta_fields, def.meta_field_order)
    end
 
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
@@ -2008,7 +1924,6 @@ parse_record_body = function(ps, i, def)
       elseif ps.tokens[i].tk == "{" then
          return fail(ps, i, "syntax error: this syntax is no longer valid; declare array interface at the top with 'is {...}'")
       elseif ps.tokens[i].tk == "type" and ps.tokens[i + 1].tk ~= ":" then
-         local comments = get_attached_comments(ps.tokens[i])
          i = i + 1
          local iv = i
 
@@ -2033,7 +1948,7 @@ parse_record_body = function(ps, i, def)
             ntt.is_nested_alias = true
          end
 
-         store_field_in_record(ps, iv, v.tk, nt.newtype, def, comments)
+         store_field_in_record(ps, iv, v.tk, nt.newtype, def.fields, def.field_order)
       elseif parse_type_body_fns[tn] and ps.tokens[i + 1].tk ~= ":" then
          if def.typename == "interface" and tn == "record" then
             i = failskip(ps, i, "interfaces cannot contain record definitions", skip_type_body)
@@ -2041,7 +1956,6 @@ parse_record_body = function(ps, i, def)
             i = parse_nested_type(ps, i, def, tn)
          end
       else
-         local comments = get_attached_comments(ps.tokens[i])
          local is_metamethod = false
          if ps.tokens[i].tk == "metamethod" and ps.tokens[i + 1].tk ~= ":" then
             is_metamethod = true
@@ -2075,11 +1989,15 @@ parse_record_body = function(ps, i, def)
             end
 
             local field_name = v.conststr or v.tk
+            local fields = def.fields
+            local field_order = def.field_order
             if is_metamethod then
                if not def.meta_fields then
                   def.meta_fields = {}
                   def.meta_field_order = {}
                end
+               fields = def.meta_fields
+               field_order = def.meta_field_order
                if not metamethod_names[field_name] then
                   fail(ps, i - 1, "not a valid metamethod: " .. field_name)
                end
@@ -2095,7 +2013,7 @@ parse_record_body = function(ps, i, def)
                end
             end
 
-            store_field_in_record(ps, iv, field_name, t, def, comments, is_metamethod and "meta" or nil)
+            store_field_in_record(ps, iv, field_name, t, fields, field_order)
          elseif ps.tokens[i].tk == "=" then
             local next_word = ps.tokens[i + 1].tk
             if next_word == "record" or next_word == "enum" then
@@ -2367,59 +2285,37 @@ local function parse_local_macroexp(ps, i)
 end
 
 local function parse_local(ps, i)
-   local comments = get_attached_comments(ps.tokens[i])
    local ntk = ps.tokens[i + 1].tk
    local tn = ntk
-
-   local node
    if ntk == "function" then
-      i, node = parse_local_function(ps, i)
+      return parse_local_function(ps, i)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
-      i, node = parse_type_declaration(ps, i + 2, "local_type")
+      return parse_type_declaration(ps, i + 2, "local_type")
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
-      i, node = parse_local_macroexp(ps, i)
+      return parse_local_macroexp(ps, i)
    elseif parse_type_body_fns[tn] and ps.tokens[i + 2].kind == "identifier" then
-      i, node = parse_type_constructor(ps, i, "local_type", tn)
-   else
-      i, node = parse_variable_declarations(ps, i + 1, "local_declaration")
+      return parse_type_constructor(ps, i, "local_type", tn)
    end
-   if node then
-      node.comments = comments
-   end
-   return i, node
+   return parse_variable_declarations(ps, i + 1, "local_declaration")
 end
 
 local function parse_global(ps, i)
-   local comments = get_attached_comments(ps.tokens[i])
    local ntk = ps.tokens[i + 1].tk
    local tn = ntk
-
-   local node
    if ntk == "function" then
-      i, node = parse_function(ps, i + 1, "global")
+      return parse_function(ps, i + 1, "global")
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
-      i, node = parse_type_declaration(ps, i + 2, "global_type")
+      return parse_type_declaration(ps, i + 2, "global_type")
    elseif parse_type_body_fns[tn] and ps.tokens[i + 2].kind == "identifier" then
-      i, node = parse_type_constructor(ps, i, "global_type", tn)
+      return parse_type_constructor(ps, i, "global_type", tn)
    elseif ps.tokens[i + 1].kind == "identifier" then
-      i, node = parse_variable_declarations(ps, i + 1, "global_declaration")
-   else
-      return parse_call_or_assignment(ps, i)
+      return parse_variable_declarations(ps, i + 1, "global_declaration")
    end
-   if node then
-      node.comments = comments
-   end
-   return i, node
+   return parse_call_or_assignment(ps, i)
 end
 
 local function parse_record_function(ps, i)
-   local comments = get_attached_comments(ps.tokens[i])
-   local node
-   i, node = parse_function(ps, i, "record")
-   if node then
-      node.comments = comments
-   end
-   return i, node
+   return parse_function(ps, i, "record")
 end
 
 local function parse_pragma(ps, i)
@@ -2470,28 +2366,6 @@ local needs_local_or_global = {
    ["enum"] = type_needs_local_or_global,
 }
 
-local function store_unattached_comments(node, token, item)
-   for _, tc in ipairs(token.comments) do
-      local is_attached = false
-      if item.comments then
-         for _, nc in ipairs(item.comments) do
-            if tc == nc then
-               is_attached = true
-               break
-            end
-         end
-      end
-      if not is_attached then
-         if not node.unattached_comments then
-            node.unattached_comments = {}
-         end
-         table.insert(node.unattached_comments, tc)
-      else
-         break
-      end
-   end
-end
-
 parse_statements = function(ps, i, toplevel)
    local node = new_node(ps, i, "statements")
    local item
@@ -2506,8 +2380,7 @@ parse_statements = function(ps, i, toplevel)
       if ps.tokens[i].kind == "$EOF$" then
          break
       end
-      local token = ps.tokens[i]
-      local tk = token.tk
+      local tk = ps.tokens[i].tk
       if (not toplevel) and stop_statement_list[tk] then
          break
       end
@@ -2525,9 +2398,6 @@ parse_statements = function(ps, i, toplevel)
       i, item = fn(ps, i)
 
       if item then
-         if toplevel and token.comments then
-            store_unattached_comments(node, token, item)
-         end
          table.insert(node, item)
       elseif i > 1 then
 
@@ -2570,31 +2440,6 @@ function parser.parse(input, filename, parse_lang)
    local tokens, errs = lexer.lex(input, filename)
    local node, required_modules = parser.parse_program(tokens, errs, filename, parse_lang)
    return node, errs, required_modules
-end
-
-function parser.lang_heuristic(filename, input)
-   if filename then
-      local pattern = "(.*)%.([a-z]+)$"
-      local _, extension = filename:match(pattern)
-      extension = extension and extension:lower()
-
-      if extension == "tl" then
-         return "tl"
-      elseif extension == "lua" then
-         return "lua"
-      end
-   end
-   if input then
-      return (input:match("^#![^\n]*lua[^\n]*\n")) and "lua" or "tl"
-   end
-   return "tl"
-end
-
-function parser.node_at(w, n)
-   n.f = assert(w.f)
-   n.x = w.x
-   n.y = w.y
-   return n
 end
 
 return parser

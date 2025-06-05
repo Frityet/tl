@@ -1,6 +1,7 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
+local errors = require("teal.errors")
 
 
 
@@ -11,7 +12,6 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 
-local types = { GenericType = {}, StringType = {}, IntegerType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
 
 
 
@@ -50,360 +50,6 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, BooleanType
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function is_numeric_type(t)
-   return t.typename == "number" or t.typename == "integer"
-end
-
-types.lua_primitives = {
-   ["function"] = "function",
-   ["enum"] = "string",
-   ["boolean"] = "boolean",
-   ["string"] = "string",
-   ["nil"] = "nil",
-   ["number"] = "number",
-   ["integer"] = "number",
-   ["thread"] = "thread",
-}
 
 local simple_types = {
    ["nil"] = true,
@@ -467,6 +113,292 @@ local table_types = {
    ["none"] = false,
    ["*"] = false,
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function is_numeric_type(t)
+   return t.typename == "number" or t.typename == "integer"
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 local show_type
 
@@ -689,13 +621,11 @@ local type_mt = {
    end,
 }
 
-
-local fresh_typevar_ctr = 1
-local fresh_typeid_ctr = 0
+local last_typeid = 0
 
 local function new_typeid()
-   fresh_typeid_ctr = fresh_typeid_ctr + 1
-   return fresh_typeid_ctr
+   last_typeid = last_typeid + 1
+   return last_typeid
 end
 
 local function a_type(w, typename, t)
@@ -709,21 +639,6 @@ local function a_type(w, typename, t)
       setmetatable(ty, type_mt)
    end
    return t
-end
-
-local function a_function(w, t)
-   assert(t.min_arity)
-   return a_type(w, "function", t)
-end
-
-
-
-
-
-local function a_vararg(w, t)
-   local typ = a_type(w, "tuple", { tuple = t })
-   typ.is_va = true
-   return typ
 end
 
 local function raw_type(f, y, x, typename)
@@ -783,6 +698,81 @@ local function type_for_union(t)
       return t.typename, t
    end
 end
+
+local types = {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+types.globals_typeid = new_typeid()
+types.simple_types = simple_types
+types.table_types = table_types
+
+types.a_type = a_type
+types.edit_type = edit_type
+types.is_unknown = is_unknown
+types.inferred_msg = inferred_msg
+types.raw_type = raw_type
+types.shallow_copy_new_type = shallow_copy_new_type
+types.show_type = show_type
+types.show_typevar = show_typevar
+types.show_type_base = show_type_base
 
 function types.is_valid_union(typ)
 
@@ -1054,243 +1044,5 @@ types.map = function(self, ty, fns)
 
    return copy
 end
-
-do
-   function types.internal_typevar_ctr()
-      return fresh_typevar_ctr
-   end
-
-
-   local fresh_typevar_fns = {
-      ["typevar"] = function(typeargs, t, resolve)
-         for _, ta in ipairs(typeargs) do
-            if ta.typearg == t.typevar then
-               return a_type(t, "typevar", {
-                  typevar = (t.typevar:gsub("@.*", "")) .. "@" .. fresh_typevar_ctr,
-                  constraint = t.constraint and resolve(t.constraint, false),
-               }), true
-            end
-         end
-         return t, false
-      end,
-      ["typearg"] = function(typeargs, t, resolve)
-         for _, ta in ipairs(typeargs) do
-            if ta.typearg == t.typearg then
-               return a_type(t, "typearg", {
-                  typearg = (t.typearg:gsub("@.*", "")) .. "@" .. fresh_typevar_ctr,
-                  constraint = t.constraint and resolve(t.constraint, false),
-               }), true
-            end
-         end
-         return t, false
-      end,
-   }
-
-   function types.fresh_typeargs(g)
-      fresh_typevar_ctr = fresh_typevar_ctr + 1
-
-      local newg, errs = types.map(g.typeargs, g, fresh_typevar_fns)
-      if newg.typename == "invalid" then
-         return newg, errs
-      end
-
-      assert(newg.typename == "generic", "Internal Compiler Error: error creating fresh type variables")
-      assert(newg ~= g)
-      newg.fresh = true
-
-      return newg
-   end
-end
-
-
-
-
-
-
-
-function types.untuple(t)
-   local rt = t
-   if rt.typename == "tuple" then
-      rt = rt.tuple[1]
-   end
-   if rt == nil then
-      return a_type(t, "nil", {})
-   end
-   return rt
-end
-
-function types.unite(w, typs, flatten_constants)
-   if #typs == 1 then
-      return typs[1]
-   end
-
-   local ts = {}
-   local stack = {}
-
-
-   local types_seen = {}
-
-   types_seen["nil"] = true
-
-   local i = 1
-   while typs[i] or stack[1] do
-      local t
-      if stack[1] then
-         t = table.remove(stack)
-      else
-         t = typs[i]
-         i = i + 1
-      end
-      t = types.untuple(t)
-      if t.typename == "union" then
-         for _, s in ipairs(t.types) do
-            table.insert(stack, s)
-         end
-      else
-         if types.lua_primitives[t.typename] and (flatten_constants or (t.typename == "string" and not t.literal)) then
-            if not types_seen[t.typename] then
-               types_seen[t.typename] = true
-               table.insert(ts, t)
-            end
-         else
-            local typeid = t.typeid
-            if t.typename == "nominal" and t.found then
-               typeid = t.found.typeid
-            end
-            if not types_seen[typeid] then
-               types_seen[typeid] = true
-               table.insert(ts, t)
-            end
-         end
-      end
-   end
-
-   if types_seen["invalid"] then
-      return a_type(w, "invalid", {})
-   end
-
-   if #ts == 1 then
-      return ts[1]
-   else
-      return a_type(w, "union", { types = ts })
-   end
-end
-
-function types.resolve_for_special_function(t)
-   if t.typename == "poly" then
-      t = t.types[1]
-   end
-   if t.typename == "generic" then
-      t = t.t
-   end
-   if t.typename == "function" then
-      return t
-   end
-end
-
-function types.drop_constant_value(t)
-   if t.typename == "string" and t.literal then
-      local ret = shallow_copy_new_type(t)
-      ret.literal = nil
-      return ret
-   elseif t.needs_compat then
-      local ret = shallow_copy_new_type(t)
-      ret.needs_compat = nil
-      return ret
-   end
-   return t
-end
-
-function types.type_at(w, t)
-   t.x = w.x
-   t.y = w.y
-   return t
-end
-
-function types.wrap_generic_if_typeargs(typeargs, t)
-   if not typeargs then
-      return t
-   end
-
-   assert(not (t.typename == "typedecl"))
-
-   local gt = a_type(t, "generic", { t = t })
-   gt.typeargs = typeargs
-   return gt
-end
-
-function types.show_arity(f)
-   local nfargs = #f.args.tuple
-   if f.min_arity < nfargs then
-      if f.min_arity > 0 then
-         return "at least " .. f.min_arity .. (f.args.is_va and "" or " and at most " .. nfargs)
-      else
-         return (f.args.is_va and "any number" or "at most " .. nfargs)
-      end
-   else
-      return tostring(nfargs or 0)
-   end
-end
-
-function types.typedecl_to_nominal(w, name, t, resolved)
-   local typevals
-   local def = t.def
-   if def.typename == "generic" then
-      typevals = {}
-      for _, a in ipairs(def.typeargs) do
-         table.insert(typevals, a_type(a, "typevar", {
-            typevar = a.typearg,
-            constraint = a.constraint,
-         }))
-      end
-   end
-   local nom = a_type(w, "nominal", { names = { name } })
-   nom.typevals = typevals
-   nom.found = t
-   nom.resolved = resolved
-   return nom
-end
-
-local function ensure_not_method(t)
-   if t.typename == "generic" then
-      local tt = ensure_not_method(t.t)
-      if tt ~= t.t then
-         local gg = shallow_copy_new_type(t)
-         gg.t = tt
-         return gg
-      end
-   end
-
-   if t.typename == "function" and t.is_method then
-      t = shallow_copy_new_type(t);
-      (t).is_method = false
-   end
-   return t
-end
-
-function types.internal_get_state()
-   return fresh_typeid_ctr, fresh_typevar_ctr
-end
-
-function types.internal_force_state(typeid_ctr, typevar_ctr)
-   fresh_typeid_ctr = typeid_ctr
-   fresh_typevar_ctr = typevar_ctr
-end
-
-types.globals_typeid = new_typeid()
-types.simple_types = simple_types
-types.table_types = table_types
-types.a_type = a_type
-types.a_function = a_function
-types.a_vararg = a_vararg
-types.edit_type = edit_type
-types.ensure_not_method = ensure_not_method
-types.is_unknown = is_unknown
-types.inferred_msg = inferred_msg
-types.raw_type = raw_type
-types.shallow_copy_new_type = shallow_copy_new_type
-types.show_type = show_type
-types.show_typevar = show_typevar
-types.show_type_base = show_type_base
 
 return types
