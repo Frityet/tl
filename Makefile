@@ -16,9 +16,7 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	teal/check/file_checker.tl teal/check/string_checker.tl \
 	teal/reader.tl teal/block-parser.tl \
 	teal/check/require_file.tl teal/package_loader.tl tl.tl
-
-SOURCES = teal/debug.tl teal/errors.tl teal/lexer.tl teal/binary_search.tl teal/embed/prelude.tl teal/embed/stdlib.tl teal/types.tl teal/facts.tl teal/parser.tl teal/traversal.tl tl.tl
-
+	
 all: selfbuild suite
 
 %.lua.bak: %.lua
