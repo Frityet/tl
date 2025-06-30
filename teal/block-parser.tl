@@ -368,6 +368,9 @@ local node_mt: metatable<Node> = {
 }
 
 local function new_node(ps: ParseState, b: Block, kind?: NodeKind): Node
+   if not b then
+      return nil
+   end
    local node = setmetatable({ f = ps.filename, y = b.y, x = b.x, tk = b.tk, kind = kind or (b.kind as NodeKind) } as Node, node_mt)
    node.yend = b.yend
    node.xend = b.xend
@@ -389,56 +392,76 @@ local parse_expression: function(state: ParseState, block: Block): Node
 local function parse_list(state: ParseState, block: Block, node: Node, parse_fn: function(ParseState, Block):Node): Node
    if not block then return node end
    for _, item_block in ipairs(block) do
-      table.insert(node, parse_fn(state, item_block))
+      local parsed_item = parse_fn(state, item_block)
+      if parsed_item then
+         table.insert(node, parsed_item)
+      end
    end
    return node
 end
 
 local function parse_expression_list(state: ParseState, block: Block): Node
    local node = new_node(state, block, "expression_list")
+   if not node then
+      return nil
+   end
    return parse_list(state, block, node, parse_expression)
 end
 
 local function parse_variable_list(state: ParseState, block: Block): Node
    local node = new_node(state, block, "variable_list")
+   if not node then
+      return nil
+   end
    for _, var_block in ipairs(block) do
       local var_node = new_node(state, var_block, "variable")
-      if var_block[1] then
-         local annotation = var_block[1]
-         if not is_attribute[annotation.tk] then
-            fail(state, annotation, "unknown variable annotation: " .. annotation.tk)
+      if var_node then
+         if var_block[1] then
+            local annotation = var_block[1]
+            if not is_attribute[annotation.tk] then
+               fail(state, annotation, "unknown variable annotation: " .. annotation.tk)
+            end
+            var_node.attribute = annotation.tk as Attribute
          end
-         var_node.attribute = annotation.tk as Attribute
+         table.insert(node, var_node)
       end
-      table.insert(node, var_node)
    end
    return node
 end
 
 local function parse_argument_list(state: ParseState, block: Block): Node
    local node = new_node(state, block, "argument_list")
+   if not node then
+      return nil
+   end
    node.min_arity = 0
    local opts = false
    for a, arg_block in ipairs(block) do
       local arg_node = new_node(state, arg_block, "argument")
-      if arg_block.tk == "..." then
-         if a < #block then
-            fail(state, arg_block, "'...' can only be last argument")
+      if arg_node then
+         if arg_block.tk == "..." then
+            if a < #block then
+               fail(state, arg_block, "'...' can only be last argument")
+            end
          end
+         -- if arg_block.opt then
+         --    arg_node.opt = true
+         --    opts = true
+         -- elseif opts then
+         if opts then
+            fail(state, arg_block, "non-optional argument follows optional argument")
+         end
+         table.insert(node, arg_node)
       end
-      -- if arg_block.opt then
-      --    arg_node.opt = true
-      --    opts = true
-      -- else
-      if opts then
-         fail(state, arg_block, "non-optional argument follows optional argument")
-      end
-      table.insert(node, arg_node)
    end
    return node
 end
 
 local function parse_statements(state: ParseState, block: Block): Node
+   if not block then
+      local dummy_block = { kind = "statements", y = 1, x = 1, tk = "", yend = 1, xend = 1 } as Block
+      return new_node(state, dummy_block, "statements")
+   end
    local node = new_node(state, block, "statements")
    
    return parse_list(state, block, node, parse_block)
@@ -502,19 +525,29 @@ parse_expression = function(state: ParseState, block: Block): Node
    end
 
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
 
    if kind == "string" then
       node.conststr = block.conststr
    elseif kind == "number" or kind == "integer" then
+      node.kind = kind as NodeKind
       node.constnum = block.constnum
+   elseif kind == "boolean" then
+      node.kind = kind as NodeKind
+   elseif kind == "identifier" or kind == "variable" then
+      node.kind = "variable"
    elseif kind == "paren" then
       node.e1 = parse_expression(state, block[1])
    elseif kind == "literal_table" then
       for _, item_block in ipairs(block) do
          local item_node = new_node(state, item_block, "literal_table_item")
-         item_node.key = parse_expression(state, item_block[1])
-         item_node.value = parse_expression(state, item_block[2])
-         table.insert(node, item_node)
+         if item_node then
+            item_node.key = parse_expression(state, item_block[1])
+            item_node.value = parse_expression(state, item_block[2])
+            table.insert(node, item_node)
+         end
       end
    elseif kind == "function" then
       node.args = parse_argument_list(state, block[3])
@@ -528,6 +561,9 @@ local parse_fns: {string: ParseFn} = {}
 
 parse_fns.local_declaration = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.vars = parse_variable_list(state, block[1])
    local next_child = 2
    if block[next_child] and block[next_child].kind == "tuple_type" then
@@ -542,6 +578,9 @@ parse_fns.global_declaration = parse_fns.local_declaration
 
 parse_fns.assignment = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.vars = parse_variable_list(state, block[1])
    node.exps = parse_expression_list(state, block[2])
    return node
@@ -549,24 +588,41 @@ end
 
 parse_fns["if"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.if_blocks = {}
-   for i, if_block_block in ipairs(block) do
-      local if_block_node = new_node(state, if_block_block, "if_block")
-      if_block_node.if_parent = node
-      if_block_node.if_block_n = i
-      if #if_block_block == 2 then -- if or elseif
-         if_block_node.exp = parse_expression(state, if_block_block[1])
-         if_block_node.body = parse_statements(state, if_block_block[2])
-      else -- else
-         if_block_node.body = parse_statements(state, if_block_block[1])
+   
+   -- The structure from the reader is:
+   -- if -> [1] (kind=nil, not "nil" string) -> array of if_block nodes
+   -- Each if_block has [1] = expression (for if/elseif) or statements (for else)
+   -- Each if_block has [2] = statements (for if/elseif only)
+   -- Yes, this kind of sucks...
+   
+   local if_blocks_container = block[1]
+   if if_blocks_container then
+      for i, if_block_block in ipairs(if_blocks_container) do
+         local if_block_node = new_node(state, if_block_block, "if_block")
+         if if_block_node then
+            if_block_node.if_block_n = i
+            if #if_block_block == 2 then -- if or elseif (has expression and statements)
+               if_block_node.exp = parse_expression(state, if_block_block[1])
+               if_block_node.body = parse_statements(state, if_block_block[2])
+            else -- else (has only statements)
+               if_block_node.body = parse_statements(state, if_block_block[1])
+            end
+            table.insert(node.if_blocks, if_block_node)
+         end
       end
-      table.insert(node.if_blocks, if_block_node)
    end
    return node
 end
 
 parse_fns["while"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.exp = parse_expression(state, block[1])
    node.body = parse_statements(state, block[2])
    return node
@@ -574,23 +630,51 @@ end
 
 parse_fns.fornum = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
-   node.var = parse_expression(state, block[1])
-   node.from = parse_expression(state, block[2])
-   node.to = parse_expression(state, block[3])
-   if block[4] then
-      node.step = parse_expression(state, block[4])
+   if not node then
+      return nil
    end
-   node.body = parse_statements(state, block[5])
+   
+   local var_node = new_node(state, block, "variable")
+   if var_node then
+      var_node.tk = "i"
+   end
+   node.var = var_node
+   
+   node.from = parse_expression(state, block[1])
+   -- convert integer literals in numeric for loops to number
+   -- TODO: I don't think this is a good idea
+   if node.from and node.from.kind == "integer" then
+      node.from.kind = "number"
+   end
+   
+   node.to = parse_expression(state, block[2])
+   if node.to and node.to.kind == "integer" then
+      node.to.kind = "number"
+   end
+   
+   if block[3] then
+      -- We have a step value
+      node.step = parse_expression(state, block[3])
+      if node.step and node.step.kind == "integer" then
+         node.step.kind = "number"
+      end
+   end
+   
+   node.body = parse_statements(state, block[4])
+   
    return node
 end
 
 parse_fns.forin = function(state: ParseState, block: Block): Node
    local node = new_node(state, block, "forin")
+   if not node then
+      return nil
+   end
    node.vars = parse_variable_list(state, block[1])
    node.exps = parse_expression_list(state, block[2])
-   if #node.exps < 1 then
+   if node.exps and #node.exps < 1 then
       fail(state, block[2], "missing iterator expression in generic for")
-   elseif #node.exps > 3 then
+   elseif node.exps and #node.exps > 3 then
       fail(state, block[2], "too many expressions in generic for")
    end
    node.body = parse_statements(state, block[3])
@@ -599,20 +683,31 @@ end
 
 parse_fns["repeat"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.body = parse_statements(state, block[1])
-   node.body.is_repeat = true
+   if node.body then
+      node.body.is_repeat = true
+   end
    node.exp = parse_expression(state, block[2])
    return node
 end
 
 parse_fns["do"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.body = parse_statements(state, block[1])
    return node
 end
 
 parse_fns["return"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.exps = parse_expression_list(state, block[1])
    return node
 end
@@ -623,19 +718,28 @@ end
 
 parse_fns["goto"] = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.label = block[1].tk
    return node
 end
 
 parse_fns.label = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    node.label = block[1].tk
    return node
 end
 
 parse_fns.local_function = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
-   node.name = parse_expression(state, block[1])
+   if not node then
+      return nil
+   end
+   node.name = new_node(state, block[1], "variable")
    node.args = parse_argument_list(state, block[3])
    node.body = parse_statements(state, block[5])
    return node
@@ -643,7 +747,10 @@ end
 
 parse_fns.global_function = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
-   node.name = parse_expression(state, block[1])
+   if not node then
+      return nil
+   end
+   node.name = new_node(state, block[1], "variable")
    node.args = parse_argument_list(state, block[3])
    node.body = parse_statements(state, block[5])
    return node
@@ -651,6 +758,9 @@ end
 
 parse_fns.record_function = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    local owner_block = block[1]
    local name_block = block[2]
    --TODO: Check if method
@@ -665,6 +775,9 @@ end
 
 parse_fns.pragma = function(state: ParseState, block: Block): Node
    local node = new_node(state, block)
+   if not node then
+      return nil
+   end
    --pkey should be [1] and pvalue should be [2]
    node.pkey = block[1].tk
    if block[2] then
@@ -703,8 +816,30 @@ parse_block = function(state: ParseState, block: Block): Node
    local kind = block.kind as string
    if kind == "forin" then
       return parse_forin(state, block)
+   elseif kind == "interface" then
+      local node = new_node(state, block, "interface")
+      if not node then
+         return nil
+      end
+      return node
    elseif kind == "local_type" or kind == "global_type" then
       local node = new_node(state, block)
+      if not node then
+         return nil
+      end
+      
+      -- Check if this is actually an interface declaration
+      -- Interface structure: local_type -> [2] -> newtype -> [1] -> typedecl -> [1] -> interface
+      if block[2] and block[2].kind == "newtype" and 
+         block[2][1] and block[2][1].kind == "typedecl" and
+         block[2][1][1] and block[2][1][1].kind == "interface" then
+         local interface_node = new_node(state, block, "interface")
+         if not interface_node then
+            return nil
+         end
+         return interface_node
+      end
+      
       node[1] = new_node(state, block[1], "type_identifier")
       if block[2] then
          local expr_block = block[2]
@@ -740,6 +875,9 @@ parse_block = function(state: ParseState, block: Block): Node
    end
    if kind == "local_declaration" then
       local node = new_node(state, block, "local_declaration")
+      if not node then
+         return nil
+      end
       node.vars = parse_variable_list(state, block[1])
       local next_child = 2
       if block[next_child] and block[next_child].kind == "tuple_type" then
@@ -759,6 +897,10 @@ parse_block = function(state: ParseState, block: Block): Node
 end
 
 function block_parser.parse(input: Block, filename: string, parse_lang?: ParseLang): types.Node, {Error}, {string}
+   if not input then
+      return nil, {{ filename = filename, y = 1, x = 1, msg = "input is nil" }}, {}
+   end
+
    local state: ParseState = {
       block = input,
       errs = {},
@@ -770,13 +912,11 @@ function block_parser.parse(input: Block, filename: string, parse_lang?: ParseLa
 
    local nodes = parse_statements(state, input)
    if #state.errs > 0 then
-      return nil, state.errs, {}
+      return nil, state.errs, state.required_modules
    end
 
    return nodes, {}, state.required_modules
 end
-
--- Type parsing functions ported from parser.tl
 
 local function new_type(state: ParseState, block: Block, typename: TypeName): Type
    return raw_type(state.filename, block.y, block.x, typename)
@@ -807,7 +947,6 @@ local function new_nominal(state: ParseState, block: Block, name?: string): Nomi
    return t
 end
 
--- Forward declarations for type parsing functions
 local parse_type: function(state: ParseState, block: Block): Type
 local parse_type_list: function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType
 local parse_typeargs_if_any: function(state: ParseState, block: Block): {TypeArgType}
@@ -820,7 +959,6 @@ local parse_function_type: function(state: ParseState, block: Block): GenericTyp
 
 
 parse_typeargs_if_any = function(_state: ParseState, _block: Block): {TypeArgType}
-   -- For now, return empty list - will need to handle type arguments when reader.tl provides them
    return {}
 end
 
@@ -832,7 +970,6 @@ parse_function_type = function(state: ParseState, block: Block): GenericType | F
    local typeargs: {TypeArgType} = {}
    local typ = new_type(state, block, "function") as FunctionType
    
-   -- Parse type arguments if any (handled by reader)
    typeargs = parse_typeargs_if_any(state, block)
    
    -- For now, set default function signature - will need to enhance when reader provides arg/ret types
@@ -942,7 +1079,6 @@ parse_type_list = function(state: ParseState, block: Block, _mode: ParseTypeList
       return t
    end
 
-   -- Parse the type list from the block
    if block.kind == "tuple_type" then
       for _, type_block in ipairs(block) do
          local parsed_type = parse_type(state, type_block)

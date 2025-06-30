@@ -690,7 +690,8 @@ local function read_return_types(ps: ReadState, i: integer): integer, Block
    local t: Block
    --MARK: here
    i, t = read_type_list(ps, i, "rets")
-   if #t[2] == 0 then
+   local list = t[2] or t[1]  -- for variadic, list is t[2]; for non-variadic, list is t[1]
+   if list and #list == 0 then
       t.x = ps.tokens[iprev].x
       t.y = ps.tokens[iprev].y
    end
@@ -1475,18 +1476,22 @@ end
 local function read_if_block(ps: ReadState, i: integer, node: Block, is_else?: boolean): integer, Block
    local block = new_block(ps, i, "if_block")
    i = i + 1
-   block[1] = node
    if not is_else then
-      i, block[2] = read_expression_and_tk(ps, i, "then")
+      i, block[1] = read_expression_and_tk(ps, i, "then")
+      if not block[1] then
+         return i
+      end
+      i, block[2] = read_statements(ps, i)
       if not block[2] then
          return i
       end
+   else
+      i, block[1] = read_statements(ps, i)
+      if not block[1] then
+         return i
+      end
    end
-   i, block[3] = read_statements(ps, i)
-   if not block[3] then
-      return i
-   end
-   block.yend, block.xend = block[3].yend, block[3].xend
+   block.yend, block.xend = (block[2] or block[1]).yend, (block[2] or block[1]).xend
    table.insert(node[1], block)
    return i, node
 end
@@ -1790,11 +1795,15 @@ end
 read_interface_name = function(ps: ReadState, i: integer): integer, Block, integer
    local istart = i
    local typ: Block
+
+   
    i, typ = read_simple_type_or_nominal(ps, i)
    if typ.kind ~= "nominal_type" then
       return fail(ps, istart, "expected an interface")
    end
+   
    return i, typ
+
 end
 
 local function read_array_interface_type(ps: ReadState, i: integer): integer, Block
@@ -1809,17 +1818,6 @@ local function read_array_interface_type(ps: ReadState, i: integer): integer, Bl
    end
    return i, t
 end
-
--- FIXME (a) GenericType do we need to patch the where-generated __is function into a generic? (see (b))
---local function clone_typeargs(ps: ReadState, i: integer, typeargs: {TypeArgType}): {TypeArgType}
---   local copy = {}
---   for a, ta in ipairs(typeargs) do
---      local cta = new_type(ps, i, "typearg") as TypeArgType
---      cta.typearg = ta.typearg
---      copy[a] = cta
---   end
---   return copy
---end
 
 local function extract_userdata_from_interface_list(ps: ReadState, i: integer, interface_list: Block): boolean
    if not interface_list then
@@ -2258,10 +2256,11 @@ end
 local function read_global(ps: ReadState, i: integer): integer, Block
    local ntk = ps.tokens[i + 1].tk
    if ntk == "function" then
-      local fn: Block
-      i, fn = read_local_function(ps, i + 1)
-      fn.kind = "global_function"
-      return i, fn
+      i = verify_tk(ps, i, "global")
+      i = verify_tk(ps, i, "function")
+      local fn = new_block(ps, i - 2, "global_function")
+      i, fn[1] = read_identifier(ps, i)
+      return read_function_args_rets_body(ps, i, fn)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
    elseif read_type_body_fns[ntk] and ps.tokens[i+2].kind == "identifier" then
@@ -2273,11 +2272,25 @@ local function read_global(ps: ReadState, i: integer): integer, Block
 end
 
 local function read_record_function(ps: ReadState, i: integer): integer, Block
-   -- return read_function(ps, i, "record")
-      local fn: Block
-      i, fn = read_local_function(ps, i + 1)
-      fn.kind = "record_function"
-      return i, fn
+   i = verify_tk(ps, i, "function")
+
+   local fn = new_block(ps, i - 1, "record_function")
+   i, fn[1] = read_identifier(ps, i)
+   
+   if ps.tokens[i] and ps.tokens[i].tk == "." then
+      i = i + 1
+      i, fn[2] = read_identifier(ps, i)
+   end
+   
+   local istart = i - 1
+   i, fn[3] = read_typeargs_if_any(ps, i)
+   i, fn[4] = read_argument_list(ps, i)
+   i, fn[5] = read_return_types(ps, i)
+   i, fn[6] = read_statements(ps, i)
+   
+   end_at(fn, ps.tokens[i])
+   i = verify_end(ps, i, istart, fn)
+   return i, fn
 end
 
 local function read_pragma(ps: ReadState, i: integer): integer, Block
