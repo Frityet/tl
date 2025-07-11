@@ -3,7 +3,7 @@ local VERSION = "0.24.6+dev"
 
 local errors = require("teal.errors")
 
-local file_checker = require("teal.check.file_checker")
+local file_checker = require("teal.check.block_file_checker")
 
 local lexer = require("teal.lexer")
 
@@ -21,7 +21,7 @@ local lua_compat = require("teal.gen.lua_compat")
 
 local require_file = require("teal.check.require_file")
 
-local string_checker = require("teal.check.string_checker")
+local string_checker = require("teal.check.block_string_checker")
 
 local check = require("teal.check.check")
 
@@ -80,7 +80,7 @@ local record tl
 
    check: function(Node, ? string, ? CheckOptions, ? Env): Result, string
    apply_compat: function(result: Result)
-   gen: function(string, ? Env, ? GenerateOptions, ? ParseLang): string, Result
+   gen: function(string, ? Env, ? GenerateOptions): string, Result
    generate: function(ast: Node, gen_target: GenTarget, opts?: GenerateOptions): string, string
    get_token_at: function(tks: {Token}, y: integer, x: integer): string
    lex: function(input: string, filename: string): {Token}, {Error}
