@@ -3,7 +3,7 @@ local VERSION = "0.24.6+dev"
 
 local errors = require("teal.errors")
 
-local file_checker = require("teal.check.file_checker")
+local file_checker = require("teal.check.block_file_checker")
 
 local lexer = require("teal.lexer")
 
@@ -21,7 +21,7 @@ local lua_compat = require("teal.gen.lua_compat")
 
 local require_file = require("teal.check.require_file")
 
-local string_checker = require("teal.check.string_checker")
+local string_checker = require("teal.check.block_string_checker")
 
 local check = require("teal.check.check")
 
