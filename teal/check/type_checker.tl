@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type attributes = require("teal.attributes")
 local type Attribute = attributes.Attribute
 
@@ -50,6 +51,7 @@ local record type_checker
    interface TypeChecker
       feat_arity: boolean
       feat_lax: boolean
+      feat_strict_nil: boolean
 
       add_implied_var: function(self, name: string, t: Type)
       add_error: function(self, w: Where, msg: string, t?: Type, ...:Type)
@@ -71,7 +73,7 @@ local record type_checker
       is_a: function(self, Type, Type): boolean, {Error}
       is_pending_global: function(self, name: string): boolean
       resolve_nominal: function(self, t: NominalType): Type
-      resolve_typevars: function(self, t: Type): FirstClassType, {Error}
+      resolve_typevars: function(self, t: Type, keep_literals?: {string:boolean}): FirstClassType, {Error}
       same_type: function(self, Type, Type): boolean, {Error}
       to_structural: function(self, t: Type): Type
       type_of_self: function(self, w: Where): Type, TypeDeclType

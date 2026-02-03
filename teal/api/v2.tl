@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type check = require("teal.check.check")
 local type environment = require("teal.environment")
 local type errors = require("teal.errors")
@@ -42,6 +43,7 @@ local record v2
    record CheckOptions
       feat_lax: Feat
       feat_arity: Feat
+      feat_strict_nil: Feat
       gen_compat: GenCompat
       gen_target: GenTarget
    end
@@ -98,6 +100,7 @@ local type TypeReport = v2.TypeReport
 local function env_from_check_options(opts?: CheckOptions): Env
    return environment.new(opts and {
       feat_arity = opts.feat_arity,
+      feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
    })

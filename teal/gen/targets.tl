@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local record targets
    enum GenTarget
       "5.1"

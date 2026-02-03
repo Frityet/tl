@@ -1,4 +1,5 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 local reader = require("teal.block")
 
 
@@ -7,6 +8,10 @@ local errors = require("teal.errors")
 
 
 local types = require("teal.types")
+
+
+
+
 
 
 
@@ -488,9 +493,10 @@ local function parse_variable_list(state, block, as_expression)
       if not as_expression and (var_block.kind == "identifier" or var_block.kind == "variable") then
          local ident_block = var_block
          if var_block.kind == "variable" then
-            ident_block = { y = var_block.y, x = var_block.x, tk = var_block.tk, kind = "identifier" }
+            var_node = new_node(state, var_block, "identifier")
+         else
+            var_node = new_node(state, var_block)
          end
-         var_node = new_node(state, ident_block)
          if ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
             local annotation = ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
             if is_attribute[annotation.tk] and var_node then
@@ -768,7 +774,7 @@ parse_expression = function(state, block)
       node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E1])
       if not node.e1 then
 
-         local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+         local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
          node.e1 = new_node(state, dummy_block, "error_node")
       end
       if op_info.arity == 2 then
@@ -809,7 +815,7 @@ parse_expression = function(state, block)
          else
             node.e2 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E2])
             if not node.e2 then
-               local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+               local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
                node.e2 = new_node(state, dummy_block, "error_node")
             end
          end
@@ -819,7 +825,7 @@ parse_expression = function(state, block)
 
    local node = new_node(state, block)
    if not node then
-      local dummy_block = { kind = nil, y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      local dummy_block = { kind = "error_block", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
       node = new_node(state, dummy_block, "error_node")
    end
 
@@ -1040,7 +1046,8 @@ parse_fns.local_declaration = function(state, block)
       next_child = reader.BLOCK_INDEXES.LOCAL_DECLARATION.EXPS
    else
       local dummy_block = { kind = "tuple_type", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
-      dummy_block[reader.BLOCK_INDEXES.TUPLE_TYPE.FIRST] = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      local typelist = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      dummy_block[reader.BLOCK_INDEXES.TUPLE_TYPE.FIRST] = typelist
       local dt
       dt = parse_type_list(state, dummy_block, "decltuple")
       node.decltuple = dt
@@ -1516,6 +1523,7 @@ parse_fns.record_function = function(state, block)
    end
    if not block[reader.BLOCK_INDEXES.RECORD_FUNCTION.NAME] then
       local gblock = {
+         f = block.f,
          kind = "global_function",
          tk = block.tk,
          y = block.y,
@@ -2175,6 +2183,26 @@ parse_base_type = function(state, block)
       end
       end_at(u, block)
       return u
+   elseif block.kind == "string" then
+      local decl = new_type(state, block, "string")
+      decl.literal = block_string_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "number" then
+      local decl = new_type(state, block, "number")
+      decl.literal = block_number_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "integer" then
+      local decl = new_type(state, block, "integer")
+      decl.literal = block_number_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "boolean" then
+      local decl = new_type(state, block, "boolean")
+      decl.literal = block.tk == "true"
+      end_at(decl, block)
+      return decl
    elseif block.kind == "nil" then
       return new_type(state, block, "nil")
    end
@@ -2219,7 +2247,13 @@ parse_type = function(state, block)
 end
 
 parse_type_list = function(state, block, mode)
-   local t, list = new_tuple(state, block or { y = 1, x = 1, tk = "", kind = "typelist" })
+   local list_block
+   if block then
+      list_block = block
+   else
+      list_block = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+   end
+   local t, list = new_tuple(state, list_block)
    local maybe_method = false
    local min_arity = 0
 

@@ -3,6 +3,13 @@ STABLE_TL ?= $(LUA) ./tl
 NEW_TL ?= $(LUA) ./tl
 TLGENFLAGS = --check --gen-target=5.1
 BUSTED = busted --suppress-pending
+STRIPDIR = _temp/strip
+STRICT_NIL_PRAGMA = --\#pragma strict_nil off
+PACKAGE_PATH := $(shell $(LUA) -e 'print(package.path)')
+STRICT_NIL_SUPPORTED := $(shell printf '%s\n' '--#pragma strict_nil off' 'local x: integer = nil' | $(STABLE_TL) check - >/dev/null 2>&1 && echo yes)
+STRIP_STRICT_NIL := $(if $(STRICT_NIL_SUPPORTED),0,1)
+STRIP_TL_PATH = $(STRIPDIR)/?.tl;$(STRIPDIR)/?/init.tl;$(STRIPDIR)/?.d.tl;./?.tl;./?/init.tl;./?.d.tl;$(PACKAGE_PATH)
+STRIPPED_SOURCES = $(addprefix $(STRIPDIR)/,$(SOURCES))
 
 PRECOMPILED = teal/precompiled/default_env.lua
 SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
@@ -40,15 +47,27 @@ all: selfbuild suite
 # Multi-stage bootstrap process:
 ########################################
 
-precompiler.lua: precompiler.tl
-	$(STABLE_TL) gen $< -o $@ || { rm $@; exit 1; }
+$(STRIPDIR)/%.tl: %.tl FORCE
+	@mkdir -p `dirname $@`
+	@if [ "$(STRIP_STRICT_NIL)" = "1" ]; then \
+		sed '/^[[:space:]]*$(STRICT_NIL_PRAGMA)[[:space:]]*$$/d' $< > $@; \
+	else \
+		cp $< $@; \
+	fi
+
+FORCE:
+
+strip_sources: $(STRIPPED_SOURCES) $(STRIPDIR)/precompiler.tl
+
+precompiler.lua: strip_sources $(STRIPDIR)/precompiler.tl
+	TL_PATH="$(STRIP_TL_PATH)" $(STABLE_TL) gen $(STRIPDIR)/precompiler.tl -o $@ || { rm $@; exit 1; }
 
 teal/precompiled/default_env.lua: precompiler.lua teal/default/prelude.d.tl teal/default/stdlib.d.tl tl.tl
 	$(LUA) precompiler.lua > teal/precompiled/default_env.lua || { rm $@; exit 1; }
 
-_temp/%.lua.1: %.tl $(PRECOMPILED)
+_temp/%.lua.1: %.tl $(PRECOMPILED) $(STRIPDIR)/%.tl
 	@mkdir -p `dirname $@`
-	@echo $< >> _temp/list1
+	@echo $(STRIPDIR)/$< >> _temp/list1
 	@echo $@ >> _temp/list1.1
 	@touch $@
 
@@ -59,7 +78,7 @@ _temp/%.lua.2: %.tl _temp/%.lua.1 $(PRECOMPILED)
 
 build1: $(addprefix _temp/,$(addsuffix .lua.1,$(basename $(SOURCES))))
 	if [ -e _temp/list1 ]; \
-	then $(STABLE_TL) gen $(TLGENFLAGS) --root . --custom-ext .lua.1 --output-dir _temp `cat _temp/list1` || { rm `cat _temp/list1.1`; exit 1; };\
+	then TL_PATH="$(STRIP_TL_PATH)" $(STABLE_TL) gen $(TLGENFLAGS) --root $(STRIPDIR) --custom-ext .lua.1 --output-dir _temp `cat _temp/list1` || { rm `cat _temp/list1.1`; exit 1; };\
 	fi
 
 replace1:
@@ -123,4 +142,4 @@ clean: cleantemp
 ########################################
 
 .PHONY: all build1 replace1 build2 selfbuild \
-	suite bin binary cov revert cov cleantemp clean
+	suite bin binary cov revert cov cleantemp clean strip_sources FORCE

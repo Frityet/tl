@@ -1,4 +1,5 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local check = require("teal.check.check")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local check = require("teal.check.check")
 local environment = require("teal.environment")
 local errors = require("teal.errors")
 local lexer = require("teal.lexer")
@@ -18,6 +19,7 @@ local type_reporter = require("teal.type_reporter")
 
 
 local v2 = { CheckOptions = {}, EnvOptions = {} }
+
 
 
 
@@ -98,6 +100,7 @@ v2.typecodes = type_reporter.typecodes
 local function env_from_check_options(opts)
    return environment.new(opts and {
       feat_arity = opts.feat_arity,
+      feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
    })

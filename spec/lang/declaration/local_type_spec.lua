@@ -60,7 +60,7 @@ describe("local type", function()
 
       assert.same({}, result.syntax_errors)
       assert.same({
-         { y = 10, x = 52, filename = "main.tl", msg = "in record field: something: got integer, expected string" },
+         { y = 10, x = 52, filename = "main.tl", msg = "in record field: something: got integer 123, expected string" },
       }, result.type_errors)
    end)
 

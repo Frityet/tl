@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local errors = require("teal.errors")
 local type Error = errors.Error
 
@@ -5,6 +6,9 @@ local types = require("teal.types")
 local type Type = types.Type
 local type GenericType = types.GenericType
 local type StringType = types.StringType
+local type NumberType = types.NumberType
+local type IntegerType = types.IntegerType
+local type BooleanType = types.BooleanType
 local type BooleanContextType = types.BooleanContextType
 local type TypeDeclType = types.TypeDeclType
 local type NominalType = types.NominalType
@@ -57,6 +61,91 @@ local type TypeRelations = relations.TypeRelations
 
 local function compare_true(_: TypeChecker, _: Type, _: Type): boolean, {Error}
    return true
+end
+
+local function compare_string_literals(_ck: TypeChecker, a: StringType, b: StringType): boolean, {Error}
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_string_literals(_ck: TypeChecker, a: StringType, b: StringType): boolean, {Error}
+   return a.literal == b.literal
+end
+
+local function compare_number_literals(_ck: TypeChecker, a: NumberType, b: NumberType): boolean, {Error}
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_number_literals(_ck: TypeChecker, a: NumberType, b: NumberType): boolean, {Error}
+   return a.literal == b.literal
+end
+
+local function compare_integer_literals(_ck: TypeChecker, a: IntegerType, b: IntegerType): boolean, {Error}
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_integer_literals(_ck: TypeChecker, a: IntegerType, b: IntegerType): boolean, {Error}
+   return a.literal == b.literal
+end
+
+local function compare_boolean_literals(_ck: TypeChecker, a: BooleanType, b: BooleanType): boolean, {Error}
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_boolean_literals(_ck: TypeChecker, a: BooleanType, b: BooleanType): boolean, {Error}
+   return a.literal == b.literal
+end
+
+local function nil_subtype(ck: TypeChecker, _a: Type, b: Type): boolean, {Error}
+   if not ck.feat_strict_nil then
+      return true
+   end
+
+   local function accepts_nil(t: Type): boolean
+      if t is TypeDeclType then
+         return accepts_nil(t.def)
+      elseif t is NominalType then
+         local resolved = ck:resolve_nominal(t)
+         return resolved and accepts_nil(resolved)
+      elseif t is UnionType then
+         for _, ut in ipairs(t.types) do
+            if accepts_nil(ut) then
+               return true
+            end
+         end
+         return false
+      end
+
+      return t.typename == "nil"
+         or t.typename == "any"
+         or t.typename == "unknown"
+         or t.typename == "boolean_context"
+   end
+
+   return accepts_nil(b)
 end
 
 local function compare_map(ck: TypeChecker, ak: Type, bk: Type, av: Type, bv: Type, no_hack?: boolean): boolean, {Error}
@@ -366,6 +455,26 @@ relations.eqtype_relations = {
          return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
       end,
    },
+   ["string"] = {
+      ["string"] = function(_ck: TypeChecker, a: StringType, b: StringType): boolean, {Error}
+         return same_string_literals(_ck, a, b)
+      end,
+   },
+   ["number"] = {
+      ["number"] = function(_ck: TypeChecker, a: NumberType, b: NumberType): boolean, {Error}
+         return same_number_literals(_ck, a, b)
+      end,
+   },
+   ["integer"] = {
+      ["integer"] = function(_ck: TypeChecker, a: IntegerType, b: IntegerType): boolean, {Error}
+         return same_integer_literals(_ck, a, b)
+      end,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck: TypeChecker, a: BooleanType, b: BooleanType): boolean, {Error}
+         return same_boolean_literals(_ck, a, b)
+      end,
+   },
    ["emptytable"] = emptytable_relations,
    ["tupletable"] = {
       ["tupletable"] = function(ck: TypeChecker, a: TupleTableType, b: TupleTableType): boolean, {Error}
@@ -505,9 +614,8 @@ local function subtype_nominal(ck: TypeChecker, a: Type, b: Type): boolean, {Err
 end
 
 local function subtype_array(ck: TypeChecker, a: ArrayLikeType, b: ArrayLikeType): boolean, {Error}
-   if (not a.elements) or (not ck:is_a(a.elements, b.elements)) then
-      return false
-   end
+   local elements_ok = a.elements and ck:is_a(a.elements, b.elements)
+
    if a.consttypes and #a.consttypes > 1 then
       -- constant array, check elements (useful for array of enums)
       for _, e in ipairs(a.consttypes) do
@@ -515,13 +623,18 @@ local function subtype_array(ck: TypeChecker, a: ArrayLikeType, b: ArrayLikeType
             return false, { types.error("%s is not a member of %s", e, b.elements) }
          end
       end
+      return true
+   end
+
+   if not elements_ok then
+      return false
    end
    return true
 end
 
 relations.subtype_relations = {
    ["nil"] = {
-      ["*"] = compare_true,
+      ["*"] = nil_subtype,
    },
    ["tuple"] = {
       ["tuple"] = function(ck: TypeChecker, a: TupleType, b: TupleType): boolean, {Error}  -- ∀ a[i] ∈ a, b[i] ∈ b. a[i] <: b[i]
@@ -633,6 +746,9 @@ relations.subtype_relations = {
       ["string"] = compare_true,
    },
    ["string"] = {
+      ["string"] = function(_ck: TypeChecker, a: StringType, b: StringType): boolean, {Error}
+         return compare_string_literals(_ck, a, b)
+      end,
       ["enum"] = function(_ck: TypeChecker, a: StringType, b: EnumType): boolean, {Error}
          if not a.literal then
             return false, { types.error("%s is not a %s", a, b) }
@@ -645,8 +761,21 @@ relations.subtype_relations = {
          return false, { types.error("%s is not a member of %s", a, b) }
       end,
    },
+   ["number"] = {
+      ["number"] = function(_ck: TypeChecker, a: NumberType, b: NumberType): boolean, {Error}
+         return compare_number_literals(_ck, a, b)
+      end,
+   },
    ["integer"] = {
+      ["integer"] = function(_ck: TypeChecker, a: IntegerType, b: IntegerType): boolean, {Error}
+         return compare_integer_literals(_ck, a, b)
+      end,
       ["number"] = compare_true,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck: TypeChecker, a: BooleanType, b: BooleanType): boolean, {Error}
+         return compare_boolean_literals(_ck, a, b)
+      end,
    },
    ["interface"] = {
       ["interface"] = function(ck: TypeChecker, a: InterfaceType, b: InterfaceType): boolean, {Error}

@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local check = require("teal.check.check")
 
 local parser = require("teal.parser")

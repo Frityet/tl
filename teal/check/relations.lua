@@ -1,7 +1,11 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local errors = require("teal.errors")
 
 
 local types = require("teal.types")
+
+
+
 
 
 
@@ -57,6 +61,91 @@ local relations = {}
 
 local function compare_true(_, _, _)
    return true
+end
+
+local function compare_string_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_string_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_number_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_number_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_integer_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_integer_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_boolean_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_boolean_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function nil_subtype(ck, _a, b)
+   if not ck.feat_strict_nil then
+      return true
+   end
+
+   local function accepts_nil(t)
+      if t.typename == "typedecl" then
+         return accepts_nil(t.def)
+      elseif t.typename == "nominal" then
+         local resolved = ck:resolve_nominal(t)
+         return resolved and accepts_nil(resolved)
+      elseif t.typename == "union" then
+         for _, ut in ipairs(t.types) do
+            if accepts_nil(ut) then
+               return true
+            end
+         end
+         return false
+      end
+
+      return t.typename == "nil" or
+      t.typename == "any" or
+      t.typename == "unknown" or
+      t.typename == "boolean_context"
+   end
+
+   return accepts_nil(b)
 end
 
 local function compare_map(ck, ak, bk, av, bv, no_hack)
@@ -366,6 +455,26 @@ relations.eqtype_relations = {
          return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
       end,
    },
+   ["string"] = {
+      ["string"] = function(_ck, a, b)
+         return same_string_literals(_ck, a, b)
+      end,
+   },
+   ["number"] = {
+      ["number"] = function(_ck, a, b)
+         return same_number_literals(_ck, a, b)
+      end,
+   },
+   ["integer"] = {
+      ["integer"] = function(_ck, a, b)
+         return same_integer_literals(_ck, a, b)
+      end,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck, a, b)
+         return same_boolean_literals(_ck, a, b)
+      end,
+   },
    ["emptytable"] = emptytable_relations,
    ["tupletable"] = {
       ["tupletable"] = function(ck, a, b)
@@ -505,9 +614,8 @@ local function subtype_nominal(ck, a, b)
 end
 
 local function subtype_array(ck, a, b)
-   if (not a.elements) or (not ck:is_a(a.elements, b.elements)) then
-      return false
-   end
+   local elements_ok = a.elements and ck:is_a(a.elements, b.elements)
+
    if a.consttypes and #a.consttypes > 1 then
 
       for _, e in ipairs(a.consttypes) do
@@ -515,13 +623,18 @@ local function subtype_array(ck, a, b)
             return false, { types.error("%s is not a member of %s", e, b.elements) }
          end
       end
+      return true
+   end
+
+   if not elements_ok then
+      return false
    end
    return true
 end
 
 relations.subtype_relations = {
    ["nil"] = {
-      ["*"] = compare_true,
+      ["*"] = nil_subtype,
    },
    ["tuple"] = {
       ["tuple"] = function(ck, a, b)
@@ -633,6 +746,9 @@ relations.subtype_relations = {
       ["string"] = compare_true,
    },
    ["string"] = {
+      ["string"] = function(_ck, a, b)
+         return compare_string_literals(_ck, a, b)
+      end,
       ["enum"] = function(_ck, a, b)
          if not a.literal then
             return false, { types.error("%s is not a %s", a, b) }
@@ -645,8 +761,21 @@ relations.subtype_relations = {
          return false, { types.error("%s is not a member of %s", a, b) }
       end,
    },
+   ["number"] = {
+      ["number"] = function(_ck, a, b)
+         return compare_number_literals(_ck, a, b)
+      end,
+   },
    ["integer"] = {
+      ["integer"] = function(_ck, a, b)
+         return compare_integer_literals(_ck, a, b)
+      end,
       ["number"] = compare_true,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck, a, b)
+         return compare_boolean_literals(_ck, a, b)
+      end,
    },
    ["interface"] = {
       ["interface"] = function(ck, a, b)

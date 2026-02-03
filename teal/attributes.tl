@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local record attributes
    enum Attribute
       "const"

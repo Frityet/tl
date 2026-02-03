@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 --------------------------------------------------------------------------------
 -- Compiler debugging
 --------------------------------------------------------------------------------
@@ -68,7 +69,7 @@ do
    end
 
    local curr_indent = 0
-   local curr_entry: DebugEntry = nil
+   local curr_entry: DebugEntry | nil = nil
    local curr_y = 1
 
    local function loc(y: integer, x: integer): string
@@ -77,13 +78,14 @@ do
 
    function tldebug.indent_push(mark: string, y: integer, x: integer, fmt: string, ...: any)
       if curr_entry then
-         if curr_entry.y and (curr_entry.y > curr_y) then
+         local entry = curr_entry as DebugEntry
+         if entry.y and (entry.y > curr_y) then
             tldebug.write("\n")
-            curr_y = curr_entry.y
+            curr_y = entry.y
          end
-         tldebug.write(("   "):rep(curr_indent) .. curr_entry.mark .. " " ..
-                         loc(curr_entry.y, curr_entry.x) .. " " ..
-                         curr_entry.msg .. "\n")
+         tldebug.write(("   "):rep(curr_indent) .. entry.mark .. " " ..
+                         loc(entry.y, entry.x) .. " " ..
+                         entry.msg .. "\n")
          tldebug.flush()
          curr_entry = nil
          curr_indent = curr_indent + 1
@@ -98,7 +100,8 @@ do
 
    function tldebug.indent_pop(mark: string, single: string, y: integer, x: integer, fmt?: string, ...: any)
       if curr_entry then
-         local msg = curr_entry.msg
+         local entry = curr_entry as DebugEntry
+         local msg = entry.msg
          if fmt then
             msg = fmt:format(...)
          end
@@ -120,5 +123,3 @@ do
 end
 
 return tldebug
-
-

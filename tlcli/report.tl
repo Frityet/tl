@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type TlConfig = require("tlcli.tlconfig")
 local teal = require("teal.init")
 local common = require("tlcli.common")

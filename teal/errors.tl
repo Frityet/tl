@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local record errors
    interface Where
       f: string

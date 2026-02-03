@@ -28,6 +28,21 @@ describe("or", function()
       { msg = "cannot use operator 'or' for types R2 and R1" }
    }))
 
+   it("drops nil from nilable values when using or", util.check([[
+      --#pragma strict_nil on
+      local type Nilable<T> = T | nil
+      local function divide(a: number, b: number): Nilable<number>
+         if b == 0 then
+            return nil
+         else
+            return a / b
+         end
+      end
+      local x: Nilable<number> = divide(10, 0)
+      local y = x or 4
+      local z: number = y
+   ]]))
+
    it("or works with subtypes", util.check([[
       local record R1
          x: string

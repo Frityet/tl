@@ -10,6 +10,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -70,6 +71,7 @@ local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
+local drop_constant_values = types.drop_constant_values
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
 local is_valid_union = types.is_valid_union
@@ -139,6 +141,7 @@ local has_var_been_used = variables.has_var_been_used
 
 
 local context = { Context = {} }
+
 
 
 
@@ -392,6 +395,7 @@ do
 
 
 
+
    local resolve_typevar_fns = {
       ["typevar"] = function(s, t)
          local rt = s.ctx:find_var_type(t.typevar)
@@ -399,7 +403,9 @@ do
             return t, false
          end
 
-         rt = drop_constant_value(rt)
+         if not s.keep_literals[t.typevar] then
+            rt = drop_constant_value(rt)
+         end
          s.resolved[t.typevar] = rt
 
          return rt, true
@@ -419,10 +425,11 @@ do
       return copy
    end
 
-   function Context:resolve_typevars(t)
+   function Context:resolve_typevars(t, keep_literals)
       local state = {
          ctx = self,
          resolved = {},
+         keep_literals = keep_literals or {},
       }
       local rt, errs = types.map(state, t, resolve_typevar_fns)
       if errs then
@@ -465,12 +472,12 @@ do
       return var
    end
 
-   function Context:add_var(node, name, t, attribute, specialization)
+   function Context:add_var(node, name, t, attribute, specialization, keep_literal)
       if self.feat_lax and node and is_unknown(t) and (name ~= "self" and name ~= "...") and not specialization then
          self.errs:add_unknown(node, name)
       end
-      if not attribute then
-         t = drop_constant_value(t)
+      if not attribute and not keep_literal then
+         t = drop_constant_values(t)
       end
 
       if self.collector and node then
@@ -557,9 +564,16 @@ do
       assert(#g.typeargs == #typeargs)
 
       for i, ta in ipairs(g.typeargs) do
-         self:add_var(nil, ta.typearg, typeargs[i])
+
+         self:add_var(nil, ta.typearg, typeargs[i], nil, nil, true)
       end
-      local applied, errs = self:resolve_typevars(g)
+      local keep_literals = {}
+      if typeargs then
+         for _, ta in ipairs(g.typeargs) do
+            keep_literals[ta.typearg] = true
+         end
+      end
+      local applied, errs = self:resolve_typevars(g, keep_literals)
       if errs then
          self.errs:add_prefixing(w, errs, "")
          return nil
@@ -1002,7 +1016,7 @@ end
 
 function Context:arraytype_from_tuple(w, tupletype)
 
-   local element_type = unite(w, tupletype.types, true)
+   local element_type = unite(w, tupletype.types, true, not self.feat_strict_nil)
    local valid = (not (element_type.typename == "union")) and true or is_valid_union(element_type)
    if valid then
       return a_type(w, "array", { elements = element_type })
@@ -1775,7 +1789,7 @@ function Context:add_global(node, varname, valtype, is_assigning)
       return nil
    end
 
-   local var = { t = valtype, attribute = is_const and "const" or nil }
+   local var = { t = valtype, attribute = is_const and node.attribute or nil }
    self.st[1].vars[varname] = var
 
    return var
@@ -1941,7 +1955,10 @@ function Context:type_check_index(anode, bnode, a, b)
    return self.errs:invalid_at(bnode, errm, erra, errb)
 end
 
-function Context:expand_type(w, old, new)
+function Context:expand_type(w, old, new, flatten_constants)
+   if flatten_constants == nil then
+      flatten_constants = true
+   end
    if not old or old.typename == "nil" then
       return new
    end
@@ -1973,7 +1990,7 @@ function Context:expand_type(w, old, new)
       return a_type(w, "map", { keys = keys, values = values })
    end
 
-   return unite(w, { old, new }, true)
+   return unite(w, { old, new }, flatten_constants, not self.feat_strict_nil)
 end
 
 function Context:find_record_to_extend(exp)
@@ -2396,6 +2413,7 @@ do
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t).def
 
       self.feat_arity = set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
       self.feat_lax = not not filename:match("%.lua$")
 
       if self.feat_lax then

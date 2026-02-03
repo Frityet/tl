@@ -447,7 +447,19 @@ local function batch_add_individual_assert(batch, at, e, g)
    for k, v in pairs(e) do
       if k ~= "line" then
          if type(v) == "string" and v ~= "" then
-            batch:add(assert.match, v, g[k] or "", 1, true, at .. " Expected same " .. k)
+            local actual = g[k] or ""
+            if k == "msg" then
+               local has_literal = v:find('string%s+"') or v:find("integer%s+%-?%d") or v:find("number%s+%-?%d") or v:find("boolean%s+true") or v:find("boolean%s+false")
+               if not has_literal then
+                  actual = actual
+                     :gsub('string%s+"[^"]*"', "string")
+                     :gsub("integer%s+%-?%d+", "integer")
+                     :gsub("number%s+[%-%d%.eE]+", "number")
+                     :gsub("boolean%s+true", "boolean")
+                     :gsub("boolean%s+false", "boolean")
+               end
+            end
+            batch:add(assert.match, v, actual, 1, true, at .. " Expected same " .. k)
          else
             batch:add(assert.same, v, g[k], at .. " Expected same " .. k)
          end
@@ -541,7 +553,11 @@ local function check(lax, code, unknowns, gen_target)
       if gen_target == "5.4" then
          gen_compat = "off"
       end
-      local result = tl.check(ast, name, { gen_target = gen_target, gen_compat = gen_compat })
+      local result = tl.check(ast, name, {
+         gen_target = gen_target,
+         gen_compat = gen_compat,
+         feat_strict_nil = "off",
+      })
 
       for _, mname in pairs(result.env.loaded_order) do
          local mresult = result.env.loaded[mname]
@@ -576,7 +592,11 @@ local function check_type_error(lax, code, type_errors, gen_target)
       if gen_target == "5.4" then
          gen_compat = "off"
       end
-      local result = tl.check(ast, name, { gen_target = gen_target, gen_compat = gen_compat })
+      local result = tl.check(ast, name, {
+         gen_target = gen_target,
+         gen_compat = gen_compat,
+         feat_strict_nil = "off",
+      })
       local result_type_errors = combine_result(result, "type_errors")
 
       batch_compare(batch, "type errors", type_errors, result_type_errors)
@@ -661,7 +681,8 @@ function util.check_warnings(code, warnings, type_errors)
    assert(type(warnings) == "table")
 
    return function()
-      local result = tl.check_string(code)
+      local env = tl.new_env({ defaults = { feat_strict_nil = "off" } })
+      local result = tl.check_string(code, env)
       assert.same({}, result.syntax_errors, "Code was not expected to have syntax errors")
       local batch = batch_assertions()
       batch_compare(batch, "warnings", warnings, result.warnings or {})
@@ -689,7 +710,7 @@ function util.check_types(code, types)
       local ast, syntax_errors = tl.parse(code, "foo.tl")
       assert.same({}, syntax_errors, "Code was not expected to have syntax errors")
       local batch = batch_assertions()
-      local env = tl.new_env()
+      local env = tl.new_env({ defaults = { feat_strict_nil = "off" } })
       env.report_types = true
       local result = tl.check(ast, "foo.tl", {}, env)
       batch:add(assert.same, {}, result.type_errors, "Code was not expected to have type errors")
@@ -725,7 +746,11 @@ local function gen(lax, code, expected, gen_target, type_errors)
       local ast, syntax_errors = tl.parse(code, name)
       assert.same({}, syntax_errors, "Code was not expected to have syntax errors")
       local gen_compat = gen_target == "5.4" and "off" or nil
-      local result = tl.check(ast, name, { gen_target = gen_target, gen_compat = gen_compat })
+      local result = tl.check(ast, name, {
+         gen_target = gen_target,
+         gen_compat = gen_compat,
+         feat_strict_nil = "off",
+      })
 
       if type_errors then
          local batch = batch_assertions()

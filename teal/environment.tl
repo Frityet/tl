@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 
 local VERSION = "0.25.0-alpha+dev"
 
@@ -48,6 +49,7 @@ local record environment
 
    record EnvOptions
       feat_arity: Feat
+      feat_strict_nil: Feat
       gen_compat: GenCompat
       gen_target: GenTarget
       run_internal_compiler_checks: boolean

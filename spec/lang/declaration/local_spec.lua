@@ -149,7 +149,7 @@ describe("local", function()
                "green"
                "blue"
             end
-            local x <total>: {Color:string} = {
+            local x <total>: {Color:string | nil} = {
                ["red"] = "hello"
             }
          ]], {

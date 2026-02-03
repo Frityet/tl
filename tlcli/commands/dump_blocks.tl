@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local common = require("tlcli.common")
 local perf = require("tlcli.perf")
 local reader = require("teal.reader")
@@ -11,6 +12,11 @@ local type Error = require("teal.errors").Error
 local type BlockIndexMap = {string: integer}
 local type BlockChildren = {integer: Block | nil}
 local empty_index_map: BlockIndexMap = {}
+
+local record JsonEntry
+   key: string
+   val: function()
+end
 
 local record Input
    code: string
@@ -111,7 +117,7 @@ local function write_json_block(fd: FILE, bl: Block, indent: string)
    local next_indent = indent .. "  "
    fd:write(indent, "{\n")
 
-   local entries = {}
+   local entries: {JsonEntry} = {}
    table.insert(entries, { key = "\"kind\"", val = function() write_json_string(fd, bl.kind) end })
    table.insert(entries, { key = "\"tk\"", val = function() write_json_string(fd, bl.tk) end })
    if bl.f then

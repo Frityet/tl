@@ -1,6 +1,7 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local debug = _tl_compat and _tl_compat.debug or debug; local io = _tl_compat and _tl_compat.io or io; local math = _tl_compat and _tl_compat.math or math; local _tl_math_maxinteger = math.maxinteger or math.pow(2, 53); local os = _tl_compat and _tl_compat.os or os; local string = _tl_compat and _tl_compat.string or string
 
 
+
 local tldebug = {}
 
 
@@ -77,13 +78,14 @@ do
 
    function tldebug.indent_push(mark, y, x, fmt, ...)
       if curr_entry then
-         if curr_entry.y and (curr_entry.y > curr_y) then
+         local entry = curr_entry
+         if entry.y and (entry.y > curr_y) then
             tldebug.write("\n")
-            curr_y = curr_entry.y
+            curr_y = entry.y
          end
-         tldebug.write(("   "):rep(curr_indent) .. curr_entry.mark .. " " ..
-         loc(curr_entry.y, curr_entry.x) .. " " ..
-         curr_entry.msg .. "\n")
+         tldebug.write(("   "):rep(curr_indent) .. entry.mark .. " " ..
+         loc(entry.y, entry.x) .. " " ..
+         entry.msg .. "\n")
          tldebug.flush()
          curr_entry = nil
          curr_indent = curr_indent + 1
@@ -98,7 +100,8 @@ do
 
    function tldebug.indent_pop(mark, single, y, x, fmt, ...)
       if curr_entry then
-         local msg = curr_entry.msg
+         local entry = curr_entry
+         local msg = entry.msg
          if fmt then
             msg = fmt:format(...)
          end

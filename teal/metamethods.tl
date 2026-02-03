@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local record metamethods
    unop_to_metamethod: {string:string}
    binop_to_metamethod: {string:string}

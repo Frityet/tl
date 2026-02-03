@@ -1,4 +1,5 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
 local TL_DEBUG_FACTS = tldebug.TL_DEBUG_FACTS
 
 
@@ -219,8 +220,8 @@ function facts.facts_not(w, f1)
 end
 
 
-local function unite_types(w, t1, t2)
-   return unite(w, { t2, t1 })
+local function unite_types(ck, w, t1, t2)
+   return unite(w, { t2, t1 }, nil, not ck.feat_strict_nil)
 end
 
 
@@ -236,7 +237,7 @@ local function intersect_types(ck, w, t1, t2)
          end
       end
       if #out > 0 then
-         return unite(w, out)
+         return unite(w, out, nil, not ck.feat_strict_nil)
       end
    end
    if ck:is_a(t1, t2) then
@@ -287,7 +288,7 @@ local function subtract_types(ck, w, t1, t2)
       return a_type(w, "nil", {})
    end
 
-   return unite(w, typs)
+   return unite(w, typs, nil, not ck.feat_strict_nil)
 end
 
 local eval_not
@@ -349,12 +350,12 @@ eval_not = function(ck, f)
    end
 end
 
-or_facts = function(_ck, fs1, fs2)
+or_facts = function(ck, fs1, fs2)
    local ret = {}
 
    for var, f in pairs(fs2) do
       if fs1[var] then
-         local united = unite_types(f.w, f.typ, fs1[var].typ)
+         local united = unite_types(ck, f.w, f.typ, fs1[var].typ)
          if fs1[var].fact == "is" and f.fact == "is" then
             ret[var] = IsFact({ var = var, typ = united, w = f.w })
          else

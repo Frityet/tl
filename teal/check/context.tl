@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type attributes = require("teal.attributes")
 local type Attribute = attributes.Attribute
 
@@ -70,6 +71,7 @@ local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
+local drop_constant_values = types.drop_constant_values
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
 local is_valid_union = types.is_valid_union
@@ -160,10 +162,11 @@ local record context
 
       feat_arity: boolean
       feat_lax: boolean
+      feat_strict_nil: boolean
 
       type_check_funcall: function(self, node: Node, a: Type, b: TupleType, argdelta?: integer): InvalidOrTupleType
 
-      expand_type: function(self, w: Where, old: Type, new: Type): Type
+      expand_type: function(self, w: Where, old: Type, new: Type, flatten_constants?: boolean): Type
       resolve_self: function(self, Type, resolve_interface?: boolean): Type, {Error}
 
       get_rets: function(TupleType): TupleType
@@ -390,6 +393,7 @@ do
    local record ResolveTypeVarState
       ctx: Context
       resolved: {string:Type}
+      keep_literals: {string:boolean}
    end
 
    local resolve_typevar_fns: types.TypeFunctionMap<ResolveTypeVarState> = {
@@ -399,7 +403,9 @@ do
             return t, false
          end
 
-         rt = drop_constant_value(rt)
+         if not s.keep_literals[t.typevar] then
+            rt = drop_constant_value(rt)
+         end
          s.resolved[t.typevar] = rt
 
          return rt, true
@@ -419,10 +425,11 @@ do
       return copy
    end
 
-   function Context:resolve_typevars(t: Type): FirstClassType, {Error}
+   function Context:resolve_typevars(t: Type, keep_literals?: {string:boolean}): FirstClassType, {Error}
       local state: ResolveTypeVarState = {
          ctx = self,
          resolved = {},
+         keep_literals = keep_literals or {},
       }
       local rt, errs = types.map(state, t, resolve_typevar_fns)
       if errs then
@@ -465,12 +472,12 @@ do
       return var
    end
 
-   function Context:add_var(node: Node, name: string, t: Type, attribute?: Attribute, specialization?: Specialization): Variable
+   function Context:add_var(node: Node, name: string, t: Type, attribute?: Attribute, specialization?: Specialization, keep_literal?: boolean): Variable
       if self.feat_lax and node and is_unknown(t) and (name ~= "self" and name ~= "...") and not specialization then
          self.errs:add_unknown(node, name)
       end
-      if not attribute then
-         t = drop_constant_value(t)
+      if not attribute and not keep_literal then
+         t = drop_constant_values(t)
       end
 
       if self.collector and node then
@@ -557,9 +564,16 @@ do
       assert(#g.typeargs == #typeargs)
 
       for i, ta in ipairs(g.typeargs) do
-         self:add_var(nil, ta.typearg, typeargs[i])
+         -- keep literal values from type arguments
+         self:add_var(nil, ta.typearg, typeargs[i], nil, nil, true)
       end
-      local applied, errs = self:resolve_typevars(g)
+      local keep_literals: {string:boolean} = {}
+      if typeargs then
+         for _, ta in ipairs(g.typeargs) do
+            keep_literals[ta.typearg] = true
+         end
+      end
+      local applied, errs = self:resolve_typevars(g, keep_literals)
       if errs then
          self.errs:add_prefixing(w, errs, "")
          return nil
@@ -1002,7 +1016,7 @@ end
 
 function Context:arraytype_from_tuple(w: Where, tupletype: TupleTableType): ArrayType, {Error}
    -- first just try a basic union
-   local element_type = unite(w, tupletype.types, true)
+   local element_type = unite(w, tupletype.types, true, not self.feat_strict_nil)
    local valid = (not element_type is UnionType) and true or is_valid_union(element_type)
    if valid then
       return an_array(w, element_type)
@@ -1775,7 +1789,7 @@ function Context:add_global(node: Node, varname: string, valtype: Type, is_assig
       return nil
    end
 
-   local var = { t = valtype, attribute = is_const and "const" or nil }
+   local var = { t = valtype, attribute = is_const and node.attribute or nil }
    self.st[1].vars[varname] = var
 
    return var
@@ -1941,7 +1955,10 @@ function Context:type_check_index(anode: Node, bnode: Node, a: Type, b: Type): T
    return self.errs:invalid_at(bnode, errm, erra, errb)
 end
 
-function Context:expand_type(w: Where, old: Type, new: Type): Type
+function Context:expand_type(w: Where, old: Type, new: Type, flatten_constants?: boolean): Type
+   if flatten_constants == nil then
+      flatten_constants = true
+   end
    if not old or old is NilType then
       return new
    end
@@ -1973,7 +1990,7 @@ function Context:expand_type(w: Where, old: Type, new: Type): Type
       return a_map(w, keys, values)
    end
 
-   return unite(w, { old, new }, true)
+   return unite(w, { old, new }, flatten_constants, not self.feat_strict_nil)
 end
 
 function Context:find_record_to_extend(exp: Node): Type, Variable, string
@@ -2396,6 +2413,7 @@ do
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t as TypeDeclType).def
 
       self.feat_arity = set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
       self.feat_lax = not not filename:match("%.lua$")
 
       if self.feat_lax then

@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local record common
    sep: string
 end

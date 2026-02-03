@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type Args = require("tlcli.args")
 local type TlConfig = require("tlcli.tlconfig")
 local common = require("tlcli.common")

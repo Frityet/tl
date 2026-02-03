@@ -1,6 +1,7 @@
 -- module teal.api.v2 from teal/api/v2.lua
 package.preload["teal.api.v2"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local check = require("teal.check.check")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local check = require("teal.check.check")
 local environment = require("teal.environment")
 local errors = require("teal.errors")
 local lexer = require("teal.lexer")
@@ -20,6 +21,7 @@ local type_reporter = require("teal.type_reporter")
 
 
 local v2 = { CheckOptions = {}, EnvOptions = {} }
+
 
 
 
@@ -100,6 +102,7 @@ v2.typecodes = type_reporter.typecodes
 local function env_from_check_options(opts)
    return environment.new(opts and {
       feat_arity = opts.feat_arity,
+      feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
    })
@@ -261,6 +264,7 @@ end
 -- module teal.ast from teal/ast.lua
 package.preload["teal.ast"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 local reader = require("teal.block")
 
 
@@ -269,6 +273,10 @@ local errors = require("teal.errors")
 
 
 local types = require("teal.types")
+
+
+
+
 
 
 
@@ -750,9 +758,10 @@ local function parse_variable_list(state, block, as_expression)
       if not as_expression and (var_block.kind == "identifier" or var_block.kind == "variable") then
          local ident_block = var_block
          if var_block.kind == "variable" then
-            ident_block = { y = var_block.y, x = var_block.x, tk = var_block.tk, kind = "identifier" }
+            var_node = new_node(state, var_block, "identifier")
+         else
+            var_node = new_node(state, var_block)
          end
-         var_node = new_node(state, ident_block)
          if ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
             local annotation = ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
             if is_attribute[annotation.tk] and var_node then
@@ -1030,7 +1039,7 @@ parse_expression = function(state, block)
       node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E1])
       if not node.e1 then
 
-         local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+         local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
          node.e1 = new_node(state, dummy_block, "error_node")
       end
       if op_info.arity == 2 then
@@ -1071,7 +1080,7 @@ parse_expression = function(state, block)
          else
             node.e2 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E2])
             if not node.e2 then
-               local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+               local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
                node.e2 = new_node(state, dummy_block, "error_node")
             end
          end
@@ -1081,7 +1090,7 @@ parse_expression = function(state, block)
 
    local node = new_node(state, block)
    if not node then
-      local dummy_block = { kind = nil, y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      local dummy_block = { kind = "error_block", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
       node = new_node(state, dummy_block, "error_node")
    end
 
@@ -1302,7 +1311,8 @@ parse_fns.local_declaration = function(state, block)
       next_child = reader.BLOCK_INDEXES.LOCAL_DECLARATION.EXPS
    else
       local dummy_block = { kind = "tuple_type", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
-      dummy_block[reader.BLOCK_INDEXES.TUPLE_TYPE.FIRST] = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      local typelist = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+      dummy_block[reader.BLOCK_INDEXES.TUPLE_TYPE.FIRST] = typelist
       local dt
       dt = parse_type_list(state, dummy_block, "decltuple")
       node.decltuple = dt
@@ -1778,6 +1788,7 @@ parse_fns.record_function = function(state, block)
    end
    if not block[reader.BLOCK_INDEXES.RECORD_FUNCTION.NAME] then
       local gblock = {
+         f = block.f,
          kind = "global_function",
          tk = block.tk,
          y = block.y,
@@ -2437,6 +2448,26 @@ parse_base_type = function(state, block)
       end
       end_at(u, block)
       return u
+   elseif block.kind == "string" then
+      local decl = new_type(state, block, "string")
+      decl.literal = block_string_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "number" then
+      local decl = new_type(state, block, "number")
+      decl.literal = block_number_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "integer" then
+      local decl = new_type(state, block, "integer")
+      decl.literal = block_number_value(block)
+      end_at(decl, block)
+      return decl
+   elseif block.kind == "boolean" then
+      local decl = new_type(state, block, "boolean")
+      decl.literal = block.tk == "true"
+      end_at(decl, block)
+      return decl
    elseif block.kind == "nil" then
       return new_type(state, block, "nil")
    end
@@ -2481,7 +2512,13 @@ parse_type = function(state, block)
 end
 
 parse_type_list = function(state, block, mode)
-   local t, list = new_tuple(state, block or { y = 1, x = 1, tk = "", kind = "typelist" })
+   local list_block
+   if block then
+      list_block = block
+   else
+      list_block = { kind = "typelist", y = 1, x = 1, tk = "", yend = 1, xend = 1 }
+   end
+   local t, list = new_tuple(state, list_block)
    local maybe_method = false
    local min_arity = 0
 
@@ -2672,10 +2709,13 @@ end
 
 -- module teal.block from teal/block.lua
 package.preload["teal.block"] = function(...)
+
 local errors = require("teal.errors")
 
 
 local block = { Block = { ExpectedContext = {} } }
+
+
 
 
 
@@ -3081,7 +3121,9 @@ local BLOCK_KINDS = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
+   ["record"] = true,
    ["interface"] = true,
+   ["enum"] = true,
    ["pragma"] = true,
    ["error_block"] = true,
    ["userdata"] = true,
@@ -3143,7 +3185,8 @@ end
 
 -- module teal.check.check from teal/check/check.lua
 package.preload["teal.check.check"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local context = require("teal.check.context")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert
+local context = require("teal.check.context")
 local Context = context.Context
 
 local tldebug = require("teal.debug")
@@ -3315,6 +3358,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -3375,6 +3419,7 @@ local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
+local drop_constant_values = types.drop_constant_values
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
 local is_valid_union = types.is_valid_union
@@ -3444,6 +3489,7 @@ local has_var_been_used = variables.has_var_been_used
 
 
 local context = { Context = {} }
+
 
 
 
@@ -3697,6 +3743,7 @@ do
 
 
 
+
    local resolve_typevar_fns = {
       ["typevar"] = function(s, t)
          local rt = s.ctx:find_var_type(t.typevar)
@@ -3704,7 +3751,9 @@ do
             return t, false
          end
 
-         rt = drop_constant_value(rt)
+         if not s.keep_literals[t.typevar] then
+            rt = drop_constant_value(rt)
+         end
          s.resolved[t.typevar] = rt
 
          return rt, true
@@ -3724,10 +3773,11 @@ do
       return copy
    end
 
-   function Context:resolve_typevars(t)
+   function Context:resolve_typevars(t, keep_literals)
       local state = {
          ctx = self,
          resolved = {},
+         keep_literals = keep_literals or {},
       }
       local rt, errs = types.map(state, t, resolve_typevar_fns)
       if errs then
@@ -3770,12 +3820,12 @@ do
       return var
    end
 
-   function Context:add_var(node, name, t, attribute, specialization)
+   function Context:add_var(node, name, t, attribute, specialization, keep_literal)
       if self.feat_lax and node and is_unknown(t) and (name ~= "self" and name ~= "...") and not specialization then
          self.errs:add_unknown(node, name)
       end
-      if not attribute then
-         t = drop_constant_value(t)
+      if not attribute and not keep_literal then
+         t = drop_constant_values(t)
       end
 
       if self.collector and node then
@@ -3862,9 +3912,16 @@ do
       assert(#g.typeargs == #typeargs)
 
       for i, ta in ipairs(g.typeargs) do
-         self:add_var(nil, ta.typearg, typeargs[i])
+
+         self:add_var(nil, ta.typearg, typeargs[i], nil, nil, true)
       end
-      local applied, errs = self:resolve_typevars(g)
+      local keep_literals = {}
+      if typeargs then
+         for _, ta in ipairs(g.typeargs) do
+            keep_literals[ta.typearg] = true
+         end
+      end
+      local applied, errs = self:resolve_typevars(g, keep_literals)
       if errs then
          self.errs:add_prefixing(w, errs, "")
          return nil
@@ -4307,7 +4364,7 @@ end
 
 function Context:arraytype_from_tuple(w, tupletype)
 
-   local element_type = unite(w, tupletype.types, true)
+   local element_type = unite(w, tupletype.types, true, not self.feat_strict_nil)
    local valid = (not (element_type.typename == "union")) and true or is_valid_union(element_type)
    if valid then
       return a_type(w, "array", { elements = element_type })
@@ -5080,7 +5137,7 @@ function Context:add_global(node, varname, valtype, is_assigning)
       return nil
    end
 
-   local var = { t = valtype, attribute = is_const and "const" or nil }
+   local var = { t = valtype, attribute = is_const and node.attribute or nil }
    self.st[1].vars[varname] = var
 
    return var
@@ -5246,7 +5303,10 @@ function Context:type_check_index(anode, bnode, a, b)
    return self.errs:invalid_at(bnode, errm, erra, errb)
 end
 
-function Context:expand_type(w, old, new)
+function Context:expand_type(w, old, new, flatten_constants)
+   if flatten_constants == nil then
+      flatten_constants = true
+   end
    if not old or old.typename == "nil" then
       return new
    end
@@ -5278,7 +5338,7 @@ function Context:expand_type(w, old, new)
       return a_type(w, "map", { keys = keys, values = values })
    end
 
-   return unite(w, { old, new }, true)
+   return unite(w, { old, new }, flatten_constants, not self.feat_strict_nil)
 end
 
 function Context:find_record_to_extend(exp)
@@ -5701,6 +5761,7 @@ do
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t).def
 
       self.feat_arity = set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
       self.feat_lax = not not filename:match("%.lua$")
 
       if self.feat_lax then
@@ -5736,10 +5797,14 @@ end
 
 -- module teal.check.relations from teal/check/relations.lua
 package.preload["teal.check.relations"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local errors = require("teal.errors")
 
 
 local types = require("teal.types")
+
+
+
 
 
 
@@ -5795,6 +5860,91 @@ local relations = {}
 
 local function compare_true(_, _, _)
    return true
+end
+
+local function compare_string_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_string_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_number_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_number_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_integer_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_integer_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function compare_boolean_literals(_ck, a, b)
+   if b.literal == nil then
+      return true
+   end
+   if a.literal == nil then
+      return false
+   end
+   return a.literal == b.literal
+end
+
+local function same_boolean_literals(_ck, a, b)
+   return a.literal == b.literal
+end
+
+local function nil_subtype(ck, _a, b)
+   if not ck.feat_strict_nil then
+      return true
+   end
+
+   local function accepts_nil(t)
+      if t.typename == "typedecl" then
+         return accepts_nil(t.def)
+      elseif t.typename == "nominal" then
+         local resolved = ck:resolve_nominal(t)
+         return resolved and accepts_nil(resolved)
+      elseif t.typename == "union" then
+         for _, ut in ipairs(t.types) do
+            if accepts_nil(ut) then
+               return true
+            end
+         end
+         return false
+      end
+
+      return t.typename == "nil" or
+      t.typename == "any" or
+      t.typename == "unknown" or
+      t.typename == "boolean_context"
+   end
+
+   return accepts_nil(b)
 end
 
 local function compare_map(ck, ak, bk, av, bv, no_hack)
@@ -5882,7 +6032,7 @@ local function subtype_record(ck, a, b)
 
    if a.is_userdata ~= b.is_userdata then
       return false, { errors.new(a.is_userdata and "userdata is not a record" or
-"record is not a userdata"), }
+      "record is not a userdata"), }
    end
 
    local errs = {}
@@ -6104,6 +6254,26 @@ relations.eqtype_relations = {
          return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
       end,
    },
+   ["string"] = {
+      ["string"] = function(_ck, a, b)
+         return same_string_literals(_ck, a, b)
+      end,
+   },
+   ["number"] = {
+      ["number"] = function(_ck, a, b)
+         return same_number_literals(_ck, a, b)
+      end,
+   },
+   ["integer"] = {
+      ["integer"] = function(_ck, a, b)
+         return same_integer_literals(_ck, a, b)
+      end,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck, a, b)
+         return same_boolean_literals(_ck, a, b)
+      end,
+   },
    ["emptytable"] = emptytable_relations,
    ["tupletable"] = {
       ["tupletable"] = function(ck, a, b)
@@ -6243,9 +6413,8 @@ local function subtype_nominal(ck, a, b)
 end
 
 local function subtype_array(ck, a, b)
-   if (not a.elements) or (not ck:is_a(a.elements, b.elements)) then
-      return false
-   end
+   local elements_ok = a.elements and ck:is_a(a.elements, b.elements)
+
    if a.consttypes and #a.consttypes > 1 then
 
       for _, e in ipairs(a.consttypes) do
@@ -6253,13 +6422,18 @@ local function subtype_array(ck, a, b)
             return false, { types.error("%s is not a member of %s", e, b.elements) }
          end
       end
+      return true
+   end
+
+   if not elements_ok then
+      return false
    end
    return true
 end
 
 relations.subtype_relations = {
    ["nil"] = {
-      ["*"] = compare_true,
+      ["*"] = nil_subtype,
    },
    ["tuple"] = {
       ["tuple"] = function(ck, a, b)
@@ -6371,6 +6545,9 @@ relations.subtype_relations = {
       ["string"] = compare_true,
    },
    ["string"] = {
+      ["string"] = function(_ck, a, b)
+         return compare_string_literals(_ck, a, b)
+      end,
       ["enum"] = function(_ck, a, b)
          if not a.literal then
             return false, { types.error("%s is not a %s", a, b) }
@@ -6383,8 +6560,21 @@ relations.subtype_relations = {
          return false, { types.error("%s is not a member of %s", a, b) }
       end,
    },
+   ["number"] = {
+      ["number"] = function(_ck, a, b)
+         return compare_number_literals(_ck, a, b)
+      end,
+   },
    ["integer"] = {
+      ["integer"] = function(_ck, a, b)
+         return compare_integer_literals(_ck, a, b)
+      end,
       ["number"] = compare_true,
+   },
+   ["boolean"] = {
+      ["boolean"] = function(_ck, a, b)
+         return compare_boolean_literals(_ck, a, b)
+      end,
    },
    ["interface"] = {
       ["interface"] = function(ck, a, b)
@@ -6405,8 +6595,8 @@ relations.subtype_relations = {
          for i = 1, math.min(#a.types, #b.types) do
             if not ck:is_a(a.types[i], b.types[i]) then
                return false, { types.error("in tuple entry " ..
-tostring(i) .. ": got %s, expected %s",
-a.types[i], b.types[i]), }
+               tostring(i) .. ": got %s, expected %s",
+               a.types[i], b.types[i]), }
             end
          end
          if #a.types > #b.types then
@@ -6737,7 +6927,8 @@ end
 
 -- module teal.check.require_file from teal/check/require_file.lua
 package.preload["teal.check.require_file"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local input = require("teal.input")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local input = require("teal.input")
 
 
 
@@ -6876,6 +7067,7 @@ end
 -- module teal.check.special_functions from teal/check/special_functions.lua
 package.preload["teal.check.special_functions"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 
 
 
@@ -7635,6 +7827,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -7673,10 +7866,12 @@ local types = require("teal.types")
 
 
 
+
 local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
+local drop_constant_values = types.drop_constant_values
 local edit_type = types.edit_type
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
@@ -7976,6 +8171,107 @@ local function resolve_typedecl(t)
    end
 end
 
+local function type_has_explicit_nil(self, t, seen)
+   seen = seen or {}
+   if seen[t] then
+      return false
+   end
+   seen[t] = true
+
+   if t.typename == "nil" then
+      return true
+   elseif t.typename == "typedecl" then
+      return type_has_explicit_nil(self, t.def, seen)
+   elseif t.typename == "nominal" then
+      local resolved = self:resolve_nominal(t)
+      if resolved then
+         return type_has_explicit_nil(self, resolved, seen)
+      end
+      return false
+   elseif t.typename == "union" then
+      for _, ut in ipairs(t.types) do
+         if type_has_explicit_nil(self, ut, seen) then
+            return true
+         end
+      end
+      return false
+   elseif t.typename == "tuple" then
+      for _, ut in ipairs(t.tuple) do
+         if type_has_explicit_nil(self, ut, seen) then
+            return true
+         end
+      end
+      return false
+   elseif t.typename == "typevar" and t.constraint then
+      return type_has_explicit_nil(self, t.constraint, seen)
+   elseif t.typename == "typearg" and t.constraint then
+      return type_has_explicit_nil(self, t.constraint, seen)
+   elseif t.typename == "self" and t.display_type then
+      return type_has_explicit_nil(self, t.display_type, seen)
+   elseif t.typename == "generic" then
+      return type_has_explicit_nil(self, t.t, seen)
+   elseif t.typename == "poly" then
+      for _, pt in ipairs(t.types) do
+         if type_has_explicit_nil(self, pt, seen) then
+            return true
+         end
+      end
+      return false
+   end
+
+   return false
+end
+
+local function truthy_type(self, t, seen)
+   seen = seen or {}
+   if seen[t] then
+      return t, false
+   end
+   seen[t] = true
+
+   if t.typename == "typedecl" then
+      return truthy_type(self, t.def, seen)
+   elseif t.typename == "nominal" then
+      local resolved = self:resolve_nominal(t)
+      if resolved then
+         return truthy_type(self, resolved, seen)
+      end
+      return t, false
+   elseif t.typename == "typevar" and t.constraint then
+      return truthy_type(self, t.constraint, seen)
+   elseif t.typename == "union" then
+      local out = {}
+      local has_falsy = false
+      for _, ut in ipairs(t.types) do
+         local tt, hf = truthy_type(self, ut, seen)
+         if tt then
+            table.insert(out, tt)
+         end
+         if hf then
+            has_falsy = true
+         end
+      end
+      if #out == 0 then
+         return nil, true
+      end
+      return unite(t, out, nil, not self.feat_strict_nil), has_falsy
+   elseif t.typename == "nil" then
+      return nil, true
+   elseif t.typename == "boolean" then
+      if t.literal == nil then
+         local tt = a_type(t, "boolean", {})
+         tt.literal = true
+         return tt, true
+      elseif t.literal == false then
+         return nil, true
+      else
+         return t, false
+      end
+   else
+      return t, false
+   end
+end
+
 
 local NONE = a_type({ f = "@none", x = -1, y = -1 }, "none", {})
 
@@ -8198,7 +8494,8 @@ local function infer_table_literal(self, node, children)
 
       self.errs:check_redeclared_key(node[i], nil, seen_keys, key)
 
-      local uvtype = untuple(child.vtype)
+      local raw_vtype = untuple(child.vtype)
+      local uvtype = raw_vtype
       if ck then
          is_record = true
          if not fields then
@@ -8221,25 +8518,30 @@ local function infer_table_literal(self, node, children)
             if i == #children and cv.typename == "tuple" then
 
                for _, c in ipairs(cv.tuple) do
-                  elements = self:expand_type(node, elements, c)
-                  typs[last_array_idx] = untuple(c)
+                  local ct = c
+                  local elem = drop_constant_values(ct)
+                  elements = self:expand_type(node, elements, elem)
+                  typs[last_array_idx] = untuple(ct)
                   last_array_idx = last_array_idx + 1
                end
             else
                typs[last_array_idx] = uvtype
                last_array_idx = last_array_idx + 1
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
             end
          else
             if not is_positive_int(n) then
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
                is_not_tuple = true
             elseif n then
                typs[n] = uvtype
                if n > largest_array_idx then
                   largest_array_idx = n
                end
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
             end
          end
 
@@ -8251,8 +8553,8 @@ local function infer_table_literal(self, node, children)
          end
       else
          is_map = true
-         keys = self:expand_type(node, keys, drop_constant_value(cktype))
-         values = self:expand_type(node, values, uvtype)
+         keys = self:expand_type(node, keys, cktype, false)
+         values = self:expand_type(node, values, uvtype, false)
       end
    end
 
@@ -8289,7 +8591,7 @@ local function infer_table_literal(self, node, children)
          local last_t
          for _, current_t in pairs(typs) do
             if last_t then
-               if not self:same_type(last_t, current_t) then
+               if not self:same_type(drop_constant_values(last_t), drop_constant_values(current_t)) then
                   pure_array = false
                   break
                end
@@ -8486,7 +8788,8 @@ visit_node.cbs = {
             end
 
             assert(var)
-            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing")
+            local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
+            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing", keep_literal)
             if var.elide_type then
                self.errs:add_warning("hint", node, "hint: consider using 'local type' instead")
             end
@@ -8819,10 +9122,14 @@ visit_node.cbs = {
                self:resolve_nominal(module_type)
                self.module_type = module_type.resolved
             else
-               self.module_type = drop_constant_value(module_type)
+               self.module_type = drop_constant_values(module_type)
             end
 
             expected = self:infer_at(node, got)
+            local dropped = drop_constant_values(expected)
+            if dropped.typename == "tuple" then
+               expected = dropped
+            end
             self.st[2].vars["@return"] = { t = expected }
          end
          local expected_t = expected.tuple
@@ -9624,7 +9931,7 @@ visit_node.cbs = {
             elseif expected and expected.typename == "union" then
 
                self.fdb:set_or(node, node.e1, node.e2)
-               local u = unite(node, { ra, rb }, true)
+               local u = unite(node, { ra, rb }, true, not self.feat_strict_nil)
                if u.typename == "union" then
                   ok, err = is_valid_union(u)
                   if not ok then
@@ -9636,7 +9943,22 @@ visit_node.cbs = {
 
             elseif ra.typename == "union" and not (rb.typename == "union") and self:is_a(rb, ra) then
 
-               t = drop_constant_value(ra)
+               if self.feat_strict_nil then
+                  local truthy_ra, has_falsy = truthy_type(self, ua)
+                  if has_falsy then
+                     if not truthy_ra then
+                        t = drop_constant_value(ub)
+                     elseif self:is_a(rb, truthy_ra) then
+                        t = drop_constant_value(truthy_ra)
+                     else
+                        t = drop_constant_value(ra)
+                     end
+                  else
+                     t = drop_constant_value(ra)
+                  end
+               else
+                  t = drop_constant_value(ra)
+               end
 
             elseif rb.typename == "union" and not (ra.typename == "union") and self:is_a(ra, rb) then
 
@@ -9645,12 +9967,16 @@ visit_node.cbs = {
             else
 
 
-               local a_ge_b = self:is_a(ub, ua)
-               local b_ge_a = self:is_a(ua, ub)
+               local ua_cmp = drop_constant_value(ua)
+               local ub_cmp = drop_constant_value(ub)
+               local a_ge_b = self:is_a(ub_cmp, ua_cmp)
+               local b_ge_a = self:is_a(ua_cmp, ub_cmp)
                self.fdb:set_or(node, node.e1, node.e2)
 
 
-               local is_same = self:same_type(ra, rb)
+               local ra_cmp = self:to_structural(ua_cmp)
+               local rb_cmp = self:to_structural(ub_cmp)
+               local is_same = self:same_type(ra_cmp, rb_cmp)
 
 
                local ambiguous = a_ge_b and b_ge_a and not is_same
@@ -9690,6 +10016,8 @@ visit_node.cbs = {
          end
 
          if node.op.op == "==" or node.op.op == "~=" then
+            local ua_cmp = drop_constant_value(ua)
+            local ub_cmp = drop_constant_value(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
                self:check_metamethod(node, binop_to_metamethod[node.op.op], ra, rb, ua, ub)
             end
@@ -9700,18 +10028,31 @@ visit_node.cbs = {
                end
             elseif ra.typename == "tupletable" and rb.typename == "tupletable" and #ra.types ~= #rb.types then
                return self.errs:invalid_at(node, "tuples are not the same size")
-            elseif self:is_a(ub, ua) or ua.typename == "typevar" then
-               if node.op.op == "==" and node.e1.kind == "variable" then
-                  self.fdb:set_eq(node, node.e1.tk, ub)
-               end
-            elseif self:is_a(ua, ub) or ub.typename == "typevar" then
-               if node.op.op == "==" and node.e2.kind == "variable" then
-                  self.fdb:set_eq(node, node.e2.tk, ua)
-               end
-            elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
-               return a_type(node, "unknown", {})
             else
-               return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
+               local nil_in_a = type_has_explicit_nil(self, ua_cmp)
+               local nil_in_b = type_has_explicit_nil(self, ub_cmp)
+               if nil_in_a or nil_in_b then
+
+                  if node.op.op == "==" then
+                     if node.e1.kind == "variable" and ua.typename == "invalid" then
+                        self.fdb:set_eq(node, node.e1.tk, ub)
+                     elseif node.e2.kind == "variable" and ub.typename == "invalid" then
+                        self.fdb:set_eq(node, node.e2.tk, ua)
+                     end
+                  end
+               elseif self:is_a(ub_cmp, ua_cmp) or ua.typename == "typevar" then
+                  if node.op.op == "==" and node.e1.kind == "variable" then
+                     self.fdb:set_eq(node, node.e1.tk, ub)
+                  end
+               elseif self:is_a(ua_cmp, ub_cmp) or ub.typename == "typevar" then
+                  if node.op.op == "==" and node.e2.kind == "variable" then
+                     self.fdb:set_eq(node, node.e2.tk, ua)
+                  end
+               elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
+                  return a_type(node, "unknown", {})
+               else
+                  return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
+               end
             end
 
             return a_type(node, "boolean", {})
@@ -9719,7 +10060,7 @@ visit_node.cbs = {
 
          if node.op.arity == 1 and unop_types[node.op.op] then
             if ra.typename == "union" then
-               ra = unite(node, ra.types, true)
+               ra = unite(node, ra.types, true, not self.feat_strict_nil)
             end
 
             local types_op = unop_types[node.op.op]
@@ -9779,10 +10120,10 @@ visit_node.cbs = {
             end
 
             if ra.typename == "union" then
-               ra = unite(ra, ra.types, true)
+               ra = unite(ra, ra.types, true, not self.feat_strict_nil)
             end
             if rb.typename == "union" then
-               rb = unite(rb, rb.types, true)
+               rb = unite(rb, rb.types, true, not self.feat_strict_nil)
             end
 
             local types_op = binop_types[node.op.op]
@@ -9822,7 +10163,7 @@ visit_node.cbs = {
 
             if not t then
                if node.op.op == "or" then
-                  local u = unite(node, { ua, ub })
+                  local u = unite(node, { ua, ub }, nil, not self.feat_strict_nil)
                   if u.typename == "union" and is_valid_union(u) then
                      self.errs:add_warning("hint", node, "if a union type was intended, consider declaring it explicitly")
                   end
@@ -9863,6 +10204,11 @@ visit_node.cbs = {
 
          if t.typename == "typedecl" then
             t = typedecl_to_nominal(node, node.tk, t, t)
+         end
+
+         local truthy, has_falsy = truthy_type(self, t)
+         if has_falsy and truthy then
+            self.fdb:set_is(node, node.tk, truthy)
          end
 
          return t
@@ -9925,6 +10271,16 @@ visit_node.cbs = {
             else
                return self.errs:invalid_at(node, "invalid value for pragma 'arity': " .. node.pvalue)
             end
+         elseif node.pkey == "strict_nil" then
+            if node.pvalue == "on" then
+               self.feat_strict_nil = true
+               self.env.opts.feat_strict_nil = "on"
+            elseif node.pvalue == "off" then
+               self.feat_strict_nil = false
+               self.env.opts.feat_strict_nil = "off"
+            else
+               return self.errs:invalid_at(node, "invalid value for pragma 'strict_nil': " .. node.pvalue)
+            end
          else
             return self.errs:invalid_at(node, "invalid pragma: " .. node.pkey)
          end
@@ -9947,7 +10303,15 @@ visit_node.cbs["do"] = visit_node.cbs["break"]
 
 local function after_literal(self, node)
    self.fdb:set_truthy(node)
-   return a_type(node, node.kind, {})
+   local t = a_type(node, node.kind, {})
+   if node.kind == "number" then
+      (t).literal = node.constnum
+   elseif node.kind == "integer" then
+      (t).literal = node.constnum
+   elseif node.kind == "boolean" then
+      (t).literal = node.tk == "true"
+   end
+   return t
 end
 
 visit_node.cbs["string"] = {
@@ -10267,6 +10631,7 @@ package.preload["teal.debug"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local debug = _tl_compat and _tl_compat.debug or debug; local io = _tl_compat and _tl_compat.io or io; local math = _tl_compat and _tl_compat.math or math; local _tl_math_maxinteger = math.maxinteger or math.pow(2, 53); local os = _tl_compat and _tl_compat.os or os; local string = _tl_compat and _tl_compat.string or string
 
 
+
 local tldebug = {}
 
 
@@ -10343,13 +10708,14 @@ do
 
    function tldebug.indent_push(mark, y, x, fmt, ...)
       if curr_entry then
-         if curr_entry.y and (curr_entry.y > curr_y) then
+         local entry = curr_entry
+         if entry.y and (entry.y > curr_y) then
             tldebug.write("\n")
-            curr_y = curr_entry.y
+            curr_y = entry.y
          end
-         tldebug.write(("   "):rep(curr_indent) .. curr_entry.mark .. " " ..
-         loc(curr_entry.y, curr_entry.x) .. " " ..
-         curr_entry.msg .. "\n")
+         tldebug.write(("   "):rep(curr_indent) .. entry.mark .. " " ..
+         loc(entry.y, entry.x) .. " " ..
+         entry.msg .. "\n")
          tldebug.flush()
          curr_entry = nil
          curr_indent = curr_indent + 1
@@ -10364,7 +10730,8 @@ do
 
    function tldebug.indent_pop(mark, single, y, x, fmt, ...)
       if curr_entry then
-         local msg = curr_entry.msg
+         local entry = curr_entry
+         local msg = entry.msg
          if fmt then
             msg = fmt:format(...)
          end
@@ -10392,6 +10759,7 @@ end
 -- module teal.environment from teal/environment.lua
 package.preload["teal.environment"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 local VERSION = "0.25.0-alpha+dev"
 
 local tldebug = require("teal.debug")
@@ -10424,6 +10792,7 @@ local a_type = types.a_type
 
 
 local environment = { EnvOptions = {}, Env = {}, Result = {} }
+
 
 
 
@@ -10698,7 +11067,8 @@ end
 
 -- module teal.errors from teal/errors.lua
 package.preload["teal.errors"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local errors = { Error = {}, ErrorContext = {} }
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
+local errors = { Error = {}, ErrorContext = {} }
 
 
 
@@ -10801,7 +11171,8 @@ end
 
 -- module teal.facts from teal/facts.lua
 package.preload["teal.facts"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
 local TL_DEBUG_FACTS = tldebug.TL_DEBUG_FACTS
 
 
@@ -11022,8 +11393,8 @@ function facts.facts_not(w, f1)
 end
 
 
-local function unite_types(w, t1, t2)
-   return unite(w, { t2, t1 })
+local function unite_types(ck, w, t1, t2)
+   return unite(w, { t2, t1 }, nil, not ck.feat_strict_nil)
 end
 
 
@@ -11039,7 +11410,7 @@ local function intersect_types(ck, w, t1, t2)
          end
       end
       if #out > 0 then
-         return unite(w, out)
+         return unite(w, out, nil, not ck.feat_strict_nil)
       end
    end
    if ck:is_a(t1, t2) then
@@ -11090,7 +11461,7 @@ local function subtract_types(ck, w, t1, t2)
       return a_type(w, "nil", {})
    end
 
-   return unite(w, typs)
+   return unite(w, typs, nil, not ck.feat_strict_nil)
 end
 
 local eval_not
@@ -11152,12 +11523,12 @@ eval_not = function(ck, f)
    end
 end
 
-or_facts = function(_ck, fs1, fs2)
+or_facts = function(ck, fs1, fs2)
    local ret = {}
 
    for var, f in pairs(fs2) do
       if fs1[var] then
-         local united = unite_types(f.w, f.typ, fs1[var].typ)
+         local united = unite_types(ck, f.w, f.typ, fs1[var].typ)
          if fs1[var].fact == "is" and f.fact == "is" then
             ret[var] = IsFact({ var = var, typ = united, w = f.w })
          else
@@ -11315,7 +11686,8 @@ end
 
 -- module teal.gen.lua_compat from teal/gen/lua_compat.lua
 package.preload["teal.gen.lua_compat"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")
@@ -11540,6 +11912,7 @@ end
 -- module teal.gen.lua_generator from teal/gen/lua_generator.lua
 package.preload["teal.gen.lua_generator"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8
+
 
 
 
@@ -12377,6 +12750,7 @@ end
 
 -- module teal.gen.targets from teal/gen/targets.lua
 package.preload["teal.gen.targets"] = function(...)
+
 local targets = {}
 
 
@@ -12403,6 +12777,7 @@ end
 
 -- module teal.input from teal/input.lua
 package.preload["teal.input"] = function(...)
+
 local check = require("teal.check.check")
 
 local parser = require("teal.parser")
@@ -12440,6 +12815,7 @@ end
 -- module teal.lexer from teal/lexer.lua
 package.preload["teal.lexer"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 
 
 local errors = require("teal.errors")
@@ -13275,7 +13651,8 @@ end
 
 -- module teal.loader from teal/loader.lua
 package.preload["teal.loader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local environment = require("teal.environment")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local environment = require("teal.environment")
 local lua_generator = require("teal.gen.lua_generator")
 local package_loader = require("teal.package_loader")
 local input = require("teal.input")
@@ -13347,7 +13724,8 @@ end
 
 -- module teal.macro_eval from teal/macro_eval.lua
 package.preload["teal.macro_eval"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local rawlen = _tl_compat and _tl_compat.rawlen or rawlen; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8; local xpcall = _tl_compat and _tl_compat.xpcall or xpcall; local block = require("teal.block")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local rawlen = _tl_compat and _tl_compat.rawlen or rawlen; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8; local xpcall = _tl_compat and _tl_compat.xpcall or xpcall
+local block = require("teal.block")
 
 
 local BLOCK_INDEXES = block.BLOCK_INDEXES
@@ -13771,6 +14149,7 @@ package.preload["teal.macroexps"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs
 
 
+
 local parser = require("teal.parser")
 local Node = parser.Node
 
@@ -13911,6 +14290,7 @@ end
 
 -- module teal.metamethods from teal/metamethods.lua
 package.preload["teal.metamethods"] = function(...)
+
 local metamethods = {}
 
 
@@ -13955,7 +14335,8 @@ end
 
 -- module teal.package_loader from teal/package_loader.lua
 package.preload["teal.package_loader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local load = _tl_compat and _tl_compat.load or load; local package = _tl_compat and _tl_compat.package or package; local table = _tl_compat and _tl_compat.table or table; local environment = require("teal.environment")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local load = _tl_compat and _tl_compat.load or load; local package = _tl_compat and _tl_compat.package or package; local table = _tl_compat and _tl_compat.table or table
+local environment = require("teal.environment")
 
 
 local require_file = require("teal.check.require_file")
@@ -14011,7 +14392,8 @@ end
 
 -- module teal.parser from teal/parser.lua
 package.preload["teal.parser"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local ast = require("teal.ast")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
+local ast = require("teal.ast")
 local reader = require("teal.reader")
 
 
@@ -14163,7 +14545,8 @@ end
 
 -- module teal.reader from teal/reader.lua
 package.preload["teal.reader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local errors = require("teal.errors")
 
 
 
@@ -14345,6 +14728,11 @@ local read_record_function
 local read_enum_body
 local read_record_body
 local read_type_body_fns
+local type_body_kinds = {
+   ["interface"] = "interface",
+   ["record"] = "record",
+   ["enum"] = "enum",
+}
 
 local function fail(ps, i, msg)
    if not ps.tokens[i] then
@@ -14394,9 +14782,25 @@ local node_mt = {
    end,
 }
 
+local function token_kind_to_block_kind(kind)
+   if kind == "identifier" then
+      return "identifier"
+   elseif kind == "string" then
+      return "string"
+   elseif kind == "number" then
+      return "number"
+   elseif kind == "integer" then
+      return "integer"
+   elseif kind == "..." then
+      return "..."
+   end
+   assert(false, "unsupported token kind for block: " .. kind)
+   return "error_block"
+end
+
 local function new_block(ps, i, kind)
    local t = ps.tokens[i]
-   return setmetatable({ f = ps.filename, y = t.y, x = t.x, tk = t.tk, kind = kind or (t.kind) }, node_mt)
+   return setmetatable({ f = ps.filename, y = t.y, x = t.x, tk = t.tk, kind = kind }, node_mt)
 end
 
 
@@ -14477,7 +14881,8 @@ end
 
 local function verify_kind(ps, i, kind, node_kind)
    if ps.tokens[i].kind == kind then
-      return i + 1, new_block(ps, i, node_kind)
+      local bkind = node_kind or token_kind_to_block_kind(kind)
+      return i + 1, new_block(ps, i, bkind)
    end
    return fail(ps, i, "syntax error, expected " .. kind)
 end
@@ -14526,9 +14931,8 @@ local function read_type_body(ps, i, istart, node, tn)
 end
 
 local function skip_type_body(ps, i)
-   local tn = ps.tokens[i].tk
+   local tn = assert(type_body_kinds[ps.tokens[i].tk], ps.tokens[i].tk .. " has no parse body function")
    i = i + 1
-   assert(read_type_body_fns[tn], tn .. " has no parse body function")
    local ii, tt = read_type_body(ps, i, i - 1, {}, tn)
    return ii, not not tt
 end
@@ -14702,7 +15106,8 @@ local function read_macro_args_with_sig(ps, i, sig)
             while read_type_body_fns[tk0] and ps2.tokens[curr_i + 1] and ps2.tokens[curr_i + 1].kind == "identifier" do
                local ni
                local lt
-               ni, lt = read_nested_type(ps2, curr_i, tk0)
+               local tn = assert(type_body_kinds[tk0])
+               ni, lt = read_nested_type(ps2, curr_i, tn)
                if not sblk then sblk = new_block(ps2, curr_i, "statements") end
                table.insert(sblk, lt)
                curr_i = ni
@@ -14736,6 +15141,23 @@ local function read_macro_args_with_sig(ps, i, sig)
                local errs2 = {}
                local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
                if #errs2 == 0 and block_ast then
+                  if can_split_on_comma and
+                     block_ast.kind == "statements" and
+                     #block_ast == 1 then
+
+                     local st = block_ast[1]
+                     if st and st.kind == "local_declaration" then
+                        local vlist = st[BLOCK_INDEXES.LOCAL_DECLARATION.VARS]
+                        local decl = st[BLOCK_INDEXES.LOCAL_DECLARATION.DECL]
+                        if vlist and decl then
+                           local typelist = decl[BLOCK_INDEXES.TUPLE_TYPE.FIRST] or decl[BLOCK_INDEXES.TUPLE_TYPE.SECOND]
+                           local ntypes = typelist and #typelist or 0
+                           if ntypes > #vlist then
+                              return false
+                           end
+                        end
+                     end
+                  end
                   best_j = jend
                   best_block = block_ast
                   return true
@@ -14966,7 +15388,8 @@ local function read_simple_type_or_nominal(ps, i)
          return fail(ps, i, "syntax error, expected identifier")
       end
       typ = new_nominal(ps, i - 1, nil)
-      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
+      local mv = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
+      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = mv
    else
       typ = new_nominal(ps, i, tk)
       i = i + 1
@@ -15007,6 +15430,17 @@ local function read_base_type(ps, i)
    local tk = ps.tokens[i].tk
    if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i].tk == "$") then
       return read_simple_type_or_nominal(ps, i)
+   elseif ps.tokens[i].kind == "string" then
+      local node = new_block(ps, i, "string")
+      local _, is_long = unquote(tk)
+      node.is_longstring = is_long
+      return i + 1, node
+   elseif ps.tokens[i].kind == "number" or ps.tokens[i].kind == "integer" then
+      local node
+      i, node = verify_kind(ps, i, ps.tokens[i].kind)
+      return i, node
+   elseif tk == "true" or tk == "false" then
+      return verify_kind(ps, i, "keyword", "boolean")
    elseif tk == "{" then
       local istart = i
       i = i + 1
@@ -15405,7 +15839,8 @@ do
 
 
    local function failstore(ps, tkop, e1)
-      return { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+      local paren = { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+      return paren
    end
 
    local function P(ps, i)
@@ -15432,7 +15867,8 @@ do
          if not ident then
             return i
          end
-         e1 = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         e1 = macro_var
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
@@ -15441,7 +15877,8 @@ do
             fail(ps, prev_i, "expected an expression")
             return i
          end
-         e1 = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+         local paren = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+         e1 = paren
       else
          i, e1 = read_literal(ps, i)
       end
@@ -15470,7 +15907,8 @@ do
                if not ident then
                   return i, failstore(ps, tkop, e1)
                end
-               key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+               local macro_key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+               key = macro_key
             else
                if ps.tokens[i].kind ~= "identifier" then
                   local skipped = skip(ps, i, read_type)
@@ -15521,7 +15959,7 @@ do
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
                if next_tk.kind == "string" then
-                  argument = new_block(ps, i)
+                  argument = new_block(ps, i, "string")
                   local _, is_long = unquote(next_tk.tk)
                   argument.is_longstring = is_long
                   i = i + 1
@@ -15547,7 +15985,8 @@ do
                return i, failstore(ps, tkop, e1)
             end
 
-            e1 = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
+            local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
+            e1 = inv
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
             if tkop.y > prev_tk.y and ps.read_lang ~= "lua" then
@@ -15591,7 +16030,7 @@ do
             local args = new_block(ps, i, "expression_list")
             local argument
             if tkop.kind == "string" then
-               argument = new_block(ps, i)
+               argument = new_block(ps, i, "string")
                local _, is_long = unquote(tkop.tk)
                argument.is_longstring = is_long
                i = i + 1
@@ -16072,7 +16511,8 @@ read_nested_type = function(ps, i, tn)
       if not ident then
          return fail(ps, i, "expected a variable name")
       end
-      v = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      v = macro_var
    else
       i, v = verify_kind(ps, i, "identifier", "type_identifier")
       if not v then
@@ -16280,6 +16720,7 @@ read_record_body = function(ps, i, def)
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
       local comment_blocks = collect_comment_blocks(ps, i)
       local tn = ps.tokens[i].tk
+      local tn_kind = type_body_kinds[tn]
       if ps.tokens[i].tk == "userdata" and ps.tokens[i + 1].tk ~= ":" then
          for _, cb in ipairs(comment_blocks) do
             table.insert(def, cb)
@@ -16301,12 +16742,12 @@ read_record_body = function(ps, i, def)
             table.insert(fields, cb)
          end
          table.insert(fields, lt)
-      elseif read_type_body_fns[tn] and ps.tokens[i + 1].tk ~= ":" then
+      elseif tn_kind and ps.tokens[i + 1].tk ~= ":" then
          if def.kind == "interface" and tn == "record" then
             i = failskip(ps, i, "interfaces cannot contain record definitions", skip_type_body)
          else
             local lt
-            i, lt = read_nested_type(ps, i, tn)
+            i, lt = read_nested_type(ps, i, tn_kind)
             if lt then
                for _, cb in ipairs(comment_blocks) do
                   table.insert(fields, cb)
@@ -16409,8 +16850,9 @@ local function read_newtype(ps, i)
    local tn = ps.tokens[i].tk
    local istart = i
 
-   if read_type_body_fns[tn] then
-      i, def = read_type_body(ps, i + 1, istart, node, tn)
+   local tn_kind = type_body_kinds[tn]
+   if tn_kind then
+      i, def = read_type_body(ps, i + 1, istart, node, tn_kind)
    else
       i, def = read_type(ps, i)
    end
@@ -16562,7 +17004,8 @@ read_type_declaration = function(ps, i, node_name)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      var = macro_var
    else
       i, var = verify_kind(ps, i, "identifier")
       if not var then
@@ -16619,7 +17062,8 @@ local function read_type_constructor(ps, i, node_name, tn)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      asgn[BIDX.VAR] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      asgn[BIDX.VAR] = macro_var
    else
       i, asgn[BIDX.VAR] = verify_kind(ps, i, "identifier")
       if not asgn[BIDX.VAR] then
@@ -16706,8 +17150,9 @@ local function read_local(ps, i)
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
-   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      return read_type_constructor(ps, i, "local_type", ntk)
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      local ntk_kind = type_body_kinds[ntk]
+      return read_type_constructor(ps, i, "local_type", ntk_kind)
    end
    return read_variable_declarations(ps, i + 1, "local_declaration")
 end
@@ -16728,8 +17173,9 @@ local function read_global(ps, i)
       return read_function_args_rets_body(ps, i, fn)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
-   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      return read_type_constructor(ps, i, "global_type", ntk)
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      local ntk_kind = type_body_kinds[ntk]
+      return read_type_constructor(ps, i, "global_type", ntk_kind)
    elseif ps.tokens[i + 1].kind == "identifier" then
       return read_variable_declarations(ps, i + 1, "global_declaration")
    end
@@ -16753,7 +17199,8 @@ read_record_function = function(ps, i)
          if not ident then
             return fail(ps2, ii, "syntax error, expected identifier")
          end
-         return ii, { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         local macro_var = { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         return ii, macro_var
       end
       local nii
       local nb
@@ -16985,6 +17432,7 @@ end
 -- module teal.traversal from teal/traversal.lua
 package.preload["teal.traversal"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local type = type
+
 
 
 local tldebug = require("teal.debug")
@@ -17524,7 +17972,8 @@ end
 
 -- module teal.type_errors from teal/type_errors.lua
 package.preload["teal.type_errors"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local types = require("teal.types")
@@ -17892,7 +18341,8 @@ end
 
 -- module teal.type_reporter from teal/type_reporter.lua
 package.preload["teal.type_reporter"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local types = require("teal.types")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local types = require("teal.types")
 
 
 
@@ -18445,7 +18895,8 @@ end
 
 -- module teal.types from teal/types.lua
 package.preload["teal.types"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -18458,7 +18909,25 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 
-local types = { GenericType = {}, StringType = {}, IntegerType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -19073,11 +19542,6 @@ local function show_type_base(t, short, seen)
       table.insert(out, ">")
       table.insert(out, rest)
       return table.concat(out)
-   elseif t.typename == "number" or
-      t.typename == "integer" or
-      t.typename == "boolean" or
-      t.typename == "thread" then
-      return t.typename
    elseif t.typename == "string" then
       if short then
          return "string"
@@ -19085,6 +19549,29 @@ local function show_type_base(t, short, seen)
          return t.typename ..
          (t.literal and string.format(" %q", t.literal) or "")
       end
+   elseif t.typename == "number" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "integer" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "boolean" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "thread" then
+      return t.typename
    elseif t.typename == "typevar" then
       return show_typevar(t.typevar, "typevar")
    elseif t.typename == "typearg" then
@@ -19567,9 +20054,13 @@ function types.untuple(t)
    return rt
 end
 
-function types.unite(w, typs, flatten_constants)
+function types.unite(w, typs, flatten_constants, implicit_nil)
    if #typs == 1 then
       return typs[1]
+   end
+
+   if implicit_nil == nil then
+      implicit_nil = true
    end
 
    local ts = {}
@@ -19578,7 +20069,9 @@ function types.unite(w, typs, flatten_constants)
 
    local types_seen = {}
 
-   types_seen["nil"] = true
+   if implicit_nil then
+      types_seen["nil"] = true
+   end
 
    local i = 1
    while typs[i] or stack[1] do
@@ -19595,7 +20088,16 @@ function types.unite(w, typs, flatten_constants)
             table.insert(stack, s)
          end
       else
-         if types.lua_primitives[t.typename] and (flatten_constants or (t.typename == "string" and not t.literal)) then
+         local is_literal =
+         (t.typename == "string" and t.literal) or
+         (t.typename == "number" and t.literal ~= nil) or
+         (t.typename == "integer" and t.literal ~= nil) or
+         (t.typename == "boolean" and t.literal ~= nil)
+
+         if types.lua_primitives[t.typename] and (flatten_constants or not is_literal) then
+            if flatten_constants and is_literal then
+               t = types.drop_constant_value(t)
+            end
             if not types_seen[t.typename] then
                types_seen[t.typename] = true
                table.insert(ts, t)
@@ -19641,12 +20143,298 @@ function types.drop_constant_value(t)
       local ret = shallow_copy_new_type(t)
       ret.literal = nil
       return ret
+   elseif t.typename == "number" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
+   elseif t.typename == "integer" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
+   elseif t.typename == "boolean" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
    elseif t.needs_compat then
       local ret = shallow_copy_new_type(t)
       ret.needs_compat = nil
       return ret
    end
    return t
+end
+
+function types.drop_constant_values(t)
+   local function has_constant(typ, seen)
+      if seen[typ] then
+         return false
+      end
+      seen[typ] = true
+
+      if typ.typename == "string" and typ.literal then
+         return true
+      elseif typ.typename == "number" and typ.literal ~= nil then
+         return true
+      elseif typ.typename == "integer" and typ.literal ~= nil then
+         return true
+      elseif typ.typename == "boolean" and typ.literal ~= nil then
+         return true
+      elseif typ.needs_compat then
+         return true
+      end
+
+      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
+         return false
+      end
+
+      if typ.typename == "generic" then
+         for _, tf in ipairs(typ.typeargs) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+         return has_constant(typ.t, seen)
+      elseif typ.typename == "array" then
+         return has_constant(typ.elements, seen)
+      elseif typ.typename == "typearg" then
+         if typ.constraint then
+            return has_constant(typ.constraint, seen)
+         end
+      elseif typ.typename == "typevar" then
+         if typ.constraint then
+            return has_constant(typ.constraint, seen)
+         end
+      elseif typ.typename == "typedecl" then
+         return has_constant(typ.def, seen)
+      elseif typ.typename == "nominal" then
+         if typ.typevals then
+            for _, tf in ipairs(typ.typevals) do
+               if has_constant(tf, seen) then
+                  return true
+               end
+            end
+         end
+      elseif typ.typename == "function" then
+         return has_constant(typ.args, seen) or has_constant(typ.rets, seen)
+      elseif typ.fields then
+         if typ.elements and has_constant(typ.elements, seen) then
+            return true
+         end
+         if typ.interface_list then
+            for _, v in ipairs(typ.interface_list) do
+               if has_constant(v, seen) then
+                  return true
+               end
+            end
+         end
+         for _, k in ipairs(typ.field_order) do
+            if has_constant(typ.fields[k], seen) then
+               return true
+            end
+         end
+         if typ.meta_fields then
+            for _, k in ipairs(typ.meta_field_order) do
+               if has_constant(typ.meta_fields[k], seen) then
+                  return true
+               end
+            end
+         end
+      elseif typ.typename == "map" then
+         return has_constant(typ.keys, seen) or has_constant(typ.values, seen)
+      elseif typ.typename == "union" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "poly" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "tupletable" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "tuple" then
+         for _, tf in ipairs(typ.tuple) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "self" then
+         if typ.display_type ~= nil then
+            return has_constant(typ.display_type, seen)
+         end
+      end
+
+      return false
+   end
+
+   if not has_constant(t, {}) then
+      return t
+   end
+
+   local seen = {}
+
+   local function drop(typ)
+      if seen[typ] then
+         return seen[typ]
+      end
+
+      if typ.typename == "string" and typ.literal then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "number" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "integer" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "boolean" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.needs_compat then
+         local ret = shallow_copy_new_type(typ)
+         ret.needs_compat = nil
+         return ret
+      end
+
+      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
+         return typ
+      end
+
+      local copy = shallow_copy_new_type(typ)
+      seen[typ] = copy
+
+      if typ.typename == "generic" then
+         assert(copy.typename == "generic")
+         copy.typeargs = {}
+         for i, tf in ipairs(typ.typeargs) do
+            copy.typeargs[i] = drop(tf)
+         end
+         copy.t = drop(typ.t)
+      elseif typ.typename == "array" then
+         assert(copy.typename == "array")
+         copy.elements = drop(typ.elements)
+      elseif typ.typename == "typearg" then
+         assert(copy.typename == "typearg")
+         copy.typearg = typ.typearg
+         if typ.constraint then
+            copy.constraint = drop(typ.constraint)
+         end
+      elseif typ.typename == "unresolvable_typearg" then
+         assert(copy.typename == "unresolvable_typearg")
+         copy.typearg = typ.typearg
+      elseif typ.typename == "unresolved_emptytable_value" then
+         assert(copy.typename == "unresolved_emptytable_value")
+         copy.emptytable_type = typ.emptytable_type
+      elseif typ.typename == "typevar" then
+         assert(copy.typename == "typevar")
+         copy.typevar = typ.typevar
+         if typ.constraint then
+            copy.constraint = drop(typ.constraint)
+         end
+      elseif typ.typename == "typedecl" then
+         assert(copy.typename == "typedecl")
+         copy.def = drop(typ.def)
+         copy.is_alias = typ.is_alias
+         copy.is_nested_alias = typ.is_nested_alias
+      elseif typ.typename == "nominal" then
+         assert(copy.typename == "nominal")
+         copy.names = typ.names
+         if typ.typevals then
+            copy.typevals = {}
+            for i, tf in ipairs(typ.typevals) do
+               copy.typevals[i] = drop(tf)
+            end
+         end
+         copy.found = typ.found
+      elseif typ.typename == "function" then
+         assert(copy.typename == "function")
+         copy.macroexp = typ.macroexp
+         copy.min_arity = typ.min_arity
+         copy.is_method = typ.is_method
+         copy.is_record_function = typ.is_record_function
+         copy.args = drop(typ.args)
+         copy.rets = drop(typ.rets)
+         copy.special_function_handler = typ.special_function_handler
+      elseif typ.fields then
+         assert(copy.typename == "record" or copy.typename == "interface")
+         copy.declname = typ.declname
+         if typ.elements then
+            copy.elements = drop(typ.elements)
+         end
+         if typ.interface_list then
+            copy.interface_list = {}
+            for i, v in ipairs(typ.interface_list) do
+               copy.interface_list[i] = drop(v)
+            end
+         end
+         copy.is_userdata = typ.is_userdata
+         copy.fields = {}
+         copy.field_order = {}
+         for i, k in ipairs(typ.field_order) do
+            copy.field_order[i] = k
+            copy.fields[k] = drop(typ.fields[k])
+         end
+         if typ.meta_fields then
+            copy.meta_fields = {}
+            copy.meta_field_order = {}
+            for i, k in ipairs(typ.meta_field_order) do
+               copy.meta_field_order[i] = k
+               copy.meta_fields[k] = drop(typ.meta_fields[k])
+            end
+         end
+      elseif typ.typename == "map" then
+         assert(copy.typename == "map")
+         copy.keys = drop(typ.keys)
+         copy.values = drop(typ.values)
+      elseif typ.typename == "union" then
+         local out_types = {}
+         for _, tf in ipairs(typ.types) do
+            table.insert(out_types, drop(tf))
+         end
+         local u = types.unite(typ, out_types, true, false)
+         seen[typ] = u
+         return u
+      elseif typ.typename == "poly" then
+         assert(copy.typename == "poly")
+         copy.types = {}
+         for i, tf in ipairs(typ.types) do
+            copy.types[i] = drop(tf)
+         end
+      elseif typ.typename == "tupletable" then
+         assert(copy.typename == "tupletable")
+         copy.inferred_at = typ.inferred_at
+         copy.types = {}
+         for i, tf in ipairs(typ.types) do
+            copy.types[i] = drop(tf)
+         end
+      elseif typ.typename == "tuple" then
+         assert(copy.typename == "tuple")
+         copy.is_va = typ.is_va
+         copy.tuple = {}
+         for i, tf in ipairs(typ.tuple) do
+            copy.tuple[i] = drop(tf)
+         end
+      elseif typ.typename == "self" then
+         assert(copy.typename == "self")
+         if typ.display_type ~= nil then
+            copy.display_type = drop(typ.display_type)
+         end
+      end
+
+      return copy
+   end
+
+   return drop(t)
 end
 
 function types.type_at(w, t)
@@ -19750,6 +20538,7 @@ package.preload["teal.util"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local table = _tl_compat and _tl_compat.table or table
 
 
+
 local util = {}
 
 
@@ -19800,6 +20589,7 @@ end
 -- module teal.variables from teal/variables.lua
 package.preload["teal.variables"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs
+
 
 
 
