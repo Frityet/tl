@@ -4,6 +4,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -47,6 +48,7 @@ local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
+local drop_constant_values = types.drop_constant_values
 local edit_type = types.edit_type
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
@@ -346,6 +348,107 @@ local function resolve_typedecl(t)
    end
 end
 
+local function type_has_explicit_nil(self, t, seen)
+   seen = seen or {}
+   if seen[t] then
+      return false
+   end
+   seen[t] = true
+
+   if t.typename == "nil" then
+      return true
+   elseif t.typename == "typedecl" then
+      return type_has_explicit_nil(self, t.def, seen)
+   elseif t.typename == "nominal" then
+      local resolved = self:resolve_nominal(t)
+      if resolved then
+         return type_has_explicit_nil(self, resolved, seen)
+      end
+      return false
+   elseif t.typename == "union" then
+      for _, ut in ipairs(t.types) do
+         if type_has_explicit_nil(self, ut, seen) then
+            return true
+         end
+      end
+      return false
+   elseif t.typename == "tuple" then
+      for _, ut in ipairs(t.tuple) do
+         if type_has_explicit_nil(self, ut, seen) then
+            return true
+         end
+      end
+      return false
+   elseif t.typename == "typevar" and t.constraint then
+      return type_has_explicit_nil(self, t.constraint, seen)
+   elseif t.typename == "typearg" and t.constraint then
+      return type_has_explicit_nil(self, t.constraint, seen)
+   elseif t.typename == "self" and t.display_type then
+      return type_has_explicit_nil(self, t.display_type, seen)
+   elseif t.typename == "generic" then
+      return type_has_explicit_nil(self, t.t, seen)
+   elseif t.typename == "poly" then
+      for _, pt in ipairs(t.types) do
+         if type_has_explicit_nil(self, pt, seen) then
+            return true
+         end
+      end
+      return false
+   end
+
+   return false
+end
+
+local function truthy_type(self, t, seen)
+   seen = seen or {}
+   if seen[t] then
+      return t, false
+   end
+   seen[t] = true
+
+   if t.typename == "typedecl" then
+      return truthy_type(self, t.def, seen)
+   elseif t.typename == "nominal" then
+      local resolved = self:resolve_nominal(t)
+      if resolved then
+         return truthy_type(self, resolved, seen)
+      end
+      return t, false
+   elseif t.typename == "typevar" and t.constraint then
+      return truthy_type(self, t.constraint, seen)
+   elseif t.typename == "union" then
+      local out = {}
+      local has_falsy = false
+      for _, ut in ipairs(t.types) do
+         local tt, hf = truthy_type(self, ut, seen)
+         if tt then
+            table.insert(out, tt)
+         end
+         if hf then
+            has_falsy = true
+         end
+      end
+      if #out == 0 then
+         return nil, true
+      end
+      return unite(t, out, nil, not self.feat_strict_nil), has_falsy
+   elseif t.typename == "nil" then
+      return nil, true
+   elseif t.typename == "boolean" then
+      if t.literal == nil then
+         local tt = a_type(t, "boolean", {})
+         tt.literal = true
+         return tt, true
+      elseif t.literal == false then
+         return nil, true
+      else
+         return t, false
+      end
+   else
+      return t, false
+   end
+end
+
 
 local NONE = a_type({ f = "@none", x = -1, y = -1 }, "none", {})
 
@@ -568,7 +671,8 @@ local function infer_table_literal(self, node, children)
 
       self.errs:check_redeclared_key(node[i], nil, seen_keys, key)
 
-      local uvtype = untuple(child.vtype)
+      local raw_vtype = untuple(child.vtype)
+      local uvtype = raw_vtype
       if ck then
          is_record = true
          if not fields then
@@ -591,25 +695,30 @@ local function infer_table_literal(self, node, children)
             if i == #children and cv.typename == "tuple" then
 
                for _, c in ipairs(cv.tuple) do
-                  elements = self:expand_type(node, elements, c)
-                  typs[last_array_idx] = untuple(c)
+                  local ct = c
+                  local elem = drop_constant_values(ct)
+                  elements = self:expand_type(node, elements, elem)
+                  typs[last_array_idx] = untuple(ct)
                   last_array_idx = last_array_idx + 1
                end
             else
                typs[last_array_idx] = uvtype
                last_array_idx = last_array_idx + 1
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
             end
          else
             if not is_positive_int(n) then
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
                is_not_tuple = true
             elseif n then
                typs[n] = uvtype
                if n > largest_array_idx then
                   largest_array_idx = n
                end
-               elements = self:expand_type(node, elements, uvtype)
+               local elem = drop_constant_values(uvtype)
+               elements = self:expand_type(node, elements, elem)
             end
          end
 
@@ -621,8 +730,8 @@ local function infer_table_literal(self, node, children)
          end
       else
          is_map = true
-         keys = self:expand_type(node, keys, drop_constant_value(cktype))
-         values = self:expand_type(node, values, uvtype)
+         keys = self:expand_type(node, keys, cktype, false)
+         values = self:expand_type(node, values, uvtype, false)
       end
    end
 
@@ -685,7 +794,7 @@ local function infer_table_literal(self, node, children)
          local last_t
          for _, current_t in pairs(typs) do
             if last_t then
-               if not self:same_type(last_t, current_t) then
+               if not self:same_type(drop_constant_values(last_t), drop_constant_values(current_t)) then
                   pure_array = false
                   break
                end
@@ -891,7 +1000,8 @@ visit_node.cbs = {
             end
 
             assert(var)
-            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing")
+            local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
+            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing", keep_literal)
             if var.elide_type then
                self.errs:add_warning("hint", node, "hint: consider using 'local type' instead")
             end
@@ -1228,10 +1338,14 @@ visit_node.cbs = {
                self:resolve_nominal(module_type)
                self.module_type = module_type.resolved
             else
-               self.module_type = drop_constant_value(module_type)
+               self.module_type = drop_constant_values(module_type)
             end
 
             expected = self:infer_at(node, got)
+            local dropped = drop_constant_values(expected)
+            if dropped.typename == "tuple" then
+               expected = dropped
+            end
             self.st[2].vars["@return"] = { t = expected }
          end
          local expected_t = expected.tuple
@@ -2033,7 +2147,7 @@ visit_node.cbs = {
             elseif expected and expected.typename == "union" then
 
                self.fdb:set_or(node, node.e1, node.e2)
-               local u = unite(node, { ra, rb }, true)
+               local u = unite(node, { ra, rb }, true, not self.feat_strict_nil)
                if u.typename == "union" then
                   ok, err = is_valid_union(u)
                   if not ok then
@@ -2045,7 +2159,22 @@ visit_node.cbs = {
 
             elseif ra.typename == "union" and not (rb.typename == "union") and self:is_a(rb, ra) then
 
-               t = drop_constant_value(ra)
+               if self.feat_strict_nil then
+                  local truthy_ra, has_falsy = truthy_type(self, ua)
+                  if has_falsy then
+                     if not truthy_ra then
+                        t = drop_constant_value(ub)
+                     elseif self:is_a(rb, truthy_ra) then
+                        t = drop_constant_value(truthy_ra)
+                     else
+                        t = drop_constant_value(ra)
+                     end
+                  else
+                     t = drop_constant_value(ra)
+                  end
+               else
+                  t = drop_constant_value(ra)
+               end
 
             elseif rb.typename == "union" and not (ra.typename == "union") and self:is_a(ra, rb) then
 
@@ -2054,12 +2183,16 @@ visit_node.cbs = {
             else
 
 
-               local a_ge_b = self:is_a(ub, ua)
-               local b_ge_a = self:is_a(ua, ub)
+               local ua_cmp = drop_constant_value(ua)
+               local ub_cmp = drop_constant_value(ub)
+               local a_ge_b = self:is_a(ub_cmp, ua_cmp)
+               local b_ge_a = self:is_a(ua_cmp, ub_cmp)
                self.fdb:set_or(node, node.e1, node.e2)
 
 
-               local is_same = self:same_type(ra, rb)
+               local ra_cmp = self:to_structural(ua_cmp)
+               local rb_cmp = self:to_structural(ub_cmp)
+               local is_same = self:same_type(ra_cmp, rb_cmp)
 
 
                local ambiguous = a_ge_b and b_ge_a and not is_same
@@ -2099,6 +2232,8 @@ visit_node.cbs = {
          end
 
          if node.op.op == "==" or node.op.op == "~=" then
+            local ua_cmp = drop_constant_value(ua)
+            local ub_cmp = drop_constant_value(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
                self:check_metamethod(node, binop_to_metamethod[node.op.op], ra, rb, ua, ub)
             end
@@ -2109,18 +2244,31 @@ visit_node.cbs = {
                end
             elseif ra.typename == "tupletable" and rb.typename == "tupletable" and #ra.types ~= #rb.types then
                return self.errs:invalid_at(node, "tuples are not the same size")
-            elseif self:is_a(ub, ua) or ua.typename == "typevar" then
-               if node.op.op == "==" and node.e1.kind == "variable" then
-                  self.fdb:set_eq(node, node.e1.tk, ub)
-               end
-            elseif self:is_a(ua, ub) or ub.typename == "typevar" then
-               if node.op.op == "==" and node.e2.kind == "variable" then
-                  self.fdb:set_eq(node, node.e2.tk, ua)
-               end
-            elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
-               return a_type(node, "unknown", {})
             else
-               return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
+               local nil_in_a = type_has_explicit_nil(self, ua_cmp)
+               local nil_in_b = type_has_explicit_nil(self, ub_cmp)
+               if nil_in_a or nil_in_b then
+
+                  if node.op.op == "==" then
+                     if node.e1.kind == "variable" and ua.typename == "invalid" then
+                        self.fdb:set_eq(node, node.e1.tk, ub)
+                     elseif node.e2.kind == "variable" and ub.typename == "invalid" then
+                        self.fdb:set_eq(node, node.e2.tk, ua)
+                     end
+                  end
+               elseif self:is_a(ub_cmp, ua_cmp) or ua.typename == "typevar" then
+                  if node.op.op == "==" and node.e1.kind == "variable" then
+                     self.fdb:set_eq(node, node.e1.tk, ub)
+                  end
+               elseif self:is_a(ua_cmp, ub_cmp) or ub.typename == "typevar" then
+                  if node.op.op == "==" and node.e2.kind == "variable" then
+                     self.fdb:set_eq(node, node.e2.tk, ua)
+                  end
+               elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
+                  return a_type(node, "unknown", {})
+               else
+                  return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
+               end
             end
 
             return a_type(node, "boolean", {})
@@ -2128,7 +2276,7 @@ visit_node.cbs = {
 
          if node.op.arity == 1 and unop_types[node.op.op] then
             if ra.typename == "union" then
-               ra = unite(node, ra.types, true)
+               ra = unite(node, ra.types, true, not self.feat_strict_nil)
             end
 
             local types_op = unop_types[node.op.op]
@@ -2188,10 +2336,10 @@ visit_node.cbs = {
             end
 
             if ra.typename == "union" then
-               ra = unite(ra, ra.types, true)
+               ra = unite(ra, ra.types, true, not self.feat_strict_nil)
             end
             if rb.typename == "union" then
-               rb = unite(rb, rb.types, true)
+               rb = unite(rb, rb.types, true, not self.feat_strict_nil)
             end
 
             local types_op = binop_types[node.op.op]
@@ -2231,7 +2379,7 @@ visit_node.cbs = {
 
             if not t then
                if node.op.op == "or" then
-                  local u = unite(node, { ua, ub })
+                  local u = unite(node, { ua, ub }, nil, not self.feat_strict_nil)
                   if u.typename == "union" and is_valid_union(u) then
                      self.errs:add_warning("hint", node, "if a union type was intended, consider declaring it explicitly")
                   end
@@ -2272,6 +2420,11 @@ visit_node.cbs = {
 
          if t.typename == "typedecl" then
             t = typedecl_to_nominal(node, node.tk, t, t)
+         end
+
+         local truthy, has_falsy = truthy_type(self, t)
+         if has_falsy and truthy then
+            self.fdb:set_is(node, node.tk, truthy)
          end
 
          return t
@@ -2352,6 +2505,16 @@ visit_node.cbs = {
             else
                return self.errs:invalid_at(node, "invalid value for pragma 'arity': " .. node.pvalue)
             end
+         elseif node.pkey == "strict_nil" then
+            if node.pvalue == "on" then
+               self.feat_strict_nil = true
+               self.env.opts.feat_strict_nil = "on"
+            elseif node.pvalue == "off" then
+               self.feat_strict_nil = false
+               self.env.opts.feat_strict_nil = "off"
+            else
+               return self.errs:invalid_at(node, "invalid value for pragma 'strict_nil': " .. node.pvalue)
+            end
          else
             return self.errs:invalid_at(node, "invalid pragma: " .. node.pkey)
          end
@@ -2374,7 +2537,15 @@ visit_node.cbs["do"] = visit_node.cbs["break"]
 
 local function after_literal(self, node)
    self.fdb:set_truthy(node)
-   return a_type(node, node.kind, {})
+   local t = a_type(node, node.kind, {})
+   if node.kind == "number" then
+      (t).literal = node.constnum
+   elseif node.kind == "integer" then
+      (t).literal = node.constnum
+   elseif node.kind == "boolean" then
+      (t).literal = node.tk == "true"
+   end
+   return t
 end
 
 visit_node.cbs["string"] = {

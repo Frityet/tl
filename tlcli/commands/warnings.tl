@@ -1,15 +1,17 @@
+--#pragma strict_nil off
 --------------------------------------------------------------------------------
 -- tl warnings
 --------------------------------------------------------------------------------
 
 local type TlConfig = require("tlcli.tlconfig")
+local type Args = require("tlcli.args")
 local teal = require("teal.init")
 
 local function right_pad(str: string, wid: integer): string
    return (" "):rep(wid - #str) .. str
 end
 
-return function(tlconfig: TlConfig)
+return function(tlconfig: TlConfig, _args: Args)
    local w = {}
    local longest = 0
    for warning, _ in pairs(teal.warning_set()) do

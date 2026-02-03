@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local block = require("teal.block")
 local type Block = block.Block
 local type BlockLang = block.BlockLang

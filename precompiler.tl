@@ -1,4 +1,5 @@
 #!/usr/bin/env -S tl run
+--#pragma strict_nil off
 
 package.path = "./?.lua;" .. package.path
 

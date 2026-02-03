@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local ast = require("teal.ast")
 local reader = require("teal.reader")
 local type errors = require("teal.errors")

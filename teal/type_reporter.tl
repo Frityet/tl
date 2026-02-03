@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local types = require("teal.types")
 local type Type = types.Type
 local type TypeName = types.TypeName

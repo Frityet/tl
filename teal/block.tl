@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local errors = require("teal.errors")
 local type Where = errors.Where
 
@@ -51,7 +52,9 @@ local record block
       "macro_quote"
       "macro_var"
       "macro_invocation"
+      "record"
       "interface"
+      "enum"
       "pragma"
       "error_block"
       "userdata"
@@ -379,7 +382,9 @@ local BLOCK_KINDS <const> = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
+   ["record"] = true,
    ["interface"] = true,
+   ["enum"] = true,
    ["pragma"] = true,
    ["error_block"] = true,
    ["userdata"] = true,

@@ -16,6 +16,23 @@ describe("if", function()
       end
    ]]))
 
+   it("narrows nilable values in boolean context", util.check([[
+      --#pragma strict_nil on
+      local type Nilable<T> = T | nil
+      local function divide(a: number, b: number): Nilable<number>
+         if b == 0 then
+            return nil
+         else
+            return a / b
+         end
+      end
+      local x: Nilable<number> = divide(10, 0)
+      if x then
+         local y: number = x
+         print(y + 1)
+      end
+   ]]))
+
    it("if expression propagates a boolean context", util.check([[
       local n = 123
       local s = "hello"

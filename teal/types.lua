@@ -1,4 +1,5 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -11,7 +12,25 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 
-local types = { GenericType = {}, StringType = {}, IntegerType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -639,11 +658,6 @@ local function show_type_base(t, short, seen)
       table.insert(out, ">")
       table.insert(out, rest)
       return table.concat(out)
-   elseif t.typename == "number" or
-      t.typename == "integer" or
-      t.typename == "boolean" or
-      t.typename == "thread" then
-      return t.typename
    elseif t.typename == "string" then
       if short then
          return "string"
@@ -651,6 +665,29 @@ local function show_type_base(t, short, seen)
          return t.typename ..
          (t.literal and string.format(" %q", t.literal) or "")
       end
+   elseif t.typename == "number" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "integer" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "boolean" then
+      if short then
+         return t.typename
+      else
+         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
+         return t.typename .. lit
+      end
+   elseif t.typename == "thread" then
+      return t.typename
    elseif t.typename == "typevar" then
       return show_typevar(t.typevar, "typevar")
    elseif t.typename == "typearg" then
@@ -1141,9 +1178,13 @@ function types.untuple(t)
    return rt
 end
 
-function types.unite(w, typs, flatten_constants)
+function types.unite(w, typs, flatten_constants, implicit_nil)
    if #typs == 1 then
       return typs[1]
+   end
+
+   if implicit_nil == nil then
+      implicit_nil = true
    end
 
    local ts = {}
@@ -1152,7 +1193,9 @@ function types.unite(w, typs, flatten_constants)
 
    local types_seen = {}
 
-   types_seen["nil"] = true
+   if implicit_nil then
+      types_seen["nil"] = true
+   end
 
    local i = 1
    while typs[i] or stack[1] do
@@ -1169,7 +1212,16 @@ function types.unite(w, typs, flatten_constants)
             table.insert(stack, s)
          end
       else
-         if types.lua_primitives[t.typename] and (flatten_constants or (t.typename == "string" and not t.literal)) then
+         local is_literal =
+         (t.typename == "string" and t.literal) or
+         (t.typename == "number" and t.literal ~= nil) or
+         (t.typename == "integer" and t.literal ~= nil) or
+         (t.typename == "boolean" and t.literal ~= nil)
+
+         if types.lua_primitives[t.typename] and (flatten_constants or not is_literal) then
+            if flatten_constants and is_literal then
+               t = types.drop_constant_value(t)
+            end
             if not types_seen[t.typename] then
                types_seen[t.typename] = true
                table.insert(ts, t)
@@ -1215,12 +1267,298 @@ function types.drop_constant_value(t)
       local ret = shallow_copy_new_type(t)
       ret.literal = nil
       return ret
+   elseif t.typename == "number" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
+   elseif t.typename == "integer" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
+   elseif t.typename == "boolean" and t.literal ~= nil then
+      local ret = shallow_copy_new_type(t)
+      ret.literal = nil
+      return ret
    elseif t.needs_compat then
       local ret = shallow_copy_new_type(t)
       ret.needs_compat = nil
       return ret
    end
    return t
+end
+
+function types.drop_constant_values(t)
+   local function has_constant(typ, seen)
+      if seen[typ] then
+         return false
+      end
+      seen[typ] = true
+
+      if typ.typename == "string" and typ.literal then
+         return true
+      elseif typ.typename == "number" and typ.literal ~= nil then
+         return true
+      elseif typ.typename == "integer" and typ.literal ~= nil then
+         return true
+      elseif typ.typename == "boolean" and typ.literal ~= nil then
+         return true
+      elseif typ.needs_compat then
+         return true
+      end
+
+      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
+         return false
+      end
+
+      if typ.typename == "generic" then
+         for _, tf in ipairs(typ.typeargs) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+         return has_constant(typ.t, seen)
+      elseif typ.typename == "array" then
+         return has_constant(typ.elements, seen)
+      elseif typ.typename == "typearg" then
+         if typ.constraint then
+            return has_constant(typ.constraint, seen)
+         end
+      elseif typ.typename == "typevar" then
+         if typ.constraint then
+            return has_constant(typ.constraint, seen)
+         end
+      elseif typ.typename == "typedecl" then
+         return has_constant(typ.def, seen)
+      elseif typ.typename == "nominal" then
+         if typ.typevals then
+            for _, tf in ipairs(typ.typevals) do
+               if has_constant(tf, seen) then
+                  return true
+               end
+            end
+         end
+      elseif typ.typename == "function" then
+         return has_constant(typ.args, seen) or has_constant(typ.rets, seen)
+      elseif typ.fields then
+         if typ.elements and has_constant(typ.elements, seen) then
+            return true
+         end
+         if typ.interface_list then
+            for _, v in ipairs(typ.interface_list) do
+               if has_constant(v, seen) then
+                  return true
+               end
+            end
+         end
+         for _, k in ipairs(typ.field_order) do
+            if has_constant(typ.fields[k], seen) then
+               return true
+            end
+         end
+         if typ.meta_fields then
+            for _, k in ipairs(typ.meta_field_order) do
+               if has_constant(typ.meta_fields[k], seen) then
+                  return true
+               end
+            end
+         end
+      elseif typ.typename == "map" then
+         return has_constant(typ.keys, seen) or has_constant(typ.values, seen)
+      elseif typ.typename == "union" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "poly" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "tupletable" then
+         for _, tf in ipairs(typ.types) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "tuple" then
+         for _, tf in ipairs(typ.tuple) do
+            if has_constant(tf, seen) then
+               return true
+            end
+         end
+      elseif typ.typename == "self" then
+         if typ.display_type ~= nil then
+            return has_constant(typ.display_type, seen)
+         end
+      end
+
+      return false
+   end
+
+   if not has_constant(t, {}) then
+      return t
+   end
+
+   local seen = {}
+
+   local function drop(typ)
+      if seen[typ] then
+         return seen[typ]
+      end
+
+      if typ.typename == "string" and typ.literal then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "number" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "integer" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.typename == "boolean" and typ.literal ~= nil then
+         local ret = shallow_copy_new_type(typ)
+         ret.literal = nil
+         return ret
+      elseif typ.needs_compat then
+         local ret = shallow_copy_new_type(typ)
+         ret.needs_compat = nil
+         return ret
+      end
+
+      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
+         return typ
+      end
+
+      local copy = shallow_copy_new_type(typ)
+      seen[typ] = copy
+
+      if typ.typename == "generic" then
+         assert(copy.typename == "generic")
+         copy.typeargs = {}
+         for i, tf in ipairs(typ.typeargs) do
+            copy.typeargs[i] = drop(tf)
+         end
+         copy.t = drop(typ.t)
+      elseif typ.typename == "array" then
+         assert(copy.typename == "array")
+         copy.elements = drop(typ.elements)
+      elseif typ.typename == "typearg" then
+         assert(copy.typename == "typearg")
+         copy.typearg = typ.typearg
+         if typ.constraint then
+            copy.constraint = drop(typ.constraint)
+         end
+      elseif typ.typename == "unresolvable_typearg" then
+         assert(copy.typename == "unresolvable_typearg")
+         copy.typearg = typ.typearg
+      elseif typ.typename == "unresolved_emptytable_value" then
+         assert(copy.typename == "unresolved_emptytable_value")
+         copy.emptytable_type = typ.emptytable_type
+      elseif typ.typename == "typevar" then
+         assert(copy.typename == "typevar")
+         copy.typevar = typ.typevar
+         if typ.constraint then
+            copy.constraint = drop(typ.constraint)
+         end
+      elseif typ.typename == "typedecl" then
+         assert(copy.typename == "typedecl")
+         copy.def = drop(typ.def)
+         copy.is_alias = typ.is_alias
+         copy.is_nested_alias = typ.is_nested_alias
+      elseif typ.typename == "nominal" then
+         assert(copy.typename == "nominal")
+         copy.names = typ.names
+         if typ.typevals then
+            copy.typevals = {}
+            for i, tf in ipairs(typ.typevals) do
+               copy.typevals[i] = drop(tf)
+            end
+         end
+         copy.found = typ.found
+      elseif typ.typename == "function" then
+         assert(copy.typename == "function")
+         copy.macroexp = typ.macroexp
+         copy.min_arity = typ.min_arity
+         copy.is_method = typ.is_method
+         copy.is_record_function = typ.is_record_function
+         copy.args = drop(typ.args)
+         copy.rets = drop(typ.rets)
+         copy.special_function_handler = typ.special_function_handler
+      elseif typ.fields then
+         assert(copy.typename == "record" or copy.typename == "interface")
+         copy.declname = typ.declname
+         if typ.elements then
+            copy.elements = drop(typ.elements)
+         end
+         if typ.interface_list then
+            copy.interface_list = {}
+            for i, v in ipairs(typ.interface_list) do
+               copy.interface_list[i] = drop(v)
+            end
+         end
+         copy.is_userdata = typ.is_userdata
+         copy.fields = {}
+         copy.field_order = {}
+         for i, k in ipairs(typ.field_order) do
+            copy.field_order[i] = k
+            copy.fields[k] = drop(typ.fields[k])
+         end
+         if typ.meta_fields then
+            copy.meta_fields = {}
+            copy.meta_field_order = {}
+            for i, k in ipairs(typ.meta_field_order) do
+               copy.meta_field_order[i] = k
+               copy.meta_fields[k] = drop(typ.meta_fields[k])
+            end
+         end
+      elseif typ.typename == "map" then
+         assert(copy.typename == "map")
+         copy.keys = drop(typ.keys)
+         copy.values = drop(typ.values)
+      elseif typ.typename == "union" then
+         local out_types = {}
+         for _, tf in ipairs(typ.types) do
+            table.insert(out_types, drop(tf))
+         end
+         local u = types.unite(typ, out_types, true, false)
+         seen[typ] = u
+         return u
+      elseif typ.typename == "poly" then
+         assert(copy.typename == "poly")
+         copy.types = {}
+         for i, tf in ipairs(typ.types) do
+            copy.types[i] = drop(tf)
+         end
+      elseif typ.typename == "tupletable" then
+         assert(copy.typename == "tupletable")
+         copy.inferred_at = typ.inferred_at
+         copy.types = {}
+         for i, tf in ipairs(typ.types) do
+            copy.types[i] = drop(tf)
+         end
+      elseif typ.typename == "tuple" then
+         assert(copy.typename == "tuple")
+         copy.is_va = typ.is_va
+         copy.tuple = {}
+         for i, tf in ipairs(typ.tuple) do
+            copy.tuple[i] = drop(tf)
+         end
+      elseif typ.typename == "self" then
+         assert(copy.typename == "self")
+         if typ.display_type ~= nil then
+            copy.display_type = drop(typ.display_type)
+         end
+      end
+
+      return copy
+   end
+
+   return drop(t)
 end
 
 function types.type_at(w, t)

@@ -6,8 +6,8 @@ describe("record argument", function()
          node: {string: node_t}
       end
 
+      --#pragma strict_nil off
       local root: node_t = nil
-
       local function visit(n: node_t)
       end
       visit(root.node)

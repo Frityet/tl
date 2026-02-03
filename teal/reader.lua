@@ -1,4 +1,5 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local errors = require("teal.errors")
 
 
 local lexer = require("teal.lexer")
@@ -146,6 +147,11 @@ local read_record_function
 local read_enum_body
 local read_record_body
 local read_type_body_fns
+local type_body_kinds = {
+   ["interface"] = "interface",
+   ["record"] = "record",
+   ["enum"] = "enum",
+}
 
 local function fail(ps, i, msg)
    if not ps.tokens[i] then
@@ -320,9 +326,8 @@ local function read_type_body(ps, i, istart, node, tn)
 end
 
 local function skip_type_body(ps, i)
-   local tn = ps.tokens[i].tk
+   local tn = assert(type_body_kinds[ps.tokens[i].tk], ps.tokens[i].tk .. " has no parse body function")
    i = i + 1
-   assert(read_type_body_fns[tn], tn .. " has no parse body function")
    local ii, tt = read_type_body(ps, i, i - 1, {}, tn)
    return ii, not not tt
 end
@@ -496,7 +501,8 @@ local function read_macro_args_with_sig(ps, i, sig)
             while read_type_body_fns[tk0] and ps2.tokens[curr_i + 1] and ps2.tokens[curr_i + 1].kind == "identifier" do
                local ni
                local lt
-               ni, lt = read_nested_type(ps2, curr_i, tk0)
+               local tn = assert(type_body_kinds[tk0])
+               ni, lt = read_nested_type(ps2, curr_i, tn)
                if not sblk then sblk = new_block(ps2, curr_i, "statements") end
                table.insert(sblk, lt)
                curr_i = ni
@@ -530,6 +536,23 @@ local function read_macro_args_with_sig(ps, i, sig)
                local errs2 = {}
                local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
                if #errs2 == 0 and block_ast then
+                  if can_split_on_comma and
+                     block_ast.kind == "statements" and
+                     #block_ast == 1 then
+
+                     local st = block_ast[1]
+                     if st and st.kind == "local_declaration" then
+                        local vlist = st[BLOCK_INDEXES.LOCAL_DECLARATION.VARS]
+                        local decl = st[BLOCK_INDEXES.LOCAL_DECLARATION.DECL]
+                        if vlist and decl then
+                           local typelist = decl[BLOCK_INDEXES.TUPLE_TYPE.FIRST] or decl[BLOCK_INDEXES.TUPLE_TYPE.SECOND]
+                           local ntypes = typelist and #typelist or 0
+                           if ntypes > #vlist then
+                              return false
+                           end
+                        end
+                     end
+                  end
                   best_j = jend
                   best_block = block_ast
                   return true
@@ -762,7 +785,8 @@ local function read_simple_type_or_nominal(ps, i)
          return fail(ps, i, "syntax error, expected identifier")
       end
       typ = new_nominal(ps, i - 1, nil)
-      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
+      local mv = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
+      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = mv
    else
       if ps.tokens[i].kind ~= "identifier" then
          return fail(ps, i, "syntax error, expected identifier")
@@ -806,6 +830,17 @@ local function read_base_type(ps, i)
    local tk = ps.tokens[i].tk
    if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i].tk == "$") then
       return read_simple_type_or_nominal(ps, i)
+   elseif ps.tokens[i].kind == "string" then
+      local node = new_block(ps, i, "string")
+      local _, is_long = unquote(tk)
+      node.is_longstring = is_long
+      return i + 1, node
+   elseif ps.tokens[i].kind == "number" or ps.tokens[i].kind == "integer" then
+      local node
+      i, node = verify_kind(ps, i, ps.tokens[i].kind)
+      return i, node
+   elseif tk == "true" or tk == "false" then
+      return verify_kind(ps, i, "keyword", "boolean")
    elseif tk == "{" then
       local istart = i
       i = i + 1
@@ -1199,7 +1234,8 @@ do
 
 
    local function failstore(ps, tkop, e1)
-      return { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+      local paren = { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+      return paren
    end
 
    local function P(ps, i)
@@ -1226,7 +1262,8 @@ do
          if not ident then
             return i
          end
-         e1 = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         e1 = macro_var
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
@@ -1235,7 +1272,8 @@ do
             fail(ps, prev_i, "expected an expression")
             return i
          end
-         e1 = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+         local paren = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
+         e1 = paren
       else
          i, e1 = read_literal(ps, i)
       end
@@ -1264,7 +1302,8 @@ do
                if not ident then
                   return i, failstore(ps, tkop, e1)
                end
-               key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+               local macro_key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+               key = macro_key
             else
                if ps.tokens[i].kind ~= "identifier" then
                   local skipped = skip(ps, i, read_type)
@@ -1315,7 +1354,7 @@ do
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
                if next_tk.kind == "string" then
-                  argument = new_block(ps, i)
+                  argument = new_block(ps, i, "string")
                   local _, is_long = unquote(next_tk.tk)
                   argument.is_longstring = is_long
                   i = i + 1
@@ -1341,7 +1380,8 @@ do
                return i, failstore(ps, tkop, e1)
             end
 
-            e1 = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
+            local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
+            e1 = inv
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
             if tkop.y > prev_tk.y and ps.read_lang ~= "lua" then
@@ -1385,7 +1425,7 @@ do
             local args = new_block(ps, i, "expression_list")
             local argument
             if tkop.kind == "string" then
-               argument = new_block(ps, i)
+               argument = new_block(ps, i, "string")
                local _, is_long = unquote(tkop.tk)
                argument.is_longstring = is_long
                i = i + 1
@@ -1874,7 +1914,8 @@ read_nested_type = function(ps, i, tn)
       if not ident then
          return fail(ps, i, "expected a variable name")
       end
-      v = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      v = macro_var
    else
       i, v = verify_kind(ps, i, "identifier", "type_identifier")
       if not v then
@@ -2076,6 +2117,7 @@ read_record_body = function(ps, i, def)
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
       local comment_blocks = collect_comment_blocks(ps, i)
       local tn = ps.tokens[i].tk
+      local tn_kind = type_body_kinds[tn]
       if ps.tokens[i].tk == "userdata" and ps.tokens[i + 1].tk ~= ":" then
          for _, cb in ipairs(comment_blocks) do
             table.insert(def, cb)
@@ -2097,12 +2139,12 @@ read_record_body = function(ps, i, def)
             table.insert(fields, cb)
          end
          table.insert(fields, lt)
-      elseif read_type_body_fns[tn] and ps.tokens[i + 1].tk ~= ":" then
+      elseif tn_kind and ps.tokens[i + 1].tk ~= ":" then
          if def.kind == "interface" and tn == "record" then
             i = failskip(ps, i, "interfaces cannot contain record definitions", skip_type_body)
          else
             local lt
-            i, lt = read_nested_type(ps, i, tn)
+            i, lt = read_nested_type(ps, i, tn_kind)
             if lt then
                for _, cb in ipairs(comment_blocks) do
                   table.insert(fields, cb)
@@ -2205,8 +2247,9 @@ local function read_newtype(ps, i)
    local tn = ps.tokens[i].tk
    local istart = i
 
-   if read_type_body_fns[tn] then
-      i, def = read_type_body(ps, i + 1, istart, node, tn)
+   local tn_kind = type_body_kinds[tn]
+   if tn_kind then
+      i, def = read_type_body(ps, i + 1, istart, node, tn_kind)
    else
       i, def = read_type(ps, i)
    end
@@ -2354,7 +2397,8 @@ read_type_declaration = function(ps, i, node_name)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      var = macro_var
    else
       i, var = verify_kind(ps, i, "identifier")
       if not var then
@@ -2411,7 +2455,8 @@ local function read_type_constructor(ps, i, node_name, tn)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      asgn[BIDX.VAR] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+      asgn[BIDX.VAR] = macro_var
    else
       i, asgn[BIDX.VAR] = verify_kind(ps, i, "identifier")
       if not asgn[BIDX.VAR] then
@@ -2498,8 +2543,9 @@ local function read_local(ps, i)
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
-   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      return read_type_constructor(ps, i, "local_type", ntk)
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      local ntk_kind = type_body_kinds[ntk]
+      return read_type_constructor(ps, i, "local_type", ntk_kind)
    end
    return read_variable_declarations(ps, i + 1, "local_declaration")
 end
@@ -2520,8 +2566,9 @@ local function read_global(ps, i)
       return read_function_args_rets_body(ps, i, fn)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
-   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      return read_type_constructor(ps, i, "global_type", ntk)
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      local ntk_kind = type_body_kinds[ntk]
+      return read_type_constructor(ps, i, "global_type", ntk_kind)
    elseif ps.tokens[i + 1].kind == "identifier" then
       return read_variable_declarations(ps, i + 1, "global_declaration")
    end
@@ -2545,7 +2592,8 @@ read_record_function = function(ps, i)
          if not ident then
             return fail(ps2, ii, "syntax error, expected identifier")
          end
-         return ii, { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         local macro_var = { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
+         return ii, macro_var
       end
       local nii
       local nb

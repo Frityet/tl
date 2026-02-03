@@ -27,7 +27,7 @@ describe("tl.load", function()
          ]]
          local lua_chunk = load(lua_code)
          local result = lua_chunk()
-         assert.match(result, "code.tl:1:19: in local declaration: a: got integer, expected string")
+         assert.match(result, "code.tl:1:19: in local declaration: a: got integer 123, expected string")
       end)
 
       it("can run even with type check errors if not using 'c'", function()

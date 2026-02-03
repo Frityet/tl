@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local context = require("teal.check.context")
 local type Context = context.Context
 

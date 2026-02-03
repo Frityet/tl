@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local environment = require("teal.environment")
 local type Env = environment.Env
 local type Feat = environment.Feat

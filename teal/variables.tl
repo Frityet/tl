@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type attributes = require("teal.attributes")
 local type Attribute = attributes.Attribute
 

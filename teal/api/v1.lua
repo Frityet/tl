@@ -1,4 +1,5 @@
-local type = type; local environment = require("teal.environment")
+local type = type
+local environment = require("teal.environment")
 
 
 

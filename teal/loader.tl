@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local environment = require("teal.environment")
 local lua_generator = require("teal.gen.lua_generator")
 local package_loader = require("teal.package_loader")

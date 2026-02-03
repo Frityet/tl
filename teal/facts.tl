@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local tldebug = require("teal.debug")
 local TL_DEBUG_FACTS = tldebug.TL_DEBUG_FACTS
 
@@ -219,8 +220,8 @@ function facts.facts_not(w: Where, f1: Fact): Fact
 end
 
 -- t1 ∪ t2
-local function unite_types(w: Where, t1: Type, t2: Type): Type, string
-   return unite(w, {t2, t1})
+local function unite_types(ck: TypeChecker, w: Where, t1: Type, t2: Type): Type, string
+   return unite(w, {t2, t1}, nil, not ck.feat_strict_nil)
 end
 
 -- t1 ∩ t2
@@ -236,7 +237,7 @@ local function intersect_types(ck: TypeChecker, w: Where, t1: Type, t2: Type): T
          end
       end
       if #out > 0 then
-         return unite(w, out)
+         return unite(w, out, nil, not ck.feat_strict_nil)
       end
    end
    if ck:is_a(t1, t2) then
@@ -287,7 +288,7 @@ local function subtract_types(ck: TypeChecker, w: Where, t1: Type, t2: Type): Ty
       return a_type(w, "nil", {}) -- because of implicit nil in all unions
    end
 
-   return unite(w, typs)
+   return unite(w, typs, nil, not ck.feat_strict_nil)
 end
 
 local eval_not: function(TypeChecker, f: Fact): {string:IsFact|EqFact}
@@ -349,12 +350,12 @@ eval_not = function(ck: TypeChecker, f: Fact): {string:IsFact|EqFact}
    end
 end
 
-or_facts = function(_ck: TypeChecker, fs1: {string:IsFact|EqFact}, fs2: {string:IsFact|EqFact}): {string:IsFact|EqFact}
+or_facts = function(ck: TypeChecker, fs1: {string:IsFact|EqFact}, fs2: {string:IsFact|EqFact}): {string:IsFact|EqFact}
    local ret: {string:IsFact|EqFact} = {}
 
    for var, f in pairs(fs2) do
       if fs1[var] then
-         local united = unite_types(f.w, f.typ, fs1[var].typ)
+         local united = unite_types(ck, f.w, f.typ, fs1[var].typ)
          if fs1[var].fact == "is" and f.fact == "is" then
             ret[var] = IsFact { var = var, typ = united, w = f.w }
          else

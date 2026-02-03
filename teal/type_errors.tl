@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 

@@ -1,3 +1,4 @@
+
 local errors = require("teal.errors")
 
 
@@ -379,7 +380,9 @@ local BLOCK_KINDS = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
+   ["record"] = true,
    ["interface"] = true,
+   ["enum"] = true,
    ["pragma"] = true,
    ["error_block"] = true,
    ["userdata"] = true,

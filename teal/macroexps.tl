@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local type type_checker = require("teal.check.type_checker")
 local type TypeChecker = type_checker.TypeChecker
 

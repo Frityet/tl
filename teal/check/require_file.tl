@@ -1,3 +1,4 @@
+--#pragma strict_nil off
 local input = require("teal.input")
 
 local type errors = require("teal.errors")
