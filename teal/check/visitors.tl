@@ -400,6 +400,25 @@ local function type_has_explicit_nil(self: Context, t: Type, seen?: {Type:boolea
    return false
 end
 
+local function has_explicit_argtypes(args: Node): boolean
+   if not args then
+      return false
+   end
+   for _, arg_node in ipairs(args) do
+      if arg_node.argtype then
+         return true
+      end
+   end
+   return false
+end
+
+local function function_has_explicit_types(args: Node, rets: TupleType): boolean
+   if rets and #rets.tuple > 0 then
+      return true
+   end
+   return has_explicit_argtypes(args)
+end
+
 local function truthy_type(self: Context, t: Type, seen?: {Type:boolean}): Type | nil, boolean
    seen = seen or {}
    if seen[t] then
@@ -448,6 +467,13 @@ local function truthy_type(self: Context, t: Type, seen?: {Type:boolean}): Type 
    else
       return t, false
    end
+end
+
+local function is_literal_value_type(t: Type): boolean
+   return (t is StringType and t.literal ~= nil)
+      or (t is NumberType and t.literal ~= nil)
+      or (t is IntegerType and t.literal ~= nil)
+      or (t is BooleanType and t.literal ~= nil)
 end
 
 -- This type must never be used for any values
@@ -926,7 +952,7 @@ visit_node.cbs = {
       before = function(self: Context, node: Node)
          local name = node.var.tk
          local resolved, aliasing = self:get_typedecl(node.value)
-         local var = self:add_var(node.var, name, resolved, node.var.attribute)
+         local var = self:add_var(node.var, name, resolved, node.var.attribute, nil, true)
          if aliasing then
             var.aliasing = aliasing
          end
@@ -1002,6 +1028,18 @@ visit_node.cbs = {
 
             assert(var)
             local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
+            if not keep_literal and node.exps and node.exps[i] then
+               local exp = node.exps[i]
+               if not (exp.kind == "string"
+                  or exp.kind == "number"
+                  or exp.kind == "integer"
+                  or exp.kind == "boolean"
+                  or exp.kind == "nil"
+                  or exp.kind == "literal_table")
+               then
+                  keep_literal = true
+               end
+            end
             self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing", keep_literal)
             if var.elide_type then
                self.errs:add_warning("hint", node, "hint: consider using 'local type' instead")
@@ -1614,8 +1652,8 @@ visit_node.cbs = {
          local args = children[2]
          assert(args is TupleType)
 
-         self:add_internal_function_variables(node, args)
-         self:add_function_definition_for_recursion(node, args, self.feat_arity)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
+         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self: Context, node: Node, children: {Type}): Type
          local args = children[2]
@@ -1631,7 +1669,7 @@ visit_node.cbs = {
             rets = self.get_rets(rets),
          }))
 
-         self:add_var(node, node.name.tk, t)
+         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.args, node.rets))
          return t
       end,
    },
@@ -1660,7 +1698,7 @@ visit_node.cbs = {
             macroexp = node.macrodef,
          }))
 
-         self:add_var(node, node.name.tk, t)
+         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.macrodef.args, node.macrodef.rets))
          return t
       end,
    },
@@ -1685,8 +1723,8 @@ visit_node.cbs = {
          local args = children[2]
          assert(args is TupleType)
 
-         self:add_internal_function_variables(node, args)
-         self:add_function_definition_for_recursion(node, args, self.feat_arity)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
+         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self: Context, node: Node, children: {Type}): Type
          local args = children[2]
@@ -1736,7 +1774,7 @@ visit_node.cbs = {
          local rtype = self:to_structural(resolve_typedecl(t))
 
          -- This must be set early, before we return due to any errors
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
 
          if rtype is GenericType then
             rtype = rtype.t
@@ -1875,7 +1913,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args is TupleType)
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self: Context, node: Node, children: {Type}): Type
          local args = children[1]
@@ -1901,7 +1939,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args is TupleType)
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self: Context, node: Node, children: {Type}): Type
          local args = children[1]
@@ -2235,6 +2273,8 @@ visit_node.cbs = {
          if node.op.op == "==" or node.op.op == "~=" then
             local ua_cmp = drop_constant_value(ua)
             local ub_cmp = drop_constant_value(ub)
+            local ua_literal = is_literal_value_type(ua)
+            local ub_literal = is_literal_value_type(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
                self:check_metamethod(node, binop_to_metamethod[node.op.op], ra, rb, ua, ub)
             end
@@ -2257,11 +2297,11 @@ visit_node.cbs = {
                         self.fdb:set_eq(node, node.e2.tk, ua)
                      end
                   end
-               elseif self:is_a(ub_cmp, ua_cmp) or ua is TypeVarType then
+               elseif self:is_a(ub_cmp, ua_cmp) or (ub_literal and self:is_a(ub, ua)) or ua is TypeVarType then
                   if node.op.op == "==" and node.e1.kind == "variable" then
                      self.fdb:set_eq(node, node.e1.tk, ub)
                   end
-               elseif self:is_a(ua_cmp, ub_cmp) or ub is TypeVarType then
+               elseif self:is_a(ua_cmp, ub_cmp) or (ua_literal and self:is_a(ua, ub)) or ub is TypeVarType then
                   if node.op.op == "==" and node.e2.kind == "variable" then
                      self.fdb:set_eq(node, node.e2.tk, ua)
                   end

@@ -5031,12 +5031,12 @@ function Context:add_internal_function_variables(node, args)
    end
 end
 
-function Context:add_function_definition_for_recursion(node, fnargs, feat_arity)
+function Context:add_function_definition_for_recursion(node, fnargs, feat_arity, keep_literal)
    self:add_var(nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
       min_arity = feat_arity and node.min_arity or 0,
       args = fnargs,
       rets = self.get_rets(node.rets),
-   })))
+   })), nil, nil, keep_literal)
 end
 
 function Context:end_function_scope(node)
@@ -8114,6 +8114,25 @@ local function type_has_explicit_nil(self, t, seen)
    return false
 end
 
+local function has_explicit_argtypes(args)
+   if not args then
+      return false
+   end
+   for _, arg_node in ipairs(args) do
+      if arg_node.argtype then
+         return true
+      end
+   end
+   return false
+end
+
+local function function_has_explicit_types(args, rets)
+   if rets and #rets.tuple > 0 then
+      return true
+   end
+   return has_explicit_argtypes(args)
+end
+
 local function truthy_type(self, t, seen)
    seen = seen or {}
    if seen[t] then
@@ -8640,7 +8659,7 @@ visit_node.cbs = {
       before = function(self, node)
          local name = node.var.tk
          local resolved, aliasing = self:get_typedecl(node.value)
-         local var = self:add_var(node.var, name, resolved, node.var.attribute)
+         local var = self:add_var(node.var, name, resolved, node.var.attribute, nil, true)
          if aliasing then
             var.aliasing = aliasing
          end
@@ -9329,7 +9348,7 @@ visit_node.cbs = {
          assert(args.typename == "tuple")
 
          self:add_internal_function_variables(node, args)
-         self:add_function_definition_for_recursion(node, args, self.feat_arity)
+         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
          local args = children[2]
@@ -9345,7 +9364,7 @@ visit_node.cbs = {
             rets = self.get_rets(rets),
          }))
 
-         self:add_var(node, node.name.tk, t)
+         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.args, node.rets))
          return t
       end,
    },
@@ -9374,7 +9393,7 @@ visit_node.cbs = {
             macroexp = node.macrodef,
          }))
 
-         self:add_var(node, node.name.tk, t)
+         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.macrodef.args, node.macrodef.rets))
          return t
       end,
    },
@@ -9400,7 +9419,7 @@ visit_node.cbs = {
          assert(args.typename == "tuple")
 
          self:add_internal_function_variables(node, args)
-         self:add_function_definition_for_recursion(node, args, self.feat_arity)
+         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
          local args = children[2]
