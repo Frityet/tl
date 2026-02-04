@@ -246,6 +246,7 @@ describe("record method", function()
    it("allows functions declared on method tables (#27)", function()
       util.mock_io(finally, {
          ["foo.tl"] = [[
+            --#pragma strict_nil off
             local type Point = record
                x: number
                y: number
@@ -582,14 +583,16 @@ describe("record method", function()
 
       it("regression test for #620", function ()
          util.mock_io(finally, {
-            ["base.tl"] = [[
+         ["base.tl"] = [[
+               --#pragma strict_nil off
                local record M
                   foo: function(M)
                end
 
                return M
             ]],
-            ["t1.tl"] = [[
+         ["t1.tl"] = [[
+               --#pragma strict_nil off
                local B = require('base')
 
                local M: B = {}
@@ -599,7 +602,8 @@ describe("record method", function()
 
                return M
             ]],
-            ["t2.tl"] = [[
+         ["t2.tl"] = [[
+               --#pragma strict_nil off
                local B = require('base')
 
                local M: B = {}
@@ -609,7 +613,8 @@ describe("record method", function()
 
                return M
             ]],
-            ["top.tl"] = [[
+         ["top.tl"] = [[
+               --#pragma strict_nil off
                local B = require('base')
 
                local function new(cond: boolean): B
