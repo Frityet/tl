@@ -1,3 +1,4 @@
+local tl = require("teal.api.v2")
 local util = require("spec.util")
 
 describe("literal types", function()
@@ -192,4 +193,37 @@ describe("literal types", function()
    ]], {
       { msg = "in assignment: got string \"hello\" | string \"world\", expected string \"hello\"" }
    }))
+
+   it("preserves literal unions in exported type declarations", function()
+      util.mock_io(finally, {
+         ["mod.tl"] = [[
+            local record Mod
+               record Note
+                  kind: "a" | "b"
+               end
+
+               record Snapshot
+                  notes: {Note}
+               end
+            end
+
+            return Mod
+         ]],
+         ["main.tl"] = [[
+            local type Mod = require("mod")
+
+            local function seed(): Mod.Snapshot
+               local notes: {Mod.Note} = {
+                  { kind = "a" },
+               }
+               return { notes = notes }
+            end
+
+            return seed
+         ]],
+      })
+      local result = tl.check_file("main.tl")
+      assert.same({}, result.syntax_errors)
+      assert.same({}, result.type_errors)
+   end)
 end)

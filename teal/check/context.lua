@@ -477,7 +477,7 @@ do
          self.errs:add_unknown(node, name)
       end
       if not attribute and not keep_literal then
-         t = drop_constant_values(t)
+         t = drop_constant_values(t, false)
       end
 
       if self.collector and node then
@@ -1572,7 +1572,7 @@ function Context:begin_temporary_record_types(typ)
             assert(ftype.is_alias)
             self:resolve_nominal(def)
          end
-         self:add_var(nil, fname, ftype)
+         self:add_var(nil, fname, ftype, nil, nil, true)
       end
    end
 end

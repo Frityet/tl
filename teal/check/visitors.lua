@@ -722,7 +722,7 @@ local function infer_table_literal(self, node, children)
 
                for _, c in ipairs(cv.tuple) do
                   local ct = c
-                  local elem = drop_constant_values(ct)
+                  local elem = drop_constant_values(ct, false)
                   elements = self:expand_type(node, elements, elem)
                   typs[last_array_idx] = untuple(ct)
                   last_array_idx = last_array_idx + 1
@@ -730,12 +730,12 @@ local function infer_table_literal(self, node, children)
             else
                typs[last_array_idx] = uvtype
                last_array_idx = last_array_idx + 1
-               local elem = drop_constant_values(uvtype)
+               local elem = drop_constant_values(uvtype, false)
                elements = self:expand_type(node, elements, elem)
             end
          else
             if not is_positive_int(n) then
-               local elem = drop_constant_values(uvtype)
+               local elem = drop_constant_values(uvtype, false)
                elements = self:expand_type(node, elements, elem)
                is_not_tuple = true
             elseif n then
@@ -743,7 +743,7 @@ local function infer_table_literal(self, node, children)
                if n > largest_array_idx then
                   largest_array_idx = n
                end
-               local elem = drop_constant_values(uvtype)
+               local elem = drop_constant_values(uvtype, false)
                elements = self:expand_type(node, elements, elem)
             end
          end
@@ -794,7 +794,7 @@ local function infer_table_literal(self, node, children)
          local last_t
          for _, current_t in pairs(typs) do
             if last_t then
-               if not self:same_type(drop_constant_values(last_t), drop_constant_values(current_t)) then
+               if not self:same_type(drop_constant_values(last_t, false), drop_constant_values(current_t, false)) then
                   pure_array = false
                   break
                end
@@ -1352,11 +1352,11 @@ visit_node.cbs = {
                self:resolve_nominal(module_type)
                self.module_type = module_type.resolved
             else
-               self.module_type = drop_constant_values(module_type)
+               self.module_type = drop_constant_values(module_type, true)
             end
 
             expected = self:infer_at(node, got)
-            local dropped = drop_constant_values(expected)
+            local dropped = drop_constant_values(expected, false)
             if dropped.typename == "tuple" then
                expected = dropped
             end
