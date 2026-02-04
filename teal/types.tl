@@ -377,7 +377,7 @@ local record types
    show_typevar: function(typevar: string, what: TypeName): string
    show_type_base: function(t: Type, short: boolean, seen: {Type:string}): string
    drop_constant_value: function(Type): Type
-   drop_constant_values: function(Type): Type
+   drop_constant_values: function(Type, boolean): Type
 
    type TypeFunction = function<S>(S, Type, function<T is Type>(t: T, all_same: boolean): T, boolean): Type, boolean
    type TypeFunctionMap<S> = {TypeName: TypeFunction<S>}
@@ -1287,21 +1287,29 @@ function types.drop_constant_value(t: Type): Type
    return t
 end
 
-function types.drop_constant_values(t: Type): Type
-   local function has_constant(typ: Type, seen: {Type:boolean}): boolean
+function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
+   local function has_constant(typ: Type, seen: {Type:boolean}, in_typedecl: boolean): boolean
       if seen[typ] then
          return false
       end
       seen[typ] = true
 
       if typ is StringType and typ.literal then
-         return true
+         if not (keep_typedecls and in_typedecl) then
+            return true
+         end
       elseif typ is NumberType and typ.literal ~= nil then
-         return true
+         if not (keep_typedecls and in_typedecl) then
+            return true
+         end
       elseif typ is IntegerType and typ.literal ~= nil then
-         return true
+         if not (keep_typedecls and in_typedecl) then
+            return true
+         end
       elseif typ is BooleanType and typ.literal ~= nil then
-         return true
+         if not (keep_typedecls and in_typedecl) then
+            return true
+         end
       elseif typ.needs_compat then
          return true
       end
@@ -1312,119 +1320,129 @@ function types.drop_constant_values(t: Type): Type
 
       if typ is GenericType then
          for _, tf in ipairs(typ.typeargs) do
-            if has_constant(tf, seen) then
+            if has_constant(tf, seen, in_typedecl) then
                return true
             end
          end
-         return has_constant(typ.t, seen)
+         return has_constant(typ.t, seen, in_typedecl)
       elseif typ is ArrayType then
-         return has_constant(typ.elements, seen)
+         return has_constant(typ.elements, seen, in_typedecl)
       elseif typ is TypeArgType then
          if typ.constraint then
-            return has_constant(typ.constraint, seen)
+            return has_constant(typ.constraint, seen, in_typedecl)
          end
       elseif typ is TypeVarType then
          if typ.constraint then
-            return has_constant(typ.constraint, seen)
+            return has_constant(typ.constraint, seen, in_typedecl)
          end
       elseif typ is TypeDeclType then
-         return has_constant(typ.def, seen)
+         return has_constant(typ.def, seen, true)
       elseif typ is NominalType then
          if typ.typevals then
             for _, tf in ipairs(typ.typevals) do
-               if has_constant(tf, seen) then
+               if has_constant(tf, seen, in_typedecl) then
                   return true
                end
             end
          end
       elseif typ is FunctionType then
-         return has_constant(typ.args, seen) or has_constant(typ.rets, seen)
+         return has_constant(typ.args, seen, in_typedecl) or has_constant(typ.rets, seen, in_typedecl)
       elseif typ is RecordLikeType then
-         if typ.elements and has_constant(typ.elements, seen) then
+         local record_in_typedecl = in_typedecl or (keep_typedecls and typ.declname ~= nil)
+         if typ.elements and has_constant(typ.elements, seen, record_in_typedecl) then
             return true
          end
          if typ.interface_list then
             for _, v in ipairs(typ.interface_list) do
-               if has_constant(v, seen) then
+               if has_constant(v, seen, record_in_typedecl) then
                   return true
                end
             end
          end
          for _, k in ipairs(typ.field_order) do
-            if has_constant(typ.fields[k], seen) then
+            if has_constant(typ.fields[k], seen, record_in_typedecl) then
                return true
             end
          end
          if typ.meta_fields then
             for _, k in ipairs(typ.meta_field_order) do
-               if has_constant(typ.meta_fields[k], seen) then
+               if has_constant(typ.meta_fields[k], seen, record_in_typedecl) then
                   return true
                end
             end
          end
       elseif typ is MapType then
-         return has_constant(typ.keys, seen) or has_constant(typ.values, seen)
+         return has_constant(typ.keys, seen, in_typedecl) or has_constant(typ.values, seen, in_typedecl)
       elseif typ is UnionType then
          for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen) then
+            if has_constant(tf, seen, in_typedecl) then
                return true
             end
          end
       elseif typ is PolyType then
          for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen) then
+            if has_constant(tf, seen, in_typedecl) then
                return true
             end
          end
       elseif typ is TupleTableType then
          for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen) then
+            if has_constant(tf, seen, in_typedecl) then
                return true
             end
          end
       elseif typ is TupleType then
          for _, tf in ipairs(typ.tuple) do
-            if has_constant(tf, seen) then
+            if has_constant(tf, seen, in_typedecl) then
                return true
             end
          end
       elseif typ is SelfType then
          if typ.display_type ~= nil then
-            return has_constant(typ.display_type, seen)
+            return has_constant(typ.display_type, seen, in_typedecl)
          end
       end
 
       return false
    end
 
-   if not has_constant(t, {}) then
+   if not has_constant(t, {}, false) then
       return t
    end
 
    local seen: {Type:Type} = {}
 
-   local function drop(typ: Type): Type
+   local function drop(typ: Type, in_typedecl: boolean): Type
       if seen[typ] then
          return seen[typ]
       end
 
       if typ is StringType and typ.literal then
-         local ret = shallow_copy_new_type(typ)
-         ret.literal = nil
-         return ret
+         if not (keep_typedecls and in_typedecl) then
+            local ret = shallow_copy_new_type(typ)
+            ret.literal = nil
+            return ret
+         end
       elseif typ is NumberType and typ.literal ~= nil then
-         local ret = shallow_copy_new_type(typ)
-         ret.literal = nil
-         return ret
+         if not (keep_typedecls and in_typedecl) then
+            local ret = shallow_copy_new_type(typ)
+            ret.literal = nil
+            return ret
+         end
       elseif typ is IntegerType and typ.literal ~= nil then
-         local ret = shallow_copy_new_type(typ)
-         ret.literal = nil
-         return ret
+         if not (keep_typedecls and in_typedecl) then
+            local ret = shallow_copy_new_type(typ)
+            ret.literal = nil
+            return ret
+         end
       elseif typ is BooleanType and typ.literal ~= nil then
-         local ret = shallow_copy_new_type(typ)
-         ret.literal = nil
-         return ret
-      elseif typ.needs_compat then
+         if not (keep_typedecls and in_typedecl) then
+            local ret = shallow_copy_new_type(typ)
+            ret.literal = nil
+            return ret
+         end
+      end
+      if typ.needs_compat then
          local ret = shallow_copy_new_type(typ)
          ret.needs_compat = nil
          return ret
@@ -1441,17 +1459,17 @@ function types.drop_constant_values(t: Type): Type
          assert(copy is GenericType)
          copy.typeargs = {}
          for i, tf in ipairs(typ.typeargs) do
-            copy.typeargs[i] = drop(tf) as TypeArgType
+            copy.typeargs[i] = drop(tf, in_typedecl) as TypeArgType
          end
-         copy.t = drop(typ.t) as FirstOrderType
+         copy.t = drop(typ.t, in_typedecl) as FirstOrderType
       elseif typ is ArrayType then
          assert(copy is ArrayType)
-         copy.elements = drop(typ.elements)
+         copy.elements = drop(typ.elements, in_typedecl)
       elseif typ is TypeArgType then
          assert(copy is TypeArgType)
          copy.typearg = typ.typearg
          if typ.constraint then
-            copy.constraint = drop(typ.constraint)
+            copy.constraint = drop(typ.constraint, in_typedecl)
          end
       elseif typ is UnresolvableTypeArgType then
          assert(copy is UnresolvableTypeArgType)
@@ -1463,11 +1481,11 @@ function types.drop_constant_values(t: Type): Type
          assert(copy is TypeVarType)
          copy.typevar = typ.typevar
          if typ.constraint then
-            copy.constraint = drop(typ.constraint)
+            copy.constraint = drop(typ.constraint, in_typedecl)
          end
       elseif typ is TypeDeclType then
          assert(copy is TypeDeclType)
-         copy.def = drop(typ.def) as FirstClassType
+         copy.def = drop(typ.def, true) as FirstClassType
          copy.is_alias = typ.is_alias
          copy.is_nested_alias = typ.is_nested_alias
       elseif typ is NominalType then
@@ -1476,7 +1494,7 @@ function types.drop_constant_values(t: Type): Type
          if typ.typevals then
             copy.typevals = {}
             for i, tf in ipairs(typ.typevals) do
-               copy.typevals[i] = drop(tf) as FirstClassType
+               copy.typevals[i] = drop(tf, in_typedecl) as FirstClassType
             end
          end
          copy.found = typ.found
@@ -1486,19 +1504,20 @@ function types.drop_constant_values(t: Type): Type
          copy.min_arity = typ.min_arity
          copy.is_method = typ.is_method
          copy.is_record_function = typ.is_record_function
-         copy.args = drop(typ.args) as TupleType
-         copy.rets = drop(typ.rets) as TupleType
+         copy.args = drop(typ.args, in_typedecl) as TupleType
+         copy.rets = drop(typ.rets, in_typedecl) as TupleType
          copy.special_function_handler = typ.special_function_handler
       elseif typ is RecordLikeType then
          assert(copy is RecordType or copy is InterfaceType)
          copy.declname = typ.declname
+         local record_in_typedecl = in_typedecl or (keep_typedecls and typ.declname ~= nil)
          if typ.elements then
-            copy.elements = drop(typ.elements)
+            copy.elements = drop(typ.elements, record_in_typedecl)
          end
          if typ.interface_list then
             copy.interface_list = {}
             for i, v in ipairs(typ.interface_list) do
-               copy.interface_list[i] = drop(v) as (ArrayType | NominalType)
+               copy.interface_list[i] = drop(v, record_in_typedecl) as (ArrayType | NominalType)
             end
          end
          copy.is_userdata = typ.is_userdata
@@ -1506,24 +1525,24 @@ function types.drop_constant_values(t: Type): Type
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do
             copy.field_order[i] = k
-            copy.fields[k] = drop(typ.fields[k])
+            copy.fields[k] = drop(typ.fields[k], record_in_typedecl)
          end
          if typ.meta_fields then
             copy.meta_fields = {}
             copy.meta_field_order = {}
             for i, k in ipairs(typ.meta_field_order) do
                copy.meta_field_order[i] = k
-               copy.meta_fields[k] = drop(typ.meta_fields[k])
+               copy.meta_fields[k] = drop(typ.meta_fields[k], record_in_typedecl)
             end
          end
       elseif typ is MapType then
          assert(copy is MapType)
-         copy.keys = drop(typ.keys)
-         copy.values = drop(typ.values)
+         copy.keys = drop(typ.keys, in_typedecl)
+         copy.values = drop(typ.values, in_typedecl)
       elseif typ is UnionType then
          local out_types: {Type} = {}
          for _, tf in ipairs(typ.types) do
-            table.insert(out_types, drop(tf))
+            table.insert(out_types, drop(tf, in_typedecl))
          end
          local u = types.unite(typ, out_types, true, false)
          seen[typ] = u
@@ -1532,33 +1551,33 @@ function types.drop_constant_values(t: Type): Type
          assert(copy is PolyType)
          copy.types = {}
          for i, tf in ipairs(typ.types) do
-            copy.types[i] = drop(tf) as (FunctionType | GenericType)
+            copy.types[i] = drop(tf, in_typedecl) as (FunctionType | GenericType)
          end
       elseif typ is TupleTableType then
          assert(copy is TupleTableType)
          copy.inferred_at = typ.inferred_at
          copy.types = {}
          for i, tf in ipairs(typ.types) do
-            copy.types[i] = drop(tf)
+            copy.types[i] = drop(tf, in_typedecl)
          end
       elseif typ is TupleType then
          assert(copy is TupleType)
          copy.is_va = typ.is_va
          copy.tuple = {}
          for i, tf in ipairs(typ.tuple) do
-            copy.tuple[i] = drop(tf)
+            copy.tuple[i] = drop(tf, in_typedecl)
          end
       elseif typ is SelfType then
          assert(copy is SelfType)
          if typ.display_type ~= nil then
-            copy.display_type = drop(typ.display_type) as RecordLikeType
+            copy.display_type = drop(typ.display_type, in_typedecl) as RecordLikeType
          end
       end
 
       return copy
    end
 
-   return drop(t)
+   return drop(t, false)
 end
 
 function types.type_at<T is Type>(w: Where, t: T): T
