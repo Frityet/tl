@@ -1795,9 +1795,9 @@ function Context:add_global(node: Node, varname: string, valtype: Type, is_assig
    return var
 end
 
-function Context:add_internal_function_variables(node: Node, args: TupleType)
+function Context:add_internal_function_variables(node: Node, args: TupleType, keep_literal?: boolean)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(nil, "@return", node.rets or a_tuple(node, {}))
+   self:add_var(nil, "@return", node.rets or a_tuple(node, {}), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -1809,12 +1809,12 @@ function Context:add_internal_function_variables(node: Node, args: TupleType)
    end
 end
 
-function Context:add_function_definition_for_recursion(node: Node, fnargs: TupleType, feat_arity: boolean)
+function Context:add_function_definition_for_recursion(node: Node, fnargs: TupleType, feat_arity: boolean, keep_literal?: boolean)
    self:add_var(nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
       min_arity = feat_arity and node.min_arity or 0,
       args = fnargs,
       rets = self.get_rets(node.rets),
-   })))
+   })), nil, nil, keep_literal)
 end
 
 function Context:end_function_scope(node: Node)
