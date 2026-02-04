@@ -10,6 +10,7 @@ describe("local type", function()
    it("can declare a nominal type alias (regression test for #238)", function ()
       util.mock_io(finally, {
          ["module.tl"] = [[
+            --#pragma strict_nil off
             local record module
               record Type
                 data: number
@@ -18,6 +19,7 @@ describe("local type", function()
             return module
          ]],
          ["main.tl"] = [[
+            --#pragma strict_nil off
             local module = require "module"
             local type Boo = module.Type
             local var: Boo = { dato = 0 }
@@ -28,8 +30,8 @@ describe("local type", function()
 
       assert.same({}, result.syntax_errors)
       assert.same({
-         { y = 3, x = 32, filename = "main.tl", msg = "in local declaration: var: unknown field dato" },
-         { y = 4, x = 23, filename = "main.tl", msg = "invalid key 'dato' in record 'var' of type Boo" },
+         { y = 4, x = 32, filename = "main.tl", msg = "in local declaration: var: unknown field dato" },
+         { y = 5, x = 23, filename = "main.tl", msg = "invalid key 'dato' in record 'var' of type Boo" },
       }, result.type_errors)
    end)
 
@@ -121,12 +123,14 @@ describe("local type", function()
    it("can require a module", function ()
       util.mock_io(finally, {
          ["class.tl"] = [[
+            --#pragma strict_nil off
             local record Class
               data: number
             end
             return Class
          ]],
          ["main.tl"] = [[
+            --#pragma strict_nil off
             local type Class = require("class")
             local obj: Class = { data = 2 }
          ]],
@@ -140,12 +144,14 @@ describe("local type", function()
    it("can require a module and type is usable", function ()
       util.mock_io(finally, {
          ["class.tl"] = [[
+            --#pragma strict_nil off
             local record Class
               data: number
             end
             return Class
          ]],
          ["main.tl"] = [[
+            --#pragma strict_nil off
             local type Class = require("class")
             local obj: Class = { invalid = 2 }
          ]],
@@ -154,13 +160,14 @@ describe("local type", function()
 
       assert.same({}, result.syntax_errors)
       assert.same({
-         { y = 2, x = 34, filename = "main.tl", msg = "in local declaration: obj: unknown field invalid" },
+         { y = 3, x = 34, filename = "main.tl", msg = "in local declaration: obj: unknown field invalid" },
       }, result.type_errors)
    end)
 
    it("can require a module and its globals are visible", function ()
       util.mock_io(finally, {
          ["class.tl"] = [[
+            --#pragma strict_nil off
             global record Glob
               hello: number
             end
@@ -171,6 +178,7 @@ describe("local type", function()
             return Class
          ]],
          ["main.tl"] = [[
+            --#pragma strict_nil off
             local type Class = require("class")
             local obj: Glob = { hello = 2 }
             local obj2: Glob = { invalid = 2 }
@@ -180,7 +188,7 @@ describe("local type", function()
 
       assert.same({}, result.syntax_errors)
       assert.same({
-         { y = 3, x = 34, filename = "main.tl", msg = "in local declaration: obj2: unknown field invalid" },
+         { y = 4, x = 34, filename = "main.tl", msg = "in local declaration: obj2: unknown field invalid" },
       }, result.type_errors)
    end)
 

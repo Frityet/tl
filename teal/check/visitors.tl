@@ -880,6 +880,21 @@ local function total_record_check(t: RecordLikeType, seen_keys: {CheckableKey:Wh
    return is_total, missing
 end
 
+local function required_record_check(self: Context, t: RecordLikeType, seen_keys: {CheckableKey:Where}): {string}
+   local missing: {string}
+   local niltype = a_type(t, "nil", {})
+   for _, key in ipairs(t.field_order) do
+      local ftype = t.fields[key]
+      if not (ftype is TypeDeclType or (ftype is FunctionType and ftype.is_record_function)) then
+         if not seen_keys[key] and not self:is_a(niltype, ftype) then
+            missing = missing or {}
+            table.insert(missing, tostring(key))
+         end
+      end
+   end
+   return missing
+end
+
 local function total_map_check(keys: Type, seen_keys: {CheckableKey:Where}): boolean, {string}
    local is_total = true
    local missing: {string}
@@ -1594,6 +1609,13 @@ visit_node.cbs = {
                assert_is_a(self, node[i].value, cvtype, decltype.values, node, "in map value")
             else
                self.errs:add_in_context(node[i], node, "unexpected key of type %s in table of type %s", cktype, decltype)
+            end
+         end
+
+         if self.feat_strict_nil and decltype is RecordType then
+            local missing = required_record_check(self, decltype, seen_keys)
+            if missing then
+               self.errs:add(node, "record literal is missing required fields (missing: " .. table.concat(missing, ", ") .. ")")
             end
          end
 
@@ -2511,6 +2533,11 @@ visit_node.cbs = {
                is_named_vararg = true
             end
             t = a_vararg(node, { t })
+         elseif node.opt and self.feat_strict_nil then
+            local niltype = a_type(node, "nil", {})
+            if not self:is_a(niltype, t) then
+               t = unite(node, { t, niltype }, nil, false)
+            end
          end
 
          local arg_var <const> = self:add_var(node, node.tk, t)

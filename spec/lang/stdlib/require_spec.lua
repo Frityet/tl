@@ -900,6 +900,7 @@ describe("require", function()
       it("can be made using type-requires in order", function ()
          util.mock_io(finally, {
             ["main.tl"] = [[
+               --#pragma strict_nil off
                -- Process Person first, then House.
 
                local type Person = require("person")
@@ -913,6 +914,7 @@ describe("require", function()
                h.owner = p
             ]],
             ["person.tl"] = [[
+               --#pragma strict_nil off
                -- Since Person is processed first, this is not a circular require
                -- and the full type will be available for use below.
                local type House = require("house")
@@ -928,6 +930,7 @@ describe("require", function()
                return Person
             ]],
             ["house.tl"] = [[
+               --#pragma strict_nil off
                -- This is a circular require because House is required by Person:
                -- this will not fail and this module can only refer to the type Person,
                -- but it cannot use its contents.
@@ -951,6 +954,7 @@ describe("require", function()
       it("will report errors if circular requires are out-of-order", function ()
          util.mock_io(finally, {
             ["main.tl"] = [[
+               --#pragma strict_nil off
                -- Processing in reverse will cause a clash:
                local type House = require("house")
                local type Person = require("person")
@@ -963,6 +967,7 @@ describe("require", function()
                h.owner = p
             ]],
             ["house.tl"] = [[
+               --#pragma strict_nil off
                -- This is processed first, and will cause no issues.
                local type Person = require("person")
 
@@ -973,6 +978,7 @@ describe("require", function()
                return House
             ]],
             ["person.tl"] = [[
+               --#pragma strict_nil off
                -- However, this is a circular require because Person was required by House.
                -- this module can only refer to the type House, but it cause errors
                -- when trying to use its contents, since they're not fully defined yet.
@@ -996,14 +1002,15 @@ describe("require", function()
          assert.same(0, #result.env.loaded["./house.tl"].type_errors)
          assert.same(2, #result.env.loaded["./person.tl"].type_errors)
          assert.same({
-            { filename = "./person.tl", y = 10, x = 27, msg = "cannot dereference a type from a circular require" },
-            { filename = "./person.tl", y = 12, x = 38, msg = "cannot dereference a type from a circular require" },
+            { filename = "./person.tl", y = 11, x = 27, msg = "cannot dereference a type from a circular require" },
+            { filename = "./person.tl", y = 13, x = 38, msg = "cannot dereference a type from a circular require" },
          }, result.env.loaded["./person.tl"].type_errors)
       end)
 
       it("can avoid ordering issues by separating circular declarations from implementations", function ()
          util.mock_io(finally, {
             ["main.tl"] = [[
+               --#pragma strict_nil off
                local type Person = require("person")
                local type House = require("house")
 
@@ -1015,6 +1022,7 @@ describe("require", function()
                h.owner = p
             ]],
             ["types/house.tl"] = [[
+               --#pragma strict_nil off
                -- This declares House, and needs the Person type.
                local type Person = require("types.person")
 
@@ -1026,6 +1034,7 @@ describe("require", function()
                return House
             ]],
             ["house.tl"] = [[
+               --#pragma strict_nil off
                -- This implements House, and needs the Person type.
                -- the order here doesn't matter.
                local type House = require("types.house")
@@ -1041,6 +1050,7 @@ describe("require", function()
                return House
             ]],
             ["types/person.tl"] = [[
+               --#pragma strict_nil off
                -- This declares Person, and needs the House type.
                local type House = require("types.house")
 
@@ -1052,6 +1062,7 @@ describe("require", function()
                return Person
             ]],
             ["person.tl"] = [[
+               --#pragma strict_nil off
                -- This implements Person, and needs the House type.
                -- the order here doesn't matter.
                local type House = require("types.house")
@@ -1080,6 +1091,7 @@ describe("require", function()
       it("by separating circular declarations from implementations, require order doesn't matter", function ()
          util.mock_io(finally, {
             ["main.tl"] = [[
+               --#pragma strict_nil off
                -- flipped to show that order doesn't matter:
                local type House = require("house")
                local type Person = require("person")
@@ -1092,6 +1104,7 @@ describe("require", function()
                h.owner = p
             ]],
             ["types/house.tl"] = [[
+               --#pragma strict_nil off
                -- This declares House, and needs the Person type.
                local type Person = require("types.person")
 
@@ -1103,6 +1116,7 @@ describe("require", function()
                return House
             ]],
             ["house.tl"] = [[
+               --#pragma strict_nil off
                -- This implements House, and needs the Person type.
                -- the order here doesn't matter.
                local type Person = require("types.person")
@@ -1118,6 +1132,7 @@ describe("require", function()
                return House
             ]],
             ["types/person.tl"] = [[
+               --#pragma strict_nil off
                -- This declares Person, and needs the House type.
                local type House = require("types.house")
 
@@ -1129,6 +1144,7 @@ describe("require", function()
                return Person
             ]],
             ["person.tl"] = [[
+               --#pragma strict_nil off
                -- This implements Person, and needs the House type.
                -- the order here doesn't matter.
                local type House = require("types.house")

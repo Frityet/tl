@@ -25,4 +25,31 @@ describe("strict nil", function()
    ]], {
       { msg = "in local declaration: n: got nil, expected integer" }
    }))
+
+   it("requires non-nilable record fields in literals", util.check_type_error([[
+      --#pragma strict_nil on
+      local record R<S>
+         k: S
+         a: integer | nil
+      end
+
+      local x: R<integer> = {}
+   ]], {
+      { msg = "record literal is missing required fields (missing: k)" }
+   }))
+
+   it("treats optional parameters as nilable", util.check_type_error([[
+      --#pragma strict_nil on
+      local record R<S>
+         k: S
+         a: integer | nil
+      end
+
+      local function test(x?: integer): R<integer>
+         local r: R<integer> = { k = x }
+         return r
+      end
+   ]], {
+      { msg = "in record field: k: got integer | nil, expected integer" }
+   }))
 end)

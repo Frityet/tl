@@ -311,12 +311,14 @@ describe("global", function()
       it("global type can require a module", function ()
          util.mock_io(finally, {
             ["class.tl"] = [[
+               --#pragma strict_nil off
                local record Class
                  data: number
                end
                return Class
             ]],
             ["main.tl"] = [[
+               --#pragma strict_nil off
                global type Class = require("class")
                local obj: Class = { data = 2 }
             ]],
@@ -330,12 +332,14 @@ describe("global", function()
       it("local type can require a module and type is usable", function ()
          util.mock_io(finally, {
             ["class.tl"] = [[
+               --#pragma strict_nil off
                local record Class
                  data: number
                end
                return Class
             ]],
             ["main.tl"] = [[
+               --#pragma strict_nil off
                global type Class = require("class")
                local obj: Class = { invalid = 2 }
             ]],
@@ -344,7 +348,7 @@ describe("global", function()
 
          assert.same({}, result.syntax_errors)
          assert.same({
-            { y = 2, x = 37, filename = "main.tl", msg = "in local declaration: obj: unknown field invalid" },
+            { y = 3, x = 37, filename = "main.tl", msg = "in local declaration: obj: unknown field invalid" },
          }, result.type_errors)
       end)
    end)

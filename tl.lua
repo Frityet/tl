@@ -5017,9 +5017,9 @@ function Context:add_global(node, varname, valtype, is_assigning)
    return var
 end
 
-function Context:add_internal_function_variables(node, args)
+function Context:add_internal_function_variables(node, args, keep_literal)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }))
+   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -8183,6 +8183,13 @@ local function truthy_type(self, t, seen)
    end
 end
 
+local function is_literal_value_type(t)
+   return (t.typename == "string" and t.literal ~= nil) or
+   (t.typename == "number" and t.literal ~= nil) or
+   (t.typename == "integer" and t.literal ~= nil) or
+   (t.typename == "boolean" and t.literal ~= nil)
+end
+
 
 local NONE = a_type({ f = "@none", x = -1, y = -1 }, "none", {})
 
@@ -8587,6 +8594,21 @@ local function total_record_check(t, seen_keys)
    return is_total, missing
 end
 
+local function required_record_check(self, t, seen_keys)
+   local missing
+   local niltype = a_type(t, "nil", {})
+   for _, key in ipairs(t.field_order) do
+      local ftype = t.fields[key]
+      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
+         if not seen_keys[key] and not self:is_a(niltype, ftype) then
+            missing = missing or {}
+            table.insert(missing, tostring(key))
+         end
+      end
+   end
+   return missing
+end
+
 local function total_map_check(keys, seen_keys)
    local is_total = true
    local missing
@@ -8735,6 +8757,18 @@ visit_node.cbs = {
 
             assert(var)
             local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
+            if not keep_literal and node.exps and node.exps[i] then
+               local exp = node.exps[i]
+               if not (exp.kind == "string" or
+                  exp.kind == "number" or
+                  exp.kind == "integer" or
+                  exp.kind == "boolean" or
+                  exp.kind == "nil" or
+                  exp.kind == "literal_table") then
+
+                  keep_literal = true
+               end
+            end
             self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing", keep_literal)
             if var.elide_type then
                self.errs:add_warning("hint", node, "hint: consider using 'local type' instead")
@@ -9292,6 +9326,13 @@ visit_node.cbs = {
             end
          end
 
+         if self.feat_strict_nil and decltype.typename == "record" then
+            local missing = required_record_check(self, decltype, seen_keys)
+            if missing then
+               self.errs:add(node, "record literal is missing required fields (missing: " .. table.concat(missing, ", ") .. ")")
+            end
+         end
+
          local t = force_array and a_type(node, "array", { elements = force_array }) or node.expected
          t = self:infer_at(node, t)
 
@@ -9347,7 +9388,7 @@ visit_node.cbs = {
          local args = children[2]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
          self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
@@ -9418,7 +9459,7 @@ visit_node.cbs = {
          local args = children[2]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
          self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
@@ -9469,7 +9510,7 @@ visit_node.cbs = {
          local rtype = self:to_structural(resolve_typedecl(t))
 
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
 
          if rtype.typename == "generic" then
             rtype = rtype.t
@@ -9608,7 +9649,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
          local args = children[1]
@@ -9634,7 +9675,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args)
+         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
       end,
       after = function(self, node, children)
          local args = children[1]
@@ -9968,6 +10009,8 @@ visit_node.cbs = {
          if node.op.op == "==" or node.op.op == "~=" then
             local ua_cmp = drop_constant_value(ua)
             local ub_cmp = drop_constant_value(ub)
+            local ua_literal = is_literal_value_type(ua)
+            local ub_literal = is_literal_value_type(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
                self:check_metamethod(node, binop_to_metamethod[node.op.op], ra, rb, ua, ub)
             end
@@ -9990,11 +10033,11 @@ visit_node.cbs = {
                         self.fdb:set_eq(node, node.e2.tk, ua)
                      end
                   end
-               elseif self:is_a(ub_cmp, ua_cmp) or ua.typename == "typevar" then
+               elseif self:is_a(ub_cmp, ua_cmp) or (ub_literal and self:is_a(ub, ua)) or ua.typename == "typevar" then
                   if node.op.op == "==" and node.e1.kind == "variable" then
                      self.fdb:set_eq(node, node.e1.tk, ub)
                   end
-               elseif self:is_a(ua_cmp, ub_cmp) or ub.typename == "typevar" then
+               elseif self:is_a(ua_cmp, ub_cmp) or (ua_literal and self:is_a(ua, ub)) or ub.typename == "typevar" then
                   if node.op.op == "==" and node.e2.kind == "variable" then
                      self.fdb:set_eq(node, node.e2.tk, ua)
                   end
@@ -10204,6 +10247,11 @@ visit_node.cbs = {
                is_named_vararg = true
             end
             t = a_vararg(node, { t })
+         elseif node.opt and self.feat_strict_nil then
+            local niltype = a_type(node, "nil", {})
+            if not self:is_a(niltype, t) then
+               t = unite(node, { t, niltype }, nil, false)
+            end
          end
 
          local arg_var = self:add_var(node, node.tk, t)
