@@ -10026,7 +10026,28 @@ visit_node.cbs = {
                local nil_in_b = type_has_explicit_nil(self, ub_cmp)
                if nil_in_a or nil_in_b then
 
-                  if node.op.op == "==" then
+                  local niltype = a_type(node, "nil", {})
+                  local variable_against_nil = false
+
+                  if node.e1.kind == "variable" and node.e2.kind == "nil" and nil_in_a then
+                     variable_against_nil = true
+                     if node.op.op == "==" then
+                        self.fdb:set_is(node, node.e1.tk, niltype)
+                     else
+                        self.fdb:set_is(node, node.e1.tk, niltype)
+                        self.fdb:set_not(node, node)
+                     end
+                  elseif node.e2.kind == "variable" and node.e1.kind == "nil" and nil_in_b then
+                     variable_against_nil = true
+                     if node.op.op == "==" then
+                        self.fdb:set_is(node, node.e2.tk, niltype)
+                     else
+                        self.fdb:set_is(node, node.e2.tk, niltype)
+                        self.fdb:set_not(node, node)
+                     end
+                  end
+
+                  if not variable_against_nil and node.op.op == "==" then
                      if node.e1.kind == "variable" and ua.typename == "invalid" then
                         self.fdb:set_eq(node, node.e1.tk, ub)
                      elseif node.e2.kind == "variable" and ub.typename == "invalid" then

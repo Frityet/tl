@@ -79,6 +79,34 @@ describe("flow analysis with ==", function()
          { msg = [[cannot index key 'upper' in variable 't' of type number | string]] }
       }))
 
+      it("narrows optionals on ~= nil in then branch", util.check([[
+         --#pragma strict_nil on
+         local t: number | nil
+         if t ~= nil then
+            print(t + 1)
+         end
+      ]]))
+
+      it("narrows optionals on == nil in else branch", util.check([[
+         --#pragma strict_nil on
+         local t: number | nil
+         if t == nil then
+            print("nil")
+         else
+            print(t + 1)
+         end
+      ]]))
+
+      it("narrows after early-return nil guard", util.check([[
+         --#pragma strict_nil on
+         local function f(t: integer | nil): integer | nil
+            if t == nil then
+               return nil
+            end
+            return t + 1
+         end
+      ]]))
+
       it("can combine with is", util.check([[
          local function foo(a: number | string | function)
             if a is string and a == 'hello' then
