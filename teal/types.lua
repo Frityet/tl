@@ -410,6 +410,12 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
+
+
+
+
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -510,6 +516,13 @@ local function show_fields(t, show)
    table.insert(out, " (")
    if t.elements then
       table.insert(out, "{" .. show(t.elements) .. "}")
+   end
+   if t.types then
+      local tuple_types = {}
+      for _, child in ipairs(t.types) do
+         table.insert(tuple_types, show(child))
+      end
+      table.insert(out, "{" .. table.concat(tuple_types, ", ") .. "}")
    end
    local fs = {}
    for _, k in ipairs(t.field_order) do
@@ -1012,6 +1025,14 @@ types.map = function(self, ty, fns)
 
          if t.elements then
             copy.elements, same = resolve(t.elements, same)
+         end
+
+
+         if t.types then
+            copy.types = {}
+            for i, v in ipairs(t.types) do
+               copy.types[i], same = resolve(v, same)
+            end
          end
 
          if t.interface_list then

@@ -181,10 +181,10 @@ local record types
    end
 
    interface RecordLikeType
-      is StructuralType, HasDeclName, ArrayLikeType
+      is StructuralType, HasDeclName, ArrayLikeType, TupleLikeType
       where self.fields
 
-      interface_list: {ArrayType | NominalType}
+      interface_list: {ArrayType | NominalType | TupleTableType}
       interfaces_expanded: boolean
       fields: {string: Type}
       field_order: {string}
@@ -328,8 +328,14 @@ local record types
       where self.typename == "union"
    end
 
+   interface TupleLikeType
+      is StructuralType
+      where self.types
+      types: {Type}
+   end
+
    record TupleTableType
-      is AggregateType
+      is AggregateType, TupleLikeType
       where self.typename == "tupletable"
    end
 
@@ -510,6 +516,13 @@ local function show_fields(t: RecordLikeType, show: function(Type):(string)): st
    table.insert(out, " (")
    if t.elements then
       table.insert(out, "{" .. show(t.elements) .. "}")
+   end
+   if t.types then
+      local tuple_types = {}
+      for _, child in ipairs(t.types) do
+         table.insert(tuple_types, show(child))
+      end
+      table.insert(out, "{" .. table.concat(tuple_types, ", ") .. "}")
    end
    local fs = {}
    for _, k in ipairs(t.field_order) do
@@ -1012,6 +1025,14 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          -- checking array interface
          if t.elements then
             copy.elements, same = resolve(t.elements, same)
+         end
+
+         -- checking tuple interface
+         if t.types then
+            copy.types = {}
+            for i, v in ipairs(t.types) do
+               copy.types[i], same = resolve(v, same)
+            end
          end
 
          if t.interface_list then

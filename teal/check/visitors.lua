@@ -770,15 +770,41 @@ local function infer_table_literal(self, node, children)
 
       self:expand_type(node, values, elements) })
    elseif is_record and is_array then
-      t = a_type(node, "record", {
-         fields = fields,
-         field_order = field_order,
-         elements = elements,
-         interface_list = {
-            a_type(node, "array", { elements = elements }),
-         },
-      })
 
+      local pure_array = true
+      if not is_not_tuple then
+         local last_t
+         for _, current_t in pairs(typs) do
+            if last_t then
+               if not self:same_type(last_t, current_t) then
+                  pure_array = false
+                  break
+               end
+            end
+            last_t = current_t
+         end
+      end
+      if pure_array then
+         t = a_type(node, "record", {
+            fields = fields,
+            field_order = field_order,
+            elements = elements,
+            interface_list = {
+               a_type(node, "array", { elements = elements }),
+            },
+         })
+      else
+         local tuple_iface = a_type(node, "tupletable", { inferred_at = node })
+         tuple_iface.types = typs
+         t = a_type(node, "record", {
+            fields = fields,
+            field_order = field_order,
+            types = typs,
+            interface_list = {
+               tuple_iface,
+            },
+         })
+      end
    elseif is_record and is_map then
       if keys.typename == "string" then
          for _, fname in ipairs(field_order) do
@@ -950,7 +976,6 @@ visit_node.cbs = {
             if resolved.typename == "invalid" then
                return
             end
-            node.value.newtype = resolved
             if aliasing then
                added.aliasing = aliasing
             end
@@ -1538,7 +1563,7 @@ visit_node.cbs = {
                      assert_is_a(self, node[i], cvtype, df, "in record field", ck)
                   end
                end
-            elseif decltype.typename == "tupletable" and is_numeric_type(cktype) then
+            elseif decltype.types and is_numeric_type(cktype) then
                local dt = decltype.types[n]
                if not n then
                   self.errs:add_in_context(node[i], node, "unknown index in tuple %s", decltype)
@@ -2502,7 +2527,17 @@ visit_node.cbs = {
                a_type(node, "any", {})
             end
          end
+
+         local is_named_vararg = false
          if node.tk == "..." then
+            if node.name then
+               local table_t = (self.env.modules["table"]).def
+               local generic_pack_table = (table_t.fields["PackTable"]).def
+               local pack_table = self:apply_generic(node, generic_pack_table, { t })
+
+               self:add_var(node, node.name.tk, pack_table).is_func_arg = true
+               is_named_vararg = true
+            end
             t = a_vararg(node, { t })
          elseif node.opt and self.feat_strict_nil then
             local niltype = a_type(node, "nil", {})
@@ -2510,7 +2545,15 @@ visit_node.cbs = {
                t = unite(node, { t, niltype }, nil, false)
             end
          end
-         self:add_var(node, node.tk, t).is_func_arg = true
+
+         local arg_var = self:add_var(node, node.tk, t)
+         arg_var.is_func_arg = true
+         if is_named_vararg then
+
+
+            arg_var.has_been_read_from = true
+         end
+
          return t
       end,
    },

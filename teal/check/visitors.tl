@@ -40,6 +40,7 @@ local type EmptyTableType = types.EmptyTableType
 local type FunctionType = types.FunctionType
 local type UnionType = types.UnionType
 local type TupleTableType = types.TupleTableType
+local type TupleLikeType = types.TupleLikeType
 local type PolyType = types.PolyType
 local type EnumType = types.EnumType
 local type FirstClassType = types.FirstClassType
@@ -770,15 +771,41 @@ local function infer_table_literal(self: Context, node: Node, children: {Literal
          self:expand_type(node, values, elements)
       )
    elseif is_record and is_array then
-      t = a_type(node, "record", {
-         fields = fields,
-         field_order = field_order,
-         elements = elements,
-         interface_list = {
-            an_array(node, elements)
-         }
-      } as RecordType)
-      -- TODO adopt logic from self:is_array below when we accept tupletable as an interface
+      -- adopted logic from self:is_array below
+      local pure_array = true
+      if not is_not_tuple then
+         local last_t: Type
+         for _, current_t in pairs(typs as {integer:Type}) do
+            if last_t then
+               if not self:same_type(last_t, current_t) then
+                  pure_array = false
+                  break
+               end
+            end
+            last_t = current_t
+         end
+      end
+      if pure_array then
+         t = a_type(node, "record", {
+            fields = fields,
+            field_order = field_order,
+            elements = elements,
+            interface_list = {
+               an_array(node, elements)
+            }
+         } as RecordType)
+      else
+         local tuple_iface = a_type(node, "tupletable", { inferred_at = node }) as TupleTableType
+         tuple_iface.types = typs
+         t = a_type(node, "record", {
+            fields = fields,
+            field_order = field_order,
+            types = typs,
+            interface_list = {
+               tuple_iface
+            }
+         } as RecordType)
+      end
    elseif is_record and is_map then
       if keys is StringType then
          for _, fname in ipairs(field_order) do
@@ -950,7 +977,6 @@ visit_node.cbs = {
             if resolved is InvalidType then
                return
             end
-            node.value.newtype = resolved
             if aliasing then
                added.aliasing = aliasing
             end
@@ -1538,7 +1564,7 @@ visit_node.cbs = {
                      assert_is_a(self, node[i], cvtype, df, "in record field", ck)
                   end
                end
-            elseif decltype is TupleTableType and cktype is NumericType then
+            elseif decltype is TupleLikeType and cktype is NumericType then
                local dt = decltype.types[n as integer]
                if not n then
                   self.errs:add_in_context(node[i], node, "unknown index in tuple %s", decltype)
@@ -2502,7 +2528,17 @@ visit_node.cbs = {
                    or  a_type(node, "any", {})
             end
          end
+
+         local is_named_vararg = false
          if node.tk == "..." then
+            if node.name then
+               local table_t <const> = (self.env.modules["table"] as types.TypeDeclType).def as RecordType
+               local generic_pack_table <const> = (table_t.fields["PackTable"] as types.TypeDeclType).def as types.GenericType
+               local pack_table <const> = self:apply_generic(node, generic_pack_table, { t })
+
+               self:add_var(node, node.name.tk, pack_table).is_func_arg = true
+               is_named_vararg = true
+            end
             t = a_vararg(node, { t })
          elseif node.opt and self.feat_strict_nil then
             local niltype = a_type(node, "nil", {})
@@ -2510,7 +2546,15 @@ visit_node.cbs = {
                t = unite(node, { t, niltype }, nil, false)
             end
          end
-         self:add_var(node, node.tk, t).is_func_arg = true
+
+         local arg_var <const> = self:add_var(node, node.tk, t)
+         arg_var.is_func_arg = true
+         if is_named_vararg then
+            -- Silence unused warnings for the `...` var since removing it
+            -- would change the semantics of the code
+            arg_var.has_been_read_from = true
+         end
+
          return t
       end,
    },

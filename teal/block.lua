@@ -135,14 +135,10 @@ local block = { Block = { ExpectedContext = {} } }
 
 
 
-
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
       VALUE = 2,
-   },
-   IF = {
-      BLOCKS = 1,
    },
    IF_BLOCK = {
       COND = 1,
@@ -245,17 +241,7 @@ local BLOCK_INDEXES = {
       ANNOTATION = 1,
    },
    ARGUMENT = {
-      ANNOTATION = 1,
-   },
-   ARGUMENT_LIST = {
-      FIRST = 1,
-   },
-   VARIABLE_LIST = {
-      FIRST = 1,
-   },
-   EXPRESSION_LIST = {
-      FIRST = 1,
-      SECOND = 2,
+      TYPE = 1,
    },
    LITERAL_TABLE_ITEM = {
       KEY = 1,
@@ -323,9 +309,9 @@ local BLOCK_INDEXES = {
    },
    ARGUMENT_TYPE = {
       NAME = 1,
-   },
-   TYPEARGS = {
-      FIRST = 1,
+      TYPE = 2,
+      VARARG = 3,
+      OPTIONAL = 4,
    },
    TYPEARG = {
       NAME = 1,
@@ -338,25 +324,12 @@ local BLOCK_INDEXES = {
    NOMINAL_TYPE = {
       NAME = 1,
    },
-   UNION_TYPE = {
-      FIRST = 1,
-   },
-   TUPLE_TYPE = {
-      FIRST = 1,
-      SECOND = 2,
-   },
    ARRAY_TYPE = {
       ELEMENT = 1,
    },
    MAP_TYPE = {
       KEYS = 1,
       VALUES = 2,
-   },
-   TYPELIST = {
-      FIRST = 1,
-   },
-   INTERFACE_LIST = {
-      FIRST = 1,
    },
 }
 
@@ -384,7 +357,6 @@ local BLOCK_KINDS = {
    ["newtype"] = true,
    ["argument"] = true,
    ["type_identifier"] = true,
-   ["variable"] = true,
    ["variable_list"] = true,
    ["statements"] = true,
    ["assignment"] = true,
@@ -450,7 +422,7 @@ local BLOCK_KINDS = {
    ["op_colon"] = true,
 
    ["typeargs"] = true,
-   ["typelist"] = true,
+   ["type_list"] = true,
    ["generic_type"] = true,
    ["typedecl"] = true,
    ["tuple_type"] = true,

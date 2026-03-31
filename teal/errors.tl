@@ -14,6 +14,7 @@ local record errors
       "hint"
       "debug"
       "unread"
+      "inheritance"
    end
    warning_kinds: {WarningKind:boolean}
 
@@ -93,6 +94,7 @@ local wk <total>: {errors.WarningKind:boolean} = {
    ["hint"] = true,
    ["debug"] = true,
    ["unread"] = true,
+   ["inheritance"] = true,
 }
 errors.warning_kinds = wk
 
