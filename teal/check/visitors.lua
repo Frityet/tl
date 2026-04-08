@@ -2291,10 +2291,28 @@ visit_node.cbs = {
                a_type(node, "any", {})
             end
          end
+
+         local is_named_vararg = false
          if node.tk == "..." then
+            if node.name then
+               local table_t = (self.env.modules["table"]).def
+               local generic_pack_table = (table_t.fields["PackTable"]).def
+               local pack_table = self:apply_generic(node, generic_pack_table, { t })
+
+               self:add_var(node, node.name.tk, pack_table).is_func_arg = true
+               is_named_vararg = true
+            end
             t = a_vararg(node, { t })
          end
-         self:add_var(node, node.tk, t).is_func_arg = true
+
+         local arg_var = self:add_var(node, node.tk, t)
+         arg_var.is_func_arg = true
+         if is_named_vararg then
+
+
+            arg_var.has_been_read_from = true
+         end
+
          return t
       end,
    },
