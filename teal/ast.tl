@@ -489,15 +489,10 @@ local function parse_variable_list(state: ParseState, block: Block, as_expressio
    end
    for _, var_block in ipairs(block) do
       local var_node: Node
-      if not as_expression and (var_block.kind == "identifier" or var_block.kind == "variable") then
-         local ident_block = var_block
-         if var_block.kind == "variable" then
-            var_node = new_node(state, var_block, "identifier")
-         else
-            var_node = new_node(state, var_block)
-         end
-         if ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
-            local annotation = ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
+      if not as_expression and var_block.kind == "identifier" then
+         var_node = new_node(state, var_block)
+         if var_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
+            local annotation = var_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
             if is_attribute[annotation.tk] and var_node then
                var_node.attribute = annotation.tk as Attribute
             end

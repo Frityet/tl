@@ -489,15 +489,10 @@ local function parse_variable_list(state, block, as_expression)
    end
    for _, var_block in ipairs(block) do
       local var_node
-      if not as_expression and (var_block.kind == "identifier" or var_block.kind == "variable") then
-         local ident_block = var_block
-         if var_block.kind == "variable" then
-            var_node = new_node(state, var_block, "identifier")
-         else
-            var_node = new_node(state, var_block)
-         end
-         if ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
-            local annotation = ident_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
+      if not as_expression and var_block.kind == "identifier" then
+         var_node = new_node(state, var_block)
+         if var_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION] then
+            local annotation = var_block[reader.BLOCK_INDEXES.VARIABLE.ANNOTATION]
             if is_attribute[annotation.tk] and var_node then
                var_node.attribute = annotation.tk
             end
@@ -1536,7 +1531,6 @@ end
 parse_fns.pragma = function(state, block)
    assert(block)
    local node = new_node(state, block)
-
    if block[reader.BLOCK_INDEXES.PRAGMA.KEY] then
       node.pkey = block[reader.BLOCK_INDEXES.PRAGMA.KEY].tk
    end
@@ -1549,7 +1543,6 @@ end
 parse_fns.local_type = function(state, block)
    assert(block)
    local node = new_node(state, block)
-
    if block[reader.BLOCK_INDEXES.LOCAL_TYPE.VAR] then
       node.var = new_node(state, block[reader.BLOCK_INDEXES.LOCAL_TYPE.VAR])
    end
@@ -1572,7 +1565,6 @@ end
 parse_fns.global_type = function(state, block)
    assert(block)
    local node = new_node(state, block)
-
    if block[reader.BLOCK_INDEXES.GLOBAL_TYPE.VAR] then
       node.var = new_node(state, block[reader.BLOCK_INDEXES.GLOBAL_TYPE.VAR])
    end

@@ -6,7 +6,7 @@ BUSTED = busted --suppress-pending
 STRIPDIR = _temp/strip
 STRICT_NIL_PRAGMA = --\#pragma strict_nil off
 PACKAGE_PATH := $(shell $(LUA) -e 'print(package.path)')
-STRICT_NIL_SUPPORTED := $(shell printf '%s\n' '--#pragma strict_nil off' 'local x: integer = nil' | $(STABLE_TL) check - >/dev/null 2>&1 && echo yes)
+STRICT_NIL_SUPPORTED := $(shell printf '%s\n' '$(STRICT_NIL_PRAGMA)' 'local x: integer = nil' | $(STABLE_TL) check - >/dev/null 2>&1 && echo yes)
 STRIP_STRICT_NIL := $(if $(STRICT_NIL_SUPPORTED),0,1)
 STRIP_TL_PATH = $(STRIPDIR)/?.tl;$(STRIPDIR)/?/init.tl;$(STRIPDIR)/?.d.tl;./?.tl;./?/init.tl;./?.d.tl;$(PACKAGE_PATH)
 STRIPPED_SOURCES = $(addprefix $(STRIPDIR)/,$(SOURCES))
