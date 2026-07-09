@@ -868,12 +868,16 @@ local function total_check_key(key, seen_keys, is_total, missing)
    return is_total, missing
 end
 
+local function field_requires_literal_entry(ftype)
+   return not (ftype.typename == "typedecl" or (ftype.typename == "function" and (ftype.is_record_function or ftype.macroexp)))
+end
+
 local function total_record_check(t, seen_keys)
    local is_total = true
    local missing
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          is_total, missing = total_check_key(key, seen_keys, is_total, missing)
       end
    end
@@ -885,7 +889,7 @@ local function required_record_check(self, t, seen_keys)
    local niltype = a_type(t, "nil", {})
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          if not seen_keys[key] and not self:is_a(niltype, ftype) then
             missing = missing or {}
             table.insert(missing, tostring(key))

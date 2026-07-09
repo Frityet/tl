@@ -8579,12 +8579,16 @@ local function total_check_key(key, seen_keys, is_total, missing)
    return is_total, missing
 end
 
+local function field_requires_literal_entry(ftype)
+   return not (ftype.typename == "typedecl" or (ftype.typename == "function" and (ftype.is_record_function or ftype.macroexp)))
+end
+
 local function total_record_check(t, seen_keys)
    local is_total = true
    local missing
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          is_total, missing = total_check_key(key, seen_keys, is_total, missing)
       end
    end
@@ -8596,7 +8600,7 @@ local function required_record_check(self, t, seen_keys)
    local niltype = a_type(t, "nil", {})
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          if not seen_keys[key] and not self:is_a(niltype, ftype) then
             missing = missing or {}
             table.insert(missing, tostring(key))
@@ -14203,7 +14207,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    local has_colon
    mname, has_colon = macro_target_key(mname_block)
    if has_colon then
-      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "method-style macro invocation is not supported; use record.macro!()" })
+      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "method-style macro invocation is not supported; use owner.macro!()" })
       return b
    end
    if not mname then
@@ -15250,7 +15254,7 @@ local function build_macro_sig(args, errs, filename, macro_name)
    return sig
 end
 
-local function extract_record_from_newtype(nt)
+local function extract_macro_owner_from_newtype(nt)
    if not nt or nt.kind ~= "newtype" then
       return nil
    end
@@ -15262,13 +15266,13 @@ local function extract_record_from_newtype(nt)
    if typ and typ.kind == "generic_type" then
       typ = typ[BLOCK_INDEXES.GENERIC_TYPE.BASE]
    end
-   if typ and (typ.kind) == "record" then
+   if typ and ((typ.kind) == "record" or (typ.kind) == "interface") then
       return typ
    end
    return nil
 end
 
-local function collect_record_paths_in_scope(container, prefix, out)
+local function collect_macro_owner_paths_in_scope(container, prefix, out)
    if not container then
       return
    end
@@ -15284,25 +15288,25 @@ local function collect_record_paths_in_scope(container, prefix, out)
             val = child[BLOCK_INDEXES.GLOBAL_TYPE.VALUE]
          end
          if var and (var.kind == "identifier" or var.kind == "type_identifier") and val then
-            local rec = extract_record_from_newtype(val)
-            if rec then
+            local owner = extract_macro_owner_from_newtype(val)
+            if owner then
                local path = prefix == "" and var.tk or (prefix .. "." .. var.tk)
                out[path] = true
-               collect_record_paths_in_scope(rec[BLOCK_INDEXES.RECORD.FIELDS], path, out)
+               collect_macro_owner_paths_in_scope(owner[BLOCK_INDEXES.RECORD.FIELDS], path, out)
             end
          end
       end
    end
 end
 
-local function collect_record_paths(node)
+local function collect_macro_owner_paths(node)
    local out = {}
-   collect_record_paths_in_scope(node, "", out)
+   collect_macro_owner_paths_in_scope(node, "", out)
    return out
 end
 
 local function validate_attached_macro_owners(node, errs, filename)
-   local records = collect_record_paths(node)
+   local owners = collect_macro_owner_paths(node)
    for _, child in ipairs(node) do
       if child and
          child.kind == "local_macro" and
@@ -15310,13 +15314,13 @@ local function validate_attached_macro_owners(node, errs, filename)
          not child[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS] then
 
          local owner_key = path_block_to_string(child[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
-         if owner_key and not records[owner_key] then
+         if owner_key and not owners[owner_key] then
             local owner = child[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
             table.insert(errs, {
                filename = filename,
                y = owner.y,
                x = owner.x,
-               msg = "macro owner '" .. owner_key .. "' must be a record",
+               msg = "macro owner '" .. owner_key .. "' must be a record or interface",
             })
          end
       end
@@ -15389,7 +15393,7 @@ end
 
 local function collect_module_macro_exports(node, errs, filename)
    local exports = {}
-   local records = collect_record_paths(node)
+   local owners = collect_macro_owner_paths(node)
    local return_path = top_level_return_path(node)
 
    for _, stmt in ipairs(node) do
@@ -15402,12 +15406,12 @@ local function collect_module_macro_exports(node, errs, filename)
          local owner_key = path_block_to_string(owner)
          local name = stmt[BLOCK_INDEXES.LOCAL_MACRO.NAME]
          if owner_key and name and name.kind == "identifier" then
-            if not records[owner_key] then
+            if not owners[owner_key] then
                table.insert(errs, {
                   filename = filename,
                   y = owner.y,
                   x = owner.x,
-                  msg = "macro owner '" .. owner_key .. "' must be a record",
+                  msg = "macro owner '" .. owner_key .. "' must be a record or interface",
                })
             elseif return_path and (owner_key == return_path or starts_with(owner_key, return_path .. ".")) then
                local suffix_owner = owner_key == return_path and "" or owner_key:sub(#return_path + 2)
@@ -16598,7 +16602,7 @@ do
             local has_colon
             mname, has_colon = macro_target_key(e1)
             if has_colon then
-               fail(ps, prev_i, "method-style macro invocation is not supported; use record.macro!()")
+               fail(ps, prev_i, "method-style macro invocation is not supported; use owner.macro!()")
                return i, failstore(ps, tkop, e1)
             end
             if next_tk.tk == "(" then
@@ -16616,6 +16620,12 @@ do
                   i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
+               if mname then
+                  local alias = mname:match("^([^.]+)%.")
+                  if alias then
+                     ensure_required_alias_macros(ps, alias)
+                  end
+               end
                if next_tk.kind == "string" then
                   argument = new_block(ps, i, "string")
                   local _, is_long = unquote(next_tk.tk)
@@ -18108,7 +18118,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
                filename = ps.filename,
                y = m.y,
                x = m.x,
-               msg = "method-style macro invocation is not supported; use record.macro!()",
+               msg = "method-style macro invocation is not supported; use owner.macro!()",
             })
          elseif name then
             local sig = ps.macro_sigs[name]

@@ -1,4 +1,4 @@
-#!/usr/bin/env lua
+#!/usr/bin/env ./lua
 
 -- Little trick for running development versions:
 -- when tl.lua and tl are in the same folder, prefer that tl.lua

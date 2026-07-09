@@ -338,7 +338,7 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    local has_colon: boolean
    mname, has_colon = macro_target_key(mname_block)
    if has_colon then
-      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "method-style macro invocation is not supported; use record.macro!()" })
+      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "method-style macro invocation is not supported; use owner.macro!()" })
       return b
    end
    if not mname then

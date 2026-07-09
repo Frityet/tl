@@ -49,4 +49,18 @@ describe("macroexp declaration", function()
    ]], {
       { y = 7, x = 40, msg = "cannot use argument '...' multiple times in macroexp" }
    }))
+
+   it("does not require macroexp fields in record literals", util.check_type_error([[
+      --#pragma strict_nil on
+      local record R
+         value: integer
+         get_value: function(self: R): integer = macroexp(self: R): integer
+            return self.value
+         end
+      end
+
+      local r: R = {}
+   ]], {
+      { msg = "record literal is missing required fields (missing: value)" }
+   }))
 end)

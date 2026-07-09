@@ -129,11 +129,62 @@ describe('macro invocation expansion', function()
    end)
 end)
 
-describe('record-attached macro imports', function()
+describe('attached macro imports', function()
+   it('accepts macros attached to local interfaces', function()
+      local code = [[
+         local interface macros end
+
+         macro macros.double!(x: Statement)
+            return ```
+               $x
+               $x
+            ```
+         end
+
+         macros.double!(print("hi"))
+      ]]
+
+      local ast, errs = tl.parse(code, "main.tl")
+      assert.same({}, errs)
+      local out, err = lua_generator.generate(ast, '5.4')
+      assert.is_nil(err)
+      out = out:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+      assert.same('print("hi"); print("hi")', out)
+   end)
+
    it('imports root attached macros via local require alias', function()
       util.mock_io(finally, {
          ["macs.tl"] = [[
             local record macros end
+
+            macro macros.double!(x: Statement)
+               return ```
+                  $x
+                  $x
+               ```
+            end
+
+            return macros
+         ]],
+      })
+
+      local code = [[
+         local m = require("macs")
+         m.double!(print("hi"))
+      ]]
+
+      local ast, errs = tl.parse(code, "main.tl")
+      assert.same({}, errs)
+      local out, err = lua_generator.generate(ast, '5.4')
+      assert.is_nil(err)
+      out = out:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+      assert.same('print("hi"); print("hi")', out)
+   end)
+
+   it('imports root attached macros from interfaces via local require alias', function()
+      util.mock_io(finally, {
+         ["macs.tl"] = [[
+            local interface macros end
 
             macro macros.double!(x: Statement)
                return ```
@@ -285,7 +336,7 @@ describe('record-attached macro imports', function()
       assert.truthy(#errs > 0)
       local found = false
       for _, e in ipairs(errs) do
-         if e.msg == "method-style macro invocation is not supported; use record.macro!()" then
+         if e.msg == "method-style macro invocation is not supported; use owner.macro!()" then
             found = true
             break
          end
@@ -293,7 +344,7 @@ describe('record-attached macro imports', function()
       assert.is_true(found)
    end)
 
-   it("reports attached macro owners that are not records", function()
+   it("reports attached macro owners that are not records or interfaces", function()
       util.mock_io(finally, {
          ["macs.tl"] = [[
             local not_a_record = {}
@@ -315,7 +366,7 @@ describe('record-attached macro imports', function()
       assert.truthy(#errs > 0)
       local found = false
       for _, e in ipairs(errs) do
-         if e.msg:match("macro owner 'not_a_record' must be a record") then
+         if e.msg:match("macro owner 'not_a_record' must be a record or interface") then
             found = true
             break
          end

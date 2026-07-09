@@ -868,12 +868,16 @@ local function total_check_key(key: CheckableKey, seen_keys: {CheckableKey:Where
    return is_total, missing
 end
 
+local function field_requires_literal_entry(ftype: Type): boolean
+   return not (ftype is TypeDeclType or (ftype is FunctionType and (ftype.is_record_function or ftype.macroexp)))
+end
+
 local function total_record_check(t: RecordLikeType, seen_keys: {CheckableKey:Where}): boolean, {string}
    local is_total = true
    local missing: {string}
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype is TypeDeclType or (ftype is FunctionType and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          is_total, missing = total_check_key(key, seen_keys, is_total, missing)
       end
    end
@@ -885,7 +889,7 @@ local function required_record_check(self: Context, t: RecordLikeType, seen_keys
    local niltype = a_type(t, "nil", {})
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if not (ftype is TypeDeclType or (ftype is FunctionType and ftype.is_record_function)) then
+      if field_requires_literal_entry(ftype) then
          if not seen_keys[key] and not self:is_a(niltype, ftype) then
             missing = missing or {}
             table.insert(missing, tostring(key))
