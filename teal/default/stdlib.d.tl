@@ -368,7 +368,7 @@ local record StandardLibrary
    type XpcallMsghFunction = function(any): any...
 
    arg: {string}
-   assert: function<A, B>(A, ? B, ...: any): A --[[special_function]]
+   assert: function<A, B>(A | nil, ? B, ...: any): A --[[special_function]]
 
    collectgarbage: function(? CollectGarbageCommand): number
    collectgarbage: function(CollectGarbageSetValue, integer): number
