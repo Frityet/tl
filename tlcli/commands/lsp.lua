@@ -13,7 +13,7 @@ local teal = require("teal.init")
 local driver = require("tlcli.driver")
 local configuration = require("tlcli.configuration")
 local lfs = require("lfs")
-local jit_opt = require("jit.opt")
+local jit = require("jit")
 local ffi = require("ffi")
 
 
@@ -29,7 +29,7 @@ local ffi = require("ffi")
 
 
 
-jit_opt.start("hotloop=12", "hotexit=2", "maxtrace=10000", "maxrecord=20000", "maxmcode=4096")
+jit.off()
 io.stdin:setvbuf("no")
 
 local POSIX_POLL = ffi.os ~= "Windows"

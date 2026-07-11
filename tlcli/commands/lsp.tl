@@ -13,7 +13,10 @@ local teal = require("teal.init")
 local driver = require("tlcli.driver")
 local configuration = require("tlcli.configuration")
 local lfs = require("lfs")
-local jit_opt = require("jit.opt")
+local record JitModule
+   off: function()
+end
+local jit = (require as function(string): any)("jit") as JitModule
 local ffi = require("ffi")
 local type TlConfig = require("tlcli.tlconfig")
 local type Args = require("tlcli.args")
@@ -26,10 +29,10 @@ local type Compiler = teal.Compiler
 local type type_reporter = require("teal.type_reporter")
 local type TypeInfo = type_reporter.TypeInfo
 
--- The checker consists of large, repeatedly visited dispatch loops. Compile
--- them sooner and retain substantially more machine code than LuaJIT's CLI
--- defaults; this is a long-lived interactive process, not a short command.
-jit_opt.start("hotloop=12", "hotexit=2", "maxtrace=10000", "maxrecord=20000", "maxmcode=4096")
+-- The parser and checker have large, branch-heavy dispatch graphs. Profiling
+-- shows trace compilation costs more than the generated code saves for both
+-- cold and incremental LSP analysis, so keep this process in the interpreter.
+jit.off()
 io.stdin:setvbuf("no")
 
 local POSIX_POLL = ffi.os ~= "Windows"
