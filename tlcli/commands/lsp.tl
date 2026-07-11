@@ -946,6 +946,23 @@ local function analyze_document(server: Server, document: Document): Document
          current_type = declared_type
          document.fields_by_type[current_type] = document.fields_by_type[current_type] or {}
       end
+      local method_owner, method_name = line_text:match("^%s*function%s+([%a_][%w_]*)%s*:%s*([%a_][%w_]*)")
+      if method_owner and method_name then
+         local method_token: Token
+         for _, candidate in ipairs(line_tokens) do
+            if candidate.tk == method_name then method_token = candidate; break end
+         end
+         if method_token then
+            local field: SyntaxField = { token = method_token, detail = line_text:match("^%s*(.-)%s*$") }
+            local named = document.fields_by_name[method_name]
+            if not named then named = {}; document.fields_by_name[method_name] = named end
+            table.insert(named, field)
+            local typed = document.fields_by_type[method_owner]
+            if not typed then typed = {}; document.fields_by_type[method_owner] = typed end
+            typed[method_name] = typed[method_name] or {}
+            table.insert(typed[method_name], field)
+         end
+      end
       for index, token in ipairs(line_tokens) do
          local colon = line_tokens[index + 1]
          if index == 1 and token.kind == "identifier" and colon and colon.tk == ":" then
@@ -1009,6 +1026,40 @@ local function apply_change(document: Document, change: AnyObject)
    document.lines = split_lines(document.text)
 end
 
+local function member_type_id(report: TypeReport, info: TypeInfo, name: string, seen?: {TypeInfo:boolean}): integer
+   if not info then return nil end
+   seen = seen or {}
+   if seen[info] then return nil end
+   seen[info] = true
+   local type_id = (info.fields and info.fields[name]) or (info.meta_fields and info.meta_fields[name])
+   if type_id then return type_id end
+   if info.ref then
+      type_id = member_type_id(report, report.types[info.ref], name, seen)
+      if type_id then return type_id end
+   end
+   for _, nested_id in ipairs(info.types or {}) do
+      type_id = member_type_id(report, report.types[nested_id], name, seen)
+      if type_id then return type_id end
+   end
+end
+
+local function member_location(report: TypeReport, info: TypeInfo, name: string, seen?: {TypeInfo:boolean}): AnyObject
+   if not info then return nil end
+   seen = seen or {}
+   if seen[info] then return nil end
+   seen[info] = true
+   local location = (info.field_locations and info.field_locations[name]) or (info.meta_field_locations and info.meta_field_locations[name])
+   if location then return location as AnyObject end
+   if info.ref then
+      local found = member_location(report, report.types[info.ref], name, seen)
+      if found then return found end
+   end
+   for _, nested_id in ipairs(info.types or {}) do
+      local found = member_location(report, report.types[nested_id], name, seen)
+      if found then return found end
+   end
+end
+
 local function type_info(document: Document, position: Position, token?: Token): TypeInfo, integer
    if token and document.type_info_resolved[token] then
       return document.type_info_cache[token], document.type_id_cache[token]
@@ -1037,8 +1088,7 @@ local function type_info(document: Document, position: Position, token?: Token):
                character = byte_to_utf16(receiver_line:sub(1, receiver.x - 1), receiver.x - 1),
             }
             local receiver_info: TypeInfo = type_info(document, receiver_position, receiver)
-            if receiver_info and receiver_info.ref then receiver_info = report.types[receiver_info.ref] or receiver_info end
-            if receiver_info and receiver_info.fields then type_id = receiver_info.fields[token.tk] end
+            type_id = member_type_id(report, receiver_info, token.tk)
          end
       end
    end
@@ -1083,10 +1133,9 @@ local function field_location(server: Server, document: Document, token: Token):
    local receiver_position: Position = { line = receiver.y - 1, character = byte_to_utf16(receiver_line:sub(1, receiver.x - 1), receiver.x - 1) }
    local receiver_info: TypeInfo = type_info(document, receiver_position, receiver)
    if not receiver_info then return nil end
-   if receiver_info.ref then receiver_info = document.type_report.types[receiver_info.ref] or receiver_info end
-   local location = receiver_info.field_locations and receiver_info.field_locations[token.tk]
+   local location = member_location(document.type_report, receiver_info, token.tk)
    if not location then return nil end
-   local path = location.file
+   local path = location.file as string
    if path:sub(1, 1) ~= "/" and not path:match("^%a:[/\\]") then path = server.root .. "/" .. path end
    local lines: {string} = { "" }
    local target = server.documents[path_to_uri(path)]
@@ -1096,7 +1145,7 @@ local function field_location(server: Server, document: Document, token: Token):
       local file = io.open(path, "rb")
       if file then lines = split_lines(file:read("*a") or ""); file:close() end
    end
-   return { uri = path_to_uri(path), range = make_range(lines, location.y, location.x, #token.tk) }
+   return { uri = path_to_uri(path), range = make_range(lines, location.y as integer, location.x as integer, #token.tk) }
 end
 
 local function type_declaration_location(document: Document, name: string): AnyObject
@@ -1120,6 +1169,12 @@ local function syntax_member(server: Server, document: Document, token: Token): 
    local receiver_field = first_syntax_field(document, receiver.tk)
    local receiver_type = receiver_field and receiver_field.detail:match("([%a_][%w_]*)%s*<") or
       (receiver_field and receiver_field.detail:match("([%a_][%w_]*)%s*$"))
+   if not receiver_type then
+      local line = document.lines[receiver.y] or ""
+      local position: Position = { line = receiver.y - 1, character = byte_to_utf16(line:sub(1, receiver.x - 1), receiver.x - 1) }
+      local receiver_info = type_info(document, position, receiver)
+      receiver_type = receiver_info and receiver_info.str:match("^([%a_][%w_]*)")
+   end
    ensure_workspace_index(server)
    local candidates = receiver_type and server.type_documents[receiver_type] or server.field_documents[token.tk]
    for candidate in pairs(candidates or {}) do
@@ -1488,7 +1543,10 @@ local function hover(server: Server, document: Document, position: Position): An
    if not info and not macro_detail and not syntax_field then return nil end
    local text = "`" .. token.tk .. "`"
    if info then text = text .. "\n\n```teal\n" .. info.str .. "\n```" end
-   if syntax_field then text = text .. "\n\n```teal\n" .. token.tk .. ": " .. syntax_field.detail .. "\n```" end
+   if syntax_field then
+      local detail = syntax_field.detail:match("^function%f[%A]") and syntax_field.detail or (token.tk .. ": " .. syntax_field.detail)
+      text = text .. "\n\n```teal\n" .. detail .. "\n```"
+   end
    if macro_detail then
       local expansion: string
       local by_line = document.macro_expansions[token.y]
@@ -1544,7 +1602,7 @@ local function hover(server: Server, document: Document, position: Position): An
    if record_info and not record_info.fields and record_info.ref and document.type_report then
       record_info = document.type_report.types[record_info.ref] or record_info
    end
-   if not macro_detail and not (record_info and record_info.fields) then
+   if not macro_detail and not syntax_field and not (record_info and record_info.fields) then
       local location = find_definition(server, document, token.tk, position)
       local preview = declaration_preview(server, location)
       if preview and preview ~= "" then text = text .. "\n\n**Definition**\n\n```teal\n" .. preview .. "\n```" end
@@ -1609,13 +1667,13 @@ local function document_symbols(server: Server, document: Document): AnyArray
       if kind then
          local following, _ = next_token(document, i)
          if following and following.kind == "identifier" then
-            local range = make_range(document.lines, token.y, token.x, math.max(#token.tk, following.x + #following.tk - token.x))
+            local selection = make_range(document.lines, following.y, following.x, #following.tk)
             table.insert(result, {
                name = following.tk,
                detail = token.tk == "macro" and "Teal macro" or token.tk,
                kind = kind,
-               range = range,
-               selectionRange = make_range(document.lines, following.y, following.x, #following.tk),
+               range = selection,
+               selectionRange = selection,
             })
          end
       end
