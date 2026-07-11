@@ -5,6 +5,15 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 local util = {}
 
 
+math.type = math.type or function(n)
+   if type(n) ~= "number" then return nil end
+   if n % 1 == 0 then
+      return "integer"
+   else
+      return "float"
+   end
+end
+
 function util.binary_search(list, item, cmp)
    local len = #list
    local mid

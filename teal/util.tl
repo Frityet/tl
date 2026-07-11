@@ -5,6 +5,15 @@
 local record util
 end
 
+math.type = math.type or function(n: number): string
+   if type(n) ~= "number" then return nil end
+   if n % 1 == 0 then
+      return "integer"
+   else
+      return "float"
+   end
+end
+
 function util.binary_search<T, U>(list: {T}, item: U, cmp: function(T, U): boolean): integer, T
    local len <const> = #list
    local mid: integer
