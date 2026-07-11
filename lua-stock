@@ -1,0 +1,8 @@
+#!/bin/sh
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LUAJIT="$ROOT/../LuaJIT-stock/src/luajit"
+
+TL_STOCK_ROOT="$ROOT" LUAROCKS_SYSCONFDIR='/usr/local/etc/luarocks' exec "$LUAJIT" -e \
+   'local root = os.getenv("TL_STOCK_ROOT"); package.path=root.."/lua_modules/share/lua/5.1/?.lua;"..root.."/lua_modules/share/lua/5.1/?/init.lua;"..package.path; package.cpath=root.."/lua_modules/lib/lua/5.1/?.so;"..package.cpath' \
+   "$@"

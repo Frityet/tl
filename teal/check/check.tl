@@ -64,6 +64,10 @@ local function store_type_after<N>(fn: VisitorAfter<Context, N, Type>): VisitorA
 
       if w.y then
          self.collector.store_type(w.y, w.x, t)
+         local node = n as Node
+         if node.macro_expansion then
+            self.collector.store_macro_expansion(w.y, w.x, node.macro_expansion)
+         end
       end
 
       return t

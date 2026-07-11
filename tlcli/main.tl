@@ -106,6 +106,9 @@ local function get_args_parser(): argparse.Parser
               :default("lua")
               :target("dump_format")
 
+   local lsp_command = parser:command("lsp", "Run the Teal language server over standard input and output.")
+   lsp_command:flag("--stdio", "Use the standard input/output transport.")
+
    return parser
 end
 
@@ -117,6 +120,7 @@ return function(...: {string})
       types = require("tlcli.commands.types"),
       warnings = require("tlcli.commands.warnings"),
       ["dump-blocks"] = require("tlcli.commands.dump_blocks"),
+      lsp = require("tlcli.commands.lsp"),
    }
 
    local parser = get_args_parser()

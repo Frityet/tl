@@ -207,6 +207,7 @@ local record Node
    -- macroexp
    macrodef: Node
    expanded: Node
+   macro_expansion: string
 
    argtype: Type
    itemtype: Type
@@ -1777,6 +1778,7 @@ local function store_field_in_record(state: ParseState, block: Block, name: stri
    local fields: {string: Type}
    local order: {string}
    local field_comments: {string: {{Comment}}}
+   local field_locations: {string: Where}
    if meta then
       if not def.meta_fields then
          def.meta_fields = {}
@@ -1785,9 +1787,14 @@ local function store_field_in_record(state: ParseState, block: Block, name: stri
       fields = def.meta_fields
       order = def.meta_field_order
       field_comments = def.meta_field_comments
+      field_locations = def.meta_field_locations
       if not field_comments then
          field_comments = {}
          def.meta_field_comments = field_comments
+      end
+      if not field_locations then
+         field_locations = {}
+         def.meta_field_locations = field_locations
       end
    else
       if not def.field_comments then
@@ -1796,6 +1803,11 @@ local function store_field_in_record(state: ParseState, block: Block, name: stri
       fields = def.fields
       order = def.field_order
       field_comments = def.field_comments
+      field_locations = def.field_locations
+      if not field_locations then
+         field_locations = {}
+         def.field_locations = field_locations
+      end
    end
 
    if comments and not field_comments then
@@ -1812,6 +1824,7 @@ local function store_field_in_record(state: ParseState, block: Block, name: stri
          set_declname(newt.def, name)
       end
       fields[name] = newt
+      field_locations[name] = { f = state.filename, y = block.y, x = block.x }
       field_comments[name] = field_comments[name] or {}
       if comments then
          field_comments[name] = {comments}
@@ -1925,7 +1938,7 @@ parse_record_like_type = function(state: ParseState, block: Block, typename: str
             if t is FunctionType and t.maybe_method then
                t.is_method = true
             end
-            store_field_in_record(state, fld, field_name, t, decl, meta, comments)
+            store_field_in_record(state, name_node or fld, field_name, t, decl, meta, comments)
             for i = #pending_field_comments, 1, -1 do
                table.remove(pending_field_comments, i)
             end

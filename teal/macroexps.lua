@@ -16,6 +16,7 @@ local traverse_nodes = traversal.traverse_nodes
 
 local util = require("teal.util")
 local shallow_copy_table = util.shallow_copy_table
+local lua_generator = require("teal.gen.lua_generator")
 
 local macroexps = {}
 
@@ -108,6 +109,7 @@ function macroexps.expand(orignode, args, macroexp)
 
    local p = traverse_macroexp(macroexp, on_arg_id, on_node)
    orignode.expanded = p[2]
+   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
 end
 
 function macroexps.check_arg_use(ck, macroexp)
@@ -126,6 +128,7 @@ end
 
 function macroexps.apply(orignode)
    local expanded = orignode.expanded
+   local expansion = orignode.macro_expansion
    orignode.expanded = nil
 
    for k, _ in pairs(orignode) do
@@ -134,6 +137,7 @@ function macroexps.apply(orignode)
    for k, v in pairs(expanded) do
       (orignode)[k] = v
    end
+   orignode.macro_expansion = expansion
 end
 
 return macroexps

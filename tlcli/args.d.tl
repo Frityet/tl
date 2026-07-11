@@ -20,6 +20,7 @@ local record Args
    quiet: boolean
    require: {string}
    script: {string}
+   stdio: boolean
    version: boolean
    wdisable: {string}
    werror: {string}

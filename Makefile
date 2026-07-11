@@ -2,7 +2,8 @@ LUA ?= lua
 STABLE_TL ?= $(LUA) ./tl
 NEW_TL ?= $(LUA) ./tl
 TLGENFLAGS = --check --gen-target=5.1
-BUSTED = busted --suppress-pending
+BUSTED_CMD ?= busted
+BUSTED = $(BUSTED_CMD) --suppress-pending
 STRIPDIR = _temp/strip
 STRICT_NIL_PRAGMA = --\#pragma strict_nil off
 PACKAGE_PATH := $(shell $(LUA) -e 'print(package.path)')
@@ -33,6 +34,7 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	tlcli/driver.tl \
 	tlcli/perf.tl \
 	tlcli/main.tl \
+	tlcli/commands/lsp.tl \
 	tlcli/commands/run.tl \
 	tlcli/commands/warnings.tl \
 	tlcli/commands/dump_blocks.tl \
@@ -71,17 +73,17 @@ _temp/%.lua.1: %.tl $(PRECOMPILED) $(STRIPDIR)/%.tl
 	@echo $@ >> _temp/list1.1
 	@touch $@
 
-_temp/%.lua.2: %.tl _temp/%.lua.1 $(PRECOMPILED)
+_temp/%.lua.2: replace1 %.tl _temp/%.lua.1 $(PRECOMPILED) FORCE
 	@mkdir -p `dirname $@`
-	@echo $< >> _temp/list2
+	@echo $*.tl >> _temp/list2
 	@touch $@
 
-build1: $(addprefix _temp/,$(addsuffix .lua.1,$(basename $(SOURCES))))
+build1: newlist $(addprefix _temp/,$(addsuffix .lua.1,$(basename $(SOURCES))))
 	if [ -e _temp/list1 ]; \
 	then TL_PATH="$(STRIP_TL_PATH)" $(STABLE_TL) gen $(TLGENFLAGS) --root $(STRIPDIR) --custom-ext .lua.1 --output-dir _temp `cat _temp/list1` || { rm `cat _temp/list1.1`; exit 1; };\
 	fi
 
-replace1:
+replace1: build1
 	extras/make.sh move_1_to_lua
 	@rm -f _temp/list2
 
@@ -96,7 +98,7 @@ newlist:
 	@rm -f _temp/list1.1
 	@rm -f _temp/list1.2
 
-selfbuild: newlist build1 replace1 build2 combine
+selfbuild: combine
 	extras/make.sh diff_1_and_2 || extras/make.sh revert
 
 ########################################
@@ -104,6 +106,13 @@ selfbuild: newlist build1 replace1 build2 combine
 ########################################
 
 suite:
+	@if command -v $(BUSTED_CMD) >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory suite-strict; \
+	else \
+		echo "Busted not found; self-build succeeded, skipping tests (use 'make suite-strict' to require them)."; \
+	fi
+
+suite-strict:
 	${BUSTED} -v $(TESTFLAGS) spec/lang
 	${BUSTED} -v $(TESTFLAGS) spec/api
 	${BUSTED} -v $(TESTFLAGS) spec/cli
@@ -118,7 +127,7 @@ bin:
 binary:
 	extras/binary.sh --clean
 
-combine:
+combine: build2
 	$(STABLE_TL) run extras/combine.tl
 
 revert:
@@ -141,5 +150,5 @@ clean: cleantemp
 # Makefile administrivia
 ########################################
 
-.PHONY: all build1 replace1 build2 selfbuild \
+.PHONY: all build1 replace1 build2 selfbuild suite suite-strict \
 	suite bin binary cov revert cov cleantemp clean strip_sources FORCE

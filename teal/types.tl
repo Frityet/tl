@@ -189,9 +189,11 @@ local record types
       fields: {string: Type}
       field_order: {string}
       field_comments: {string: {{Comment}}}
+      field_locations: {string: Where}
       meta_fields: {string: Type}
       meta_field_order: {string}
       meta_field_comments: {string: {{Comment}}}
+      meta_field_locations: {string: Where}
       is_userdata: boolean
    end
 

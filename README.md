@@ -58,6 +58,38 @@ Once `tl` is in your path, there are a few subcommands:
   generate a `module.lua` file in plain Lua with all type annotations
   stripped.
 * `tl warnings` will list all warnings the compiler can generate.
+* `tl lsp [--stdio]` runs Teal's Language Server Protocol server over standard
+  input and output. It provides compiler-backed push and pull diagnostics,
+  macro-aware completion and hover, resolved definitions, references and rename,
+  document/workspace symbols, semantic tokens, inlay hints, inline values,
+  signature help, selection and folding ranges, linked editing, call and type
+  hierarchy, document links and colors, code lenses/actions, TealDoc-enriched
+  hover/completion/signature help, formatting and the
+  `tl.check` / `tl.generate` editor commands. It reloads `tlconfig.lua` from the
+  workspace root supplied by the editor and caches its workspace file manifest
+  in `.cache/tl-lsp/`.
+
+LSP features can be disabled per project in `tlconfig.lua`:
+
+```lua
+return {
+   lsp = {
+      inlay_hints = false,
+      -- Coalesce rapid edits before re-running the type checker (default: 75).
+      diagnostics_debounce_ms = 75,
+      semantic_highlighting = false,
+      workspace_index = false,
+      cache = false,
+   },
+}
+```
+
+The available switches are `diagnostics`, `completion`, `hover`, `definitions`,
+`references`, `rename`, `symbols`, `semantic_highlighting`, `inlay_hints`,
+`inline_values`, `formatting`, `folding_ranges`, `selection_ranges`,
+`document_links`, `linked_editing`, `document_colors`, `code_lens`,
+`code_actions`, `call_hierarchy`, `type_hierarchy`, `monikers`,
+`workspace_index`, and `cache`. All default to enabled.
 
 `tl` also supports some [compiler options](https://teal-language.org/book/compiler_options.html).
 These can either be specified on the command line or inside a tlconfig.lua file at the root of your project.

@@ -24,7 +24,16 @@ local util = require("teal.util")
 local binary_search = util.binary_search
 local sorted_keys = util.sorted_keys
 
-local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = {}, TypeReport = {}, TypeReporter = {} }
+local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TypeReport = {}, TypeReporter = {} }
+
+
+
+
+
+
+
+
+
 
 
 
@@ -202,6 +211,7 @@ function type_reporter.new()
          types = {},
          symbols_by_file = {},
          globals = {},
+         macro_expansions = {},
       }, { __index = TypeReport }),
    }, { __index = TypeReporter })
 
@@ -311,6 +321,11 @@ function TypeReporter:get_typenum(t)
          r[k] = self:get_typenum(v)
       end
       ti.fields = r
+      local locations = {}
+      for name, location in pairs(rt.field_locations or {}) do
+         locations[name] = { file = location.f, y = location.y, x = location.x }
+      end
+      ti.field_locations = locations
       if rt.meta_fields then
 
          local m = {}
@@ -319,6 +334,11 @@ function TypeReporter:get_typenum(t)
             m[k] = self:get_typenum(v)
          end
          ti.meta_fields = m
+         local meta_locations = {}
+         for name, location in pairs(rt.meta_field_locations or {}) do
+            meta_locations[name] = { file = location.f, y = location.y, x = location.x }
+         end
+         ti.meta_field_locations = meta_locations
       end
    end
 
@@ -365,6 +385,8 @@ function TypeReporter:get_collector(filename)
 
    local ft = {}
    self.tr.by_pos[filename] = ft
+   local expansions = {}
+   self.tr.macro_expansions[filename] = expansions
 
    local symbol_list = collector.symbol_list
    local symbol_list_n = 0
@@ -381,6 +403,11 @@ function TypeReporter:get_collector(filename)
       end
 
       yt[x] = self:get_typenum(typ)
+   end
+
+   collector.store_macro_expansion = function(y, x, expansion)
+      expansions[y] = expansions[y] or {}
+      expansions[y][x] = expansion
    end
 
    collector.reserve_symbol_list_slot = function(node)

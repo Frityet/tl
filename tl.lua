@@ -505,6 +505,7 @@ local parse_typeargs_if_any
 
 
 
+
 local ast = {}
 
 
@@ -2042,6 +2043,7 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
    local fields
    local order
    local field_comments
+   local field_locations
    if meta then
       if not def.meta_fields then
          def.meta_fields = {}
@@ -2050,9 +2052,14 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
       fields = def.meta_fields
       order = def.meta_field_order
       field_comments = def.meta_field_comments
+      field_locations = def.meta_field_locations
       if not field_comments then
          field_comments = {}
          def.meta_field_comments = field_comments
+      end
+      if not field_locations then
+         field_locations = {}
+         def.meta_field_locations = field_locations
       end
    else
       if not def.field_comments then
@@ -2061,6 +2068,11 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
       fields = def.fields
       order = def.field_order
       field_comments = def.field_comments
+      field_locations = def.field_locations
+      if not field_locations then
+         field_locations = {}
+         def.field_locations = field_locations
+      end
    end
 
    if comments and not field_comments then
@@ -2077,6 +2089,7 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
          set_declname(newt.def, name)
       end
       fields[name] = newt
+      field_locations[name] = { f = state.filename, y = block.y, x = block.x }
       field_comments[name] = field_comments[name] or {}
       if comments then
          field_comments[name] = { comments }
@@ -2190,7 +2203,7 @@ parse_record_like_type = function(state, block, typename)
             if t.typename == "function" and t.maybe_method then
                t.is_method = true
             end
-            store_field_in_record(state, fld, field_name, t, decl, meta, comments)
+            store_field_in_record(state, name_node or fld, field_name, t, decl, meta, comments)
             for i = #pending_field_comments, 1, -1 do
                table.remove(pending_field_comments, i)
             end
@@ -3042,6 +3055,10 @@ local function store_type_after(fn)
 
       if w.y then
          self.collector.store_type(w.y, w.x, t)
+         local node = n
+         if node.macro_expansion then
+            self.collector.store_macro_expansion(w.y, w.x, node.macro_expansion)
+         end
       end
 
       return t
@@ -4619,6 +4636,9 @@ do
             argexps = e2
          end
          macroexps.expand(node, argexps, f.macroexp)
+         if self.collector and node.macro_expansion then
+            self.collector.store_macro_expansion(node.y, node.x, node.macro_expansion)
+         end
       end
 
       return ret, f
@@ -14470,6 +14490,7 @@ local traverse_nodes = traversal.traverse_nodes
 
 local util = require("teal.util")
 local shallow_copy_table = util.shallow_copy_table
+local lua_generator = require("teal.gen.lua_generator")
 
 local macroexps = {}
 
@@ -14562,6 +14583,7 @@ function macroexps.expand(orignode, args, macroexp)
 
    local p = traverse_macroexp(macroexp, on_arg_id, on_node)
    orignode.expanded = p[2]
+   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
 end
 
 function macroexps.check_arg_use(ck, macroexp)
@@ -14580,6 +14602,7 @@ end
 
 function macroexps.apply(orignode)
    local expanded = orignode.expanded
+   local expansion = orignode.macro_expansion
    orignode.expanded = nil
 
    for k, _ in pairs(orignode) do
@@ -14588,6 +14611,7 @@ function macroexps.apply(orignode)
    for k, v in pairs(expanded) do
       (orignode)[k] = v
    end
+   orignode.macro_expansion = expansion
 end
 
 return macroexps
@@ -19255,7 +19279,16 @@ local util = require("teal.util")
 local binary_search = util.binary_search
 local sorted_keys = util.sorted_keys
 
-local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = {}, TypeReport = {}, TypeReporter = {} }
+local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TypeReport = {}, TypeReporter = {} }
+
+
+
+
+
+
+
+
+
 
 
 
@@ -19433,6 +19466,7 @@ function type_reporter.new()
          types = {},
          symbols_by_file = {},
          globals = {},
+         macro_expansions = {},
       }, { __index = TypeReport }),
    }, { __index = TypeReporter })
 
@@ -19542,6 +19576,11 @@ function TypeReporter:get_typenum(t)
          r[k] = self:get_typenum(v)
       end
       ti.fields = r
+      local locations = {}
+      for name, location in pairs(rt.field_locations or {}) do
+         locations[name] = { file = location.f, y = location.y, x = location.x }
+      end
+      ti.field_locations = locations
       if rt.meta_fields then
 
          local m = {}
@@ -19550,6 +19589,11 @@ function TypeReporter:get_typenum(t)
             m[k] = self:get_typenum(v)
          end
          ti.meta_fields = m
+         local meta_locations = {}
+         for name, location in pairs(rt.meta_field_locations or {}) do
+            meta_locations[name] = { file = location.f, y = location.y, x = location.x }
+         end
+         ti.meta_field_locations = meta_locations
       end
    end
 
@@ -19596,6 +19640,8 @@ function TypeReporter:get_collector(filename)
 
    local ft = {}
    self.tr.by_pos[filename] = ft
+   local expansions = {}
+   self.tr.macro_expansions[filename] = expansions
 
    local symbol_list = collector.symbol_list
    local symbol_list_n = 0
@@ -19612,6 +19658,11 @@ function TypeReporter:get_collector(filename)
       end
 
       yt[x] = self:get_typenum(typ)
+   end
+
+   collector.store_macro_expansion = function(y, x, expansion)
+      expansions[y] = expansions[y] or {}
+      expansions[y][x] = expansion
    end
 
    collector.reserve_symbol_list_slot = function(node)
@@ -19798,6 +19849,8 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+
+
 
 
 

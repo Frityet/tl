@@ -40,6 +40,7 @@ local record type_reporter
       symbol_list: {Symbol}
 
       store_type: function(y: integer, x: integer, typ: Type)
+      store_macro_expansion: function(y: integer, x: integer, expansion: string)
       reserve_symbol_list_slot: function(Node)
       add_to_symbol_list: function(node: Node, name: string, t: Type)
       begin_symbol_list_scope: function(node: Node)
@@ -48,6 +49,11 @@ local record type_reporter
    end
 
    record TypeInfo
+      record Location
+         file: string
+         y: integer
+         x: integer
+      end
       t: integer
 
       str: string
@@ -57,7 +63,9 @@ local record type_reporter
       ref: integer -- NOMINAL
       typeargs: {{string, integer}} -- FUNCTION, RECORD (optional)
       fields: {string: integer} -- RECORD
+      field_locations: {string: Location} -- RECORD
       meta_fields: {string: integer} -- RECORD (optional)
+      meta_field_locations: {string: Location} -- RECORD (optional)
       enums: {string} -- ENUM
       args: {{integer, string}} -- FUNCTION
       rets: {{integer, string}} -- FUNCTION
@@ -77,6 +85,7 @@ local record type_reporter
       symbols: {Symbol}
       symbols_by_file: {string: {Symbol}}
       globals: {string: integer}
+      macro_expansions: {string: {integer: {integer: string}}}
    end
 
    record TypeReporter
@@ -202,6 +211,7 @@ function type_reporter.new(): TypeReporter
          types = {},
          symbols_by_file = {},
          globals = {},
+         macro_expansions = {},
       }, { __index = TypeReport }),
    }, { __index = TypeReporter })
 
@@ -311,6 +321,11 @@ function TypeReporter:get_typenum(t: Type): integer
          r[k] = self:get_typenum(v)
       end
       ti.fields = r
+      local locations: {string:TypeInfo.Location} = {}
+      for name, location in pairs(rt.field_locations or {}) do
+         locations[name] = { file = location.f, y = location.y, x = location.x }
+      end
+      ti.field_locations = locations
       if rt.meta_fields then
          -- store record metafield info
          local m = {}
@@ -319,6 +334,11 @@ function TypeReporter:get_typenum(t: Type): integer
             m[k] = self:get_typenum(v)
          end
          ti.meta_fields = m
+         local meta_locations: {string:TypeInfo.Location} = {}
+         for name, location in pairs(rt.meta_field_locations or {}) do
+            meta_locations[name] = { file = location.f, y = location.y, x = location.x }
+         end
+         ti.meta_field_locations = meta_locations
       end
    end
 
@@ -365,6 +385,8 @@ function TypeReporter:get_collector(filename: string): TypeCollector
 
    local ft: {integer:{integer:integer}} = {}
    self.tr.by_pos[filename] = ft
+   local expansions: {integer:{integer:string}} = {}
+   self.tr.macro_expansions[filename] = expansions
 
    local symbol_list = collector.symbol_list
    local symbol_list_n = 0
@@ -381,6 +403,11 @@ function TypeReporter:get_collector(filename: string): TypeCollector
       end
 
       yt[x] = self:get_typenum(typ)
+   end
+
+   collector.store_macro_expansion = function(y: integer, x: integer, expansion: string)
+      expansions[y] = expansions[y] or {}
+      expansions[y][x] = expansion
    end
 
    collector.reserve_symbol_list_slot = function(node: Node)

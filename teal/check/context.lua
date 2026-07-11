@@ -1480,6 +1480,9 @@ do
             argexps = e2
          end
          macroexps.expand(node, argexps, f.macroexp)
+         if self.collector and node.macro_expansion then
+            self.collector.store_macro_expansion(node.y, node.x, node.macro_expansion)
+         end
       end
 
       return ret, f

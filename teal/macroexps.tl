@@ -16,6 +16,7 @@ local type types = require("teal.types")
 
 local util = require("teal.util")
 local shallow_copy_table = util.shallow_copy_table
+local lua_generator = require("teal.gen.lua_generator")
 
 local record macroexps
    expand: function(orignode: Node, args: {Node}, macroexp: types.Node)
@@ -108,6 +109,7 @@ function macroexps.expand(orignode: Node, args: {Node}, macroexp: types.Node)
 
    local p = traverse_macroexp(macroexp as Node, on_arg_id, on_node)
    orignode.expanded = p[2]
+   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
 end
 
 function macroexps.check_arg_use(ck: TypeChecker, macroexp: Node)
@@ -126,6 +128,7 @@ end
 
 function macroexps.apply(orignode: Node)
    local expanded = orignode.expanded
+   local expansion = orignode.macro_expansion
    orignode.expanded = nil
 
    for k, _ in pairs(orignode as {any:any}) do
@@ -134,6 +137,7 @@ function macroexps.apply(orignode: Node)
    for k, v in pairs(expanded as {any:any}) do
       (orignode as {any:any})[k] = v
    end
+   orignode.macro_expansion = expansion
 end
 
 return macroexps

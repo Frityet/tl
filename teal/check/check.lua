@@ -64,6 +64,10 @@ local function store_type_after(fn)
 
       if w.y then
          self.collector.store_type(w.y, w.x, t)
+         local node = n
+         if node.macro_expansion then
+            self.collector.store_macro_expansion(w.y, w.x, node.macro_expansion)
+         end
       end
 
       return t
