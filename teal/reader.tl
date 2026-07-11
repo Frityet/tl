@@ -180,6 +180,7 @@ local record ReadState
    require_aliases: {string: string}
    imported_macro_decls: {Block}
    imported_macro_keys: {string: boolean}
+   macro_aliases: {Block}
 end
 
 local enum BlockTypeListMode
@@ -536,6 +537,7 @@ local function skip(ps: ReadState, i: integer, skip_fn: SkipFunction): integer, 
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
       imported_macro_keys = ps.imported_macro_keys,
+      macro_aliases = ps.macro_aliases,
    }
    return skip_fn(err_ps, i)
 end
@@ -833,6 +835,7 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
             require_aliases = ps.require_aliases,
             imported_macro_decls = ps.imported_macro_decls,
             imported_macro_keys = ps.imported_macro_keys,
+            macro_aliases = ps.macro_aliases,
          }
          i, node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY] = verify_kind(try_ps, i, "identifier", "string")
          node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk = '"' .. node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk .. '"'
@@ -1104,6 +1107,7 @@ local function read_trying_list<T>(ps: ReadState, i: integer, list: {T}, read_it
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
       imported_macro_keys = ps.imported_macro_keys,
+      macro_aliases = ps.macro_aliases,
    }
    local tryi, item: integer, T = read_item(try_ps, i)
    if not item then
@@ -2956,13 +2960,7 @@ local function read_local_macroexp(ps: ReadState, i: integer): integer, Block
    return i, node
 end
 
-local function read_local_macro(ps: ReadState, i: integer): integer, Block
-   local istart = i
-   i = verify_tk(ps, i, "local")
-   i = verify_tk(ps, i, "macro")
-   local node = new_block(ps, istart, "local_macro")
-   i, node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = read_identifier(ps, i)
-   i = verify_tk(ps, i, "!")
+local function read_macro_body(ps: ReadState, i: integer, node: Block): integer, Block
    local old_in_macro = ps.in_local_macro
    local old_allow = ps.allow_macro_vars
    ps.in_local_macro = true
@@ -2970,9 +2968,56 @@ local function read_local_macro(ps: ReadState, i: integer): integer, Block
    i, node = read_function_args_rets_body(ps, i, node)
    ps.in_local_macro = old_in_macro
    ps.allow_macro_vars = old_allow
+   return i, node
+end
+
+local function register_macro_signature(ps: ReadState, node: Block, key: string)
+   if key then
+      ps.macro_sigs[key] = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
+   end
+end
+
+local function read_macro_alias_target(ps: ReadState, i: integer, node: Block): integer, Block
+   i = verify_tk(ps, i, "=")
+
+   local target: Block
+   i, target = read_identifier(ps, i)
+   if not target then
+      return i, node
+   end
+
+   while ps.tokens[i].tk == "." do
+      local dot = new_block(ps, i, "op_dot")
+      dot[BLOCK_INDEXES.OP.E1] = target
+      i = i + 1
+      i, dot[BLOCK_INDEXES.OP.E2] = read_identifier(ps, i)
+      if not dot[BLOCK_INDEXES.OP.E2] then
+         return i, node
+      end
+      target = dot
+   end
+
+   i = verify_tk(ps, i, "!")
+   node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = target
+   table.insert(ps.macro_aliases, node)
+   end_at(node, ps.tokens[i - 1])
+   return i, node
+end
+
+local function read_local_macro(ps: ReadState, i: integer): integer, Block
+   local istart = i
+   i = verify_tk(ps, i, "local")
+   i = verify_tk(ps, i, "macro")
+   local node = new_block(ps, istart, "local_macro")
+   i, node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = read_identifier(ps, i)
+   i = verify_tk(ps, i, "!")
+   if ps.tokens[i].tk == "=" then
+      return read_macro_alias_target(ps, i, node)
+   end
+
+   i, node = read_macro_body(ps, i, node)
    if node[BLOCK_INDEXES.LOCAL_MACRO.NAME] and node[BLOCK_INDEXES.LOCAL_MACRO.NAME].kind == "identifier" then
-      local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk
-      ps.macro_sigs[name] = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, name)
+      register_macro_signature(ps, node, node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk)
    end
    return i, node
 end
@@ -3018,22 +3063,64 @@ local function read_attached_macro(ps: ReadState, i: integer): integer, Block
 
    i = verify_tk(ps, i, "!")
 
-   local old_in_macro = ps.in_local_macro
-   local old_allow = ps.allow_macro_vars
-   ps.in_local_macro = true
-   ps.allow_macro_vars = false
-   i, node = read_function_args_rets_body(ps, i, node)
-   ps.in_local_macro = old_in_macro
-   ps.allow_macro_vars = old_allow
+   i, node = read_macro_body(ps, i, node)
 
    local owner_key = path_block_to_string(node[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
    local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME] and node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk
    if owner_key and name then
-      local key = owner_key .. "." .. name
-      ps.macro_sigs[key] = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
+      register_macro_signature(ps, node, owner_key .. "." .. name)
    end
 
    return i, node
+end
+
+local function resolve_macro_aliases(ps: ReadState)
+   local pending = ps.macro_aliases
+
+   while #pending > 0 do
+      local unresolved: {Block} = {}
+      local resolved_any = false
+
+      for _, node in ipairs(pending) do
+         local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
+         local target = node[BLOCK_INDEXES.LOCAL_MACRO.TARGET]
+         local target_key = path_block_to_string(target)
+         local sig = target_key and ps.macro_sigs[target_key]
+
+         if not sig and target_key then
+            local require_alias = target_key:match("^([^.]+)%.")
+            if require_alias then
+               ensure_required_alias_macros(ps, require_alias)
+               sig = ps.macro_sigs[target_key]
+            end
+         end
+
+         if name and sig then
+            ps.macro_sigs[name.tk] = sig
+            resolved_any = true
+         else
+            table.insert(unresolved, node)
+         end
+      end
+
+      if #unresolved == 0 then
+         return
+      end
+      if not resolved_any then
+         for _, node in ipairs(unresolved) do
+            local target = node[BLOCK_INDEXES.LOCAL_MACRO.TARGET]
+            table.insert(ps.errs, {
+               filename = ps.filename,
+               y = target.y,
+               x = target.x,
+               msg = "unknown macro '" .. (path_block_to_string(target) or "") .. "'",
+            })
+         end
+         return
+      end
+
+      pending = unresolved
+   end
 end
 
 local function read_local(ps: ReadState, i: integer): integer, Block
@@ -3282,6 +3369,7 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       require_aliases = {},
       imported_macro_decls = {},
       imported_macro_keys = {},
+      macro_aliases = {},
    }
    local i = 1
    local hashbang: string
@@ -3293,6 +3381,8 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    if hashbang then
       table.insert(node, 1, new_block(ps, 1, "hashbang"))
    end
+   resolve_macro_aliases(ps)
+
    for _, decl in ipairs(ps.imported_macro_decls) do
       table.insert(node, decl)
    end

@@ -75,6 +75,20 @@ m.Helper.side!(print("there"))
 
 Macros that you import from another module are attached to the record, just as `macroexp`s are, so you must qualify it with the record name (which may be nested). 
 
+## Aliasing a macro
+
+Use a local macro alias when an imported macro is used frequently:
+
+```lua
+local utilities = require("utilities")
+local macro f! = utilities.f!
+
+local message = f!"Hello, {name}!"
+```
+
+Aliases are resolved at compile time, produce no Lua code, and retain the
+target macro's argument signature.
+
 ## Invoking a macro
 
 A macro call uses the `!` postfix operator and accepts the same argument forms

@@ -326,6 +326,46 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
    env.signatures[macro_key] = sig
 end
 
+local function compile_macro_alias(mb, env)
+   local name_block = mb[BLOCK_INDEXES.LOCAL_MACRO.NAME]
+   local target_key = path_block_to_string(mb[BLOCK_INDEXES.LOCAL_MACRO.TARGET])
+   if not name_block or name_block.kind ~= "identifier" or not target_key then
+      return true
+   end
+
+   local target = env.macros[target_key]
+   if not target then
+      return false
+   end
+
+   env.macros[name_block.tk] = target
+   env.signatures[name_block.tk] = env.signatures[target_key]
+   return true
+end
+
+local function compile_macro_aliases(aliases, env)
+   local pending = aliases
+
+   while #pending > 0 do
+      local unresolved = {}
+      local resolved_any = false
+
+      for _, alias in ipairs(pending) do
+         if compile_macro_alias(alias, env) then
+            resolved_any = true
+         else
+            table.insert(unresolved, alias)
+         end
+      end
+
+      if #unresolved == 0 or not resolved_any then
+         return
+      end
+
+      pending = unresolved
+   end
+end
+
 local seen
 
 local traverse_invoking_macros
@@ -512,17 +552,24 @@ end
 function macro_eval.compile_all_and_expand(node, filename, read_lang, errs)
    seen = setmetatable({}, { __mode = "k" })
    local env = macro_eval.new_env(errs)
+   local aliases = {}
 
    local i = 1
    while i <= #node do
       local it = node[i]
       if it and it.kind == "local_macro" then
-         compile_local_macro(it, filename, read_lang, env, errs)
          table.remove(node, i)
+         if it[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then
+            table.insert(aliases, it)
+         else
+            compile_local_macro(it, filename, read_lang, env, errs)
+         end
       else
          i = i + 1
       end
    end
+
+   compile_macro_aliases(aliases, env)
 
    node = traverse_invoking_macros(node, filename, env, errs, "stmt")
    remove_macro_only_requires(node, env.imported_aliases)

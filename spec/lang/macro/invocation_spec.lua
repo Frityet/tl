@@ -130,6 +130,36 @@ describe('macro invocation expansion', function()
 end)
 
 describe('attached macro imports', function()
+   it('aliases imported attached macros', function()
+      util.mock_io(finally, {
+         ["macs.tl"] = [[
+            local record macros end
+
+            macro macros.double!(x: Statement)
+               return ```
+                  $x
+                  $x
+               ```
+            end
+
+            return macros
+         ]],
+      })
+
+      local code = [[
+         local m = require("macs")
+         local macro twice! = m.double!
+         twice!(print("hi"))
+      ]]
+
+      local ast, errs = tl.parse(code, "main.tl")
+      assert.same({}, errs)
+      local out, err = lua_generator.generate(ast, '5.4')
+      assert.is_nil(err)
+      out = out:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+      assert.same('print("hi"); print("hi")', out)
+   end)
+
    it('accepts macros attached to local interfaces', function()
       local code = [[
          local interface macros end
