@@ -60,6 +60,8 @@ function loader.load(teal_code, chunkname, mode, ...)
       mode = mode:gsub("c", "")
    end
 
+   lua_compat.apply(result)
+
    local lua_code = lua_generator.generate(result.ast, package_loader.env.opts.gen_target, lua_generator.fast_opts)
 
    return load(lua_code, chunkname, mode, ...)

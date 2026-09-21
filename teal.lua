@@ -1,264 +1,6 @@
--- module teal.api.v2 from teal/api/v2.lua
-package.preload["teal.api.v2"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
-local check = require("teal.check.check")
-local environment = require("teal.environment")
-local errors = require("teal.errors")
-local lexer = require("teal.lexer")
-local loader = require("teal.loader")
-local lua_generator = require("teal.gen.lua_generator")
-local lua_compat = require("teal.gen.lua_compat")
-local package_loader = require("teal.package_loader")
-local parser = require("teal.parser")
-local require_file = require("teal.check.require_file")
-local input = require("teal.input")
-local targets = require("teal.gen.targets")
-
-local type_reporter = require("teal.type_reporter")
-
-
-
-
-
-local v2 = { CheckOptions = {}, EnvOptions = {} }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-environment.set_require_module_fn(require_file.require_module)
-
-v2.warning_kinds = errors.warning_kinds
-v2.typecodes = type_reporter.typecodes
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local function env_from_check_options(opts)
-   return environment.new(opts and {
-      feat_arity = opts.feat_arity,
-      feat_strict_nil = opts.feat_strict_nil,
-      gen_compat = opts.gen_compat,
-      gen_target = opts.gen_target,
-   })
-end
-
-v2.check = function(ast, filename, opts, env)
-   if opts and (opts.gen_target == "5.4" or opts.gen_target == "5.5") and opts.gen_compat ~= "off" then
-      return nil, "gen-compat must be explicitly 'off' when gen-target is '5.4' or '5.5'"
-   end
-
-   if opts and env then
-
-
-
-
-
-
-
-
-
-
-      if opts.feat_arity and env.opts.feat_arity and opts.feat_arity ~= env.opts.feat_arity then
-         return nil, "opts.feat_arity does not match environment setting"
-      end
-      if opts.gen_compat and env.opts.gen_compat and opts.gen_compat ~= env.opts.gen_compat then
-         return nil, "opts.gen_compat does not match environment setting"
-      end
-      if opts.gen_target and env.opts.gen_target and opts.gen_target ~= env.opts.gen_target then
-         return nil, "opts.gen_target does not match environment setting"
-      end
-   elseif opts or not env then
-      env = env_from_check_options(opts)
-   end
-
-   local result = check.check(ast, env, filename or "<input>.tl")
-   lua_compat.apply(result)
-   return result
-end
-
-v2.check_file = function(filename, env, fd)
-   env = env or environment.new()
-   local err
-   if not fd then
-      fd, err = io.open(filename, "rb")
-      if not fd then
-         return nil, err
-      end
-   end
-   local code
-   code, err = fd:read("*a")
-   if not code then
-      return nil, err
-   end
-   local result = input.check(env, filename, code)
-   lua_compat.apply(result)
-   return result
-end
-
-v2.check_string = function(teal_code, env, filename, parse_lang)
-   env = env or environment.new()
-   if not filename then
-      filename = parse_lang == "lua" and "<input>.lua" or "<input>.tl"
-   end
-   local result = input.check(env, filename, teal_code)
-   lua_compat.apply(result)
-   return result
-end
-
-v2.gen = function(teal_code, env, opts, parse_lang)
-   env = env or environment.new()
-   local filename = parse_lang == "lua" and "<input>.lua" or "<input>.tl"
-   local result = input.check(env, filename, teal_code)
-   if (not result.ast) or #result.syntax_errors > 0 then
-      return nil, result
-   end
-   lua_compat.apply(result)
-   local code = lua_generator.generate(result.ast, env.opts.gen_target, opts)
-   return code, result
-end
-
-v2.generate = function(ast, gen_target, opts)
-   return lua_generator.generate(ast, gen_target, opts)
-end
-
-v2.get_token_at = lexer.get_token_at
-
-v2.lex = lexer.lex
-
-v2.load = loader.load
-
-v2.loader = package_loader.install_loader
-
-local function predefine_modules(env, predefined_modules)
-   for _, name in ipairs(predefined_modules) do
-      local ok = environment.load_module(env, name)
-      if not ok then
-         return nil, "Error: could not predefine module '" .. name .. "'"
-      end
-   end
-
-   return true
-end
-
-v2.new_env = function(opts)
-   local env = env_from_check_options(opts and opts.defaults)
-
-   if opts and opts.predefined_modules then
-      local ok, err = predefine_modules(env, opts.predefined_modules)
-      if not ok then
-         return nil, err
-      end
-   end
-
-   return env
-end
-
-v2.parse = function(teal_code, filename, parse_lang)
-   local ast, errs, required_modules = parser.parse(teal_code, filename, parse_lang)
-   return ast, errs, required_modules
-end
-
-v2.parse_program = function(tokens, errs, filename, parse_lang)
-   local ast, required_modules = parser.parse_program(tokens, errs, filename, parse_lang)
-   return ast, required_modules
-end
-
-v2.process = v2.check_file
-
-v2.search_module = function(module_name, search_all)
-   local found, _, tried = require_file.search_module(module_name, search_all and require_file.all_extensions)
-   if found then
-      return found, (io.open(found)), nil
-   end
-   return nil, nil, tried
-end
-
-v2.symbols_in_scope = function(tr, y, x, filename)
-   return tr:symbols_in_scope(filename, y, x)
-end
-
-v2.target_from_lua_version = targets.detect
-
-v2.version = function()
-   return environment.VERSION
-end
-
-
-
-return v2
-
-end
-
 -- module teal.ast from teal/ast.lua
 package.preload["teal.ast"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-
 local reader = require("teal.block")
 
 
@@ -267,10 +9,6 @@ local errors = require("teal.errors")
 
 
 local types = require("teal.types")
-
-
-
-
 
 
 
@@ -362,6 +100,7 @@ local lexer = require("teal.lexer")
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
 
 
 
@@ -1019,7 +758,7 @@ parse_expression = function(state, block)
       node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E1])
       if not node.e1 then
 
-         local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+         local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
          node.e1 = new_node(state, dummy_block, "error_node")
       end
       if op_info.arity == 2 then
@@ -1060,7 +799,7 @@ parse_expression = function(state, block)
          else
             node.e2 = parse_expression(state, block[reader.BLOCK_INDEXES.OP.E2])
             if not node.e2 then
-               local dummy_block = { kind = "error_block", y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
+               local dummy_block = { kind = nil, y = block.y or 1, x = block.x or 1, tk = "", yend = block.yend or 1, xend = block.xend or 1 }
                node.e2 = new_node(state, dummy_block, "error_node")
             end
          end
@@ -1711,7 +1450,6 @@ parse_fns.record_function = function(state, block)
    end
    if not block[reader.BLOCK_INDEXES.RECORD_FUNCTION.NAME] then
       local gblock = {
-         f = block.f,
          kind = "global_function",
          tk = block.tk,
          y = block.y,
@@ -1791,6 +1529,7 @@ end
 parse_fns.pragma = function(state, block)
    assert(block)
    local node = new_node(state, block)
+
    if block[reader.BLOCK_INDEXES.PRAGMA.KEY] then
       node.pkey = block[reader.BLOCK_INDEXES.PRAGMA.KEY].tk
    end
@@ -1803,6 +1542,7 @@ end
 parse_fns.local_type = function(state, block)
    assert(block)
    local node = new_node(state, block)
+
    if block[reader.BLOCK_INDEXES.LOCAL_TYPE.VAR] then
       node.var = new_node(state, block[reader.BLOCK_INDEXES.LOCAL_TYPE.VAR])
    end
@@ -1825,6 +1565,7 @@ end
 parse_fns.global_type = function(state, block)
    assert(block)
    local node = new_node(state, block)
+
    if block[reader.BLOCK_INDEXES.GLOBAL_TYPE.VAR] then
       node.var = new_node(state, block[reader.BLOCK_INDEXES.GLOBAL_TYPE.VAR])
    end
@@ -2037,7 +1778,6 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
    local fields
    local order
    local field_comments
-   local field_locations
    if meta then
       if not def.meta_fields then
          def.meta_fields = {}
@@ -2046,14 +1786,9 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
       fields = def.meta_fields
       order = def.meta_field_order
       field_comments = def.meta_field_comments
-      field_locations = def.meta_field_locations
       if not field_comments then
          field_comments = {}
          def.meta_field_comments = field_comments
-      end
-      if not field_locations then
-         field_locations = {}
-         def.meta_field_locations = field_locations
       end
    else
       if not def.field_comments then
@@ -2062,11 +1797,6 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
       fields = def.fields
       order = def.field_order
       field_comments = def.field_comments
-      field_locations = def.field_locations
-      if not field_locations then
-         field_locations = {}
-         def.field_locations = field_locations
-      end
    end
 
    if comments and not field_comments then
@@ -2083,7 +1813,6 @@ local function store_field_in_record(state, block, name, newt, def, meta, commen
          set_declname(newt.def, name)
       end
       fields[name] = newt
-      field_locations[name] = { f = state.filename, y = block.y, x = block.x }
       field_comments[name] = field_comments[name] or {}
       if comments then
          field_comments[name] = { comments }
@@ -2197,7 +1926,7 @@ parse_record_like_type = function(state, block, typename)
             if t.typename == "function" and t.maybe_method then
                t.is_method = true
             end
-            store_field_in_record(state, name_node or fld, field_name, t, decl, meta, comments)
+            store_field_in_record(state, fld, field_name, t, decl, meta, comments)
             for i = #pending_field_comments, 1, -1 do
                table.remove(pending_field_comments, i)
             end
@@ -2356,26 +2085,6 @@ parse_base_type = function(state, block)
       end
       end_at(u, block)
       return u
-   elseif block.kind == "string" then
-      local decl = new_type(state, block, "string")
-      decl.literal = block_string_value(block)
-      end_at(decl, block)
-      return decl
-   elseif block.kind == "number" then
-      local decl = new_type(state, block, "number")
-      decl.literal = block_number_value(block)
-      end_at(decl, block)
-      return decl
-   elseif block.kind == "integer" then
-      local decl = new_type(state, block, "integer")
-      decl.literal = block_number_value(block)
-      end_at(decl, block)
-      return decl
-   elseif block.kind == "boolean" then
-      local decl = new_type(state, block, "boolean")
-      decl.literal = block.tk == "true"
-      end_at(decl, block)
-      return decl
    elseif block.kind == "nil" then
       return new_type(state, block, "nil")
    end
@@ -2533,13 +2242,10 @@ end
 
 -- module teal.block from teal/block.lua
 package.preload["teal.block"] = function(...)
-
 local errors = require("teal.errors")
 
 
 local block = { Block = { ExpectedContext = {} } }
-
-
 
 
 
@@ -2745,9 +2451,6 @@ local BLOCK_INDEXES = {
       ARGS = 3,
       RETS = 4,
       BODY = 5,
-      OWNER = 6,
-      IMPORT_ALIAS = 7,
-      TARGET = 8,
    },
    LOCAL_MACROEXP = {
       NAME = 1,
@@ -2920,9 +2623,7 @@ local BLOCK_KINDS = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
-   ["record"] = true,
    ["interface"] = true,
-   ["enum"] = true,
    ["pragma"] = true,
    ["error_block"] = true,
    ["userdata"] = true,
@@ -2984,8 +2685,7 @@ end
 
 -- module teal.check.check from teal/check/check.lua
 package.preload["teal.check.check"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert
-local context = require("teal.check.context")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local context = require("teal.check.context")
 local Context = context.Context
 
 local tldebug = require("teal.debug")
@@ -3050,10 +2750,6 @@ local function store_type_after(fn)
 
       if w.y then
          self.collector.store_type(w.y, w.x, t)
-         local node = n
-         if node.macro_expansion then
-            self.collector.store_macro_expansion(w.y, w.x, node.macro_expansion)
-         end
       end
 
       return t
@@ -3161,7 +2857,6 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
-
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -3223,7 +2918,6 @@ local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
-local drop_constant_values = types.drop_constant_values
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
 local is_valid_union = types.is_valid_union
@@ -3294,7 +2988,6 @@ local has_var_been_used = variables.has_var_been_used
 
 
 local context = { Context = {} }
-
 
 
 
@@ -3548,7 +3241,6 @@ do
 
 
 
-
    local resolve_typevar_fns = {
       ["typevar"] = function(s, t)
          local rt = s.ctx:find_var_type(t.typevar)
@@ -3556,9 +3248,7 @@ do
             return t, false
          end
 
-         if not s.keep_literals[t.typevar] then
-            rt = drop_constant_value(rt)
-         end
+         rt = drop_constant_value(rt)
          s.resolved[t.typevar] = rt
 
          return rt, true
@@ -3578,11 +3268,10 @@ do
       return copy
    end
 
-   function Context:resolve_typevars(t, keep_literals)
+   function Context:resolve_typevars(t)
       local state = {
          ctx = self,
          resolved = {},
-         keep_literals = keep_literals or {},
       }
       local rt, errs = types.map(state, t, resolve_typevar_fns)
       if errs then
@@ -3625,12 +3314,12 @@ do
       return var
    end
 
-   function Context:add_var(node, name, t, attribute, specialization, keep_literal)
+   function Context:add_var(node, name, t, attribute, specialization)
       if self.feat_lax and node and is_unknown(t) and (name ~= "self" and name ~= "...") and not specialization then
          self.errs:add_unknown(node, name)
       end
-      if not attribute and not keep_literal then
-         t = drop_constant_values(t, false)
+      if not attribute then
+         t = drop_constant_value(t)
       end
 
       if self.collector and node then
@@ -3717,16 +3406,9 @@ do
       assert(#g.typeargs == #typeargs)
 
       for i, ta in ipairs(g.typeargs) do
-
-         self:add_var(nil, ta.typearg, typeargs[i], nil, nil, true)
+         self:add_var(nil, ta.typearg, typeargs[i])
       end
-      local keep_literals = {}
-      if typeargs then
-         for _, ta in ipairs(g.typeargs) do
-            keep_literals[ta.typearg] = true
-         end
-      end
-      local applied, errs = self:resolve_typevars(g, keep_literals)
+      local applied, errs = self:resolve_typevars(g)
       if errs then
          self.errs:add_prefixing(w, errs, "")
          return nil
@@ -4169,7 +3851,7 @@ end
 
 function Context:arraytype_from_list(w, typelist)
 
-   local element_type = unite(w, typelist, true, not self.feat_strict_nil)
+   local element_type = unite(w, typelist, true)
    local valid = (not (element_type.typename == "union")) and true or is_valid_union(element_type)
    if valid then
       return a_type(w, "array", { elements = element_type }), true
@@ -4631,9 +4313,6 @@ do
             argexps = e2
          end
          macroexps.expand(node, argexps, f.macroexp)
-         if self.collector and node.macro_expansion then
-            self.collector.store_macro_expansion(node.y, node.x, node.macro_expansion)
-         end
       end
 
       return ret, f
@@ -4798,7 +4477,7 @@ function Context:begin_temporary_record_types(typ)
             assert(ftype.is_alias)
             self:resolve_nominal(def)
          end
-         self:add_var(nil, fname, ftype, nil, nil, true)
+         self:add_var(nil, fname, ftype)
       end
    end
 end
@@ -5023,15 +4702,15 @@ function Context:add_global(node, varname, valtype, is_assigning)
       return nil
    end
 
-   local var = { t = valtype, attribute = is_const and node.attribute or nil, declared_at = node, is_global = true }
+   local var = { t = valtype, attribute = is_const and "const" or nil, declared_at = node, is_global = true }
    self.st[1].vars[varname] = var
 
    return var
 end
 
-function Context:add_internal_function_variables(node, args, keep_literal)
+function Context:add_internal_function_variables(node, args)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
+   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }))
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -5043,12 +4722,12 @@ function Context:add_internal_function_variables(node, args, keep_literal)
    end
 end
 
-function Context:add_function_definition_for_recursion(node, fnargs, feat_arity, keep_literal)
+function Context:add_function_definition_for_recursion(node, fnargs, feat_arity)
    self:add_var(nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
       min_arity = feat_arity and node.min_arity or 0,
       args = fnargs,
       rets = self.get_rets(node.rets),
-   })), nil, nil, keep_literal)
+   })))
 end
 
 function Context:end_function_scope(node)
@@ -5198,10 +4877,7 @@ function Context:type_check_index(anode, bnode, a, b)
    return self.errs:invalid_at(bnode, errm, erra, errb)
 end
 
-function Context:expand_type(w, old, new, flatten_constants)
-   if flatten_constants == nil then
-      flatten_constants = true
-   end
+function Context:expand_type(w, old, new)
    if not old or old.typename == "nil" then
       return new
    end
@@ -5233,7 +4909,7 @@ function Context:expand_type(w, old, new, flatten_constants)
       return a_type(w, "map", { keys = keys, values = values })
    end
 
-   return unite(w, { old, new }, flatten_constants, not self.feat_strict_nil)
+   return unite(w, { old, new }, true)
 end
 
 function Context:find_record_to_extend(exp)
@@ -5656,7 +5332,6 @@ do
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t).def
 
       self.feat_arity = set_feat(env.opts.feat_arity, true)
-      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
       self.feat_lax = not not filename:match("%.lua$")
 
       if self.feat_lax then
@@ -5692,14 +5367,10 @@ end
 
 -- module teal.check.relations from teal/check/relations.lua
 package.preload["teal.check.relations"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
 
 
 local types = require("teal.types")
-
-
-
 
 
 
@@ -5755,91 +5426,6 @@ local relations = {}
 
 local function compare_true(_, _, _)
    return true
-end
-
-local function compare_string_literals(_ck, a, b)
-   if b.literal == nil then
-      return true
-   end
-   if a.literal == nil then
-      return false
-   end
-   return a.literal == b.literal
-end
-
-local function same_string_literals(_ck, a, b)
-   return a.literal == b.literal
-end
-
-local function compare_number_literals(_ck, a, b)
-   if b.literal == nil then
-      return true
-   end
-   if a.literal == nil then
-      return false
-   end
-   return a.literal == b.literal
-end
-
-local function same_number_literals(_ck, a, b)
-   return a.literal == b.literal
-end
-
-local function compare_integer_literals(_ck, a, b)
-   if b.literal == nil then
-      return true
-   end
-   if a.literal == nil then
-      return false
-   end
-   return a.literal == b.literal
-end
-
-local function same_integer_literals(_ck, a, b)
-   return a.literal == b.literal
-end
-
-local function compare_boolean_literals(_ck, a, b)
-   if b.literal == nil then
-      return true
-   end
-   if a.literal == nil then
-      return false
-   end
-   return a.literal == b.literal
-end
-
-local function same_boolean_literals(_ck, a, b)
-   return a.literal == b.literal
-end
-
-local function nil_subtype(ck, _a, b)
-   if not ck.feat_strict_nil then
-      return true
-   end
-
-   local function accepts_nil(t)
-      if t.typename == "typedecl" then
-         return accepts_nil(t.def)
-      elseif t.typename == "nominal" then
-         local resolved = ck:resolve_nominal(t)
-         return resolved and accepts_nil(resolved)
-      elseif t.typename == "union" then
-         for _, ut in ipairs(t.types) do
-            if accepts_nil(ut) then
-               return true
-            end
-         end
-         return false
-      end
-
-      return t.typename == "nil" or
-      t.typename == "any" or
-      t.typename == "unknown" or
-      t.typename == "boolean_context"
-   end
-
-   return accepts_nil(b)
 end
 
 local function compare_map(ck, ak, bk, av, bv, no_hack)
@@ -6158,26 +5744,6 @@ relations.eqtype_relations = {
          return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
       end,
    },
-   ["string"] = {
-      ["string"] = function(_ck, a, b)
-         return same_string_literals(_ck, a, b)
-      end,
-   },
-   ["number"] = {
-      ["number"] = function(_ck, a, b)
-         return same_number_literals(_ck, a, b)
-      end,
-   },
-   ["integer"] = {
-      ["integer"] = function(_ck, a, b)
-         return same_integer_literals(_ck, a, b)
-      end,
-   },
-   ["boolean"] = {
-      ["boolean"] = function(_ck, a, b)
-         return same_boolean_literals(_ck, a, b)
-      end,
-   },
    ["emptytable"] = emptytable_relations,
    ["tupletable"] = {
       ["tupletable"] = function(ck, a, b)
@@ -6317,8 +5883,9 @@ local function subtype_nominal(ck, a, b)
 end
 
 local function subtype_array(ck, a, b)
-   local elements_ok = a.elements and ck:is_a(a.elements, b.elements)
-
+   if (not a.elements) or (not ck:is_a(a.elements, b.elements)) then
+      return false
+   end
    if a.consttypes and #a.consttypes > 1 then
 
       for _, e in ipairs(a.consttypes) do
@@ -6326,18 +5893,13 @@ local function subtype_array(ck, a, b)
             return false, { types.error("%s is not a member of %s", e, b.elements) }
          end
       end
-      return true
-   end
-
-   if not elements_ok then
-      return false
    end
    return true
 end
 
 relations.subtype_relations = {
    ["nil"] = {
-      ["*"] = nil_subtype,
+      ["*"] = compare_true,
    },
    ["tuple"] = {
       ["tuple"] = function(ck, a, b)
@@ -6449,9 +6011,6 @@ relations.subtype_relations = {
       ["string"] = compare_true,
    },
    ["string"] = {
-      ["string"] = function(_ck, a, b)
-         return compare_string_literals(_ck, a, b)
-      end,
       ["enum"] = function(_ck, a, b)
          if not a.literal then
             return false, { types.error("%s is not a %s", a, b) }
@@ -6464,21 +6023,8 @@ relations.subtype_relations = {
          return false, { types.error("%s is not a member of %s", a, b) }
       end,
    },
-   ["number"] = {
-      ["number"] = function(_ck, a, b)
-         return compare_number_literals(_ck, a, b)
-      end,
-   },
    ["integer"] = {
-      ["integer"] = function(_ck, a, b)
-         return compare_integer_literals(_ck, a, b)
-      end,
       ["number"] = compare_true,
-   },
-   ["boolean"] = {
-      ["boolean"] = function(_ck, a, b)
-         return compare_boolean_literals(_ck, a, b)
-      end,
    },
    ["interface"] = {
       ["interface"] = function(ck, a, b)
@@ -6831,8 +6377,7 @@ end
 
 -- module teal.check.require_file from teal/check/require_file.lua
 package.preload["teal.check.require_file"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local input = require("teal.input")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local input = require("teal.input")
 
 
 
@@ -6971,7 +6516,6 @@ end
 -- module teal.check.special_functions from teal/check/special_functions.lua
 package.preload["teal.check.special_functions"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-
 
 
 
@@ -7731,7 +7275,6 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
-
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -7771,12 +7314,10 @@ local types = require("teal.types")
 
 
 
-
 local a_type = types.a_type
 local a_function = types.a_function
 local a_vararg = types.a_vararg
 local drop_constant_value = types.drop_constant_value
-local drop_constant_values = types.drop_constant_values
 local edit_type = types.edit_type
 local ensure_not_method = types.ensure_not_method
 local is_unknown = types.is_unknown
@@ -8076,133 +7617,6 @@ local function resolve_typedecl(t)
    end
 end
 
-local function type_has_explicit_nil(self, t, seen)
-   seen = seen or {}
-   if seen[t] then
-      return false
-   end
-   seen[t] = true
-
-   if t.typename == "nil" then
-      return true
-   elseif t.typename == "typedecl" then
-      return type_has_explicit_nil(self, t.def, seen)
-   elseif t.typename == "nominal" then
-      local resolved = self:resolve_nominal(t)
-      if resolved then
-         return type_has_explicit_nil(self, resolved, seen)
-      end
-      return false
-   elseif t.typename == "union" then
-      for _, ut in ipairs(t.types) do
-         if type_has_explicit_nil(self, ut, seen) then
-            return true
-         end
-      end
-      return false
-   elseif t.typename == "tuple" then
-      for _, ut in ipairs(t.tuple) do
-         if type_has_explicit_nil(self, ut, seen) then
-            return true
-         end
-      end
-      return false
-   elseif t.typename == "typevar" and t.constraint then
-      return type_has_explicit_nil(self, t.constraint, seen)
-   elseif t.typename == "typearg" and t.constraint then
-      return type_has_explicit_nil(self, t.constraint, seen)
-   elseif t.typename == "self" and t.display_type then
-      return type_has_explicit_nil(self, t.display_type, seen)
-   elseif t.typename == "generic" then
-      return type_has_explicit_nil(self, t.t, seen)
-   elseif t.typename == "poly" then
-      for _, pt in ipairs(t.types) do
-         if type_has_explicit_nil(self, pt, seen) then
-            return true
-         end
-      end
-      return false
-   end
-
-   return false
-end
-
-local function has_explicit_argtypes(args)
-   if not args then
-      return false
-   end
-   for _, arg_node in ipairs(args) do
-      if arg_node.argtype then
-         return true
-      end
-   end
-   return false
-end
-
-local function function_has_explicit_types(args, rets)
-   if rets and #rets.tuple > 0 then
-      return true
-   end
-   return has_explicit_argtypes(args)
-end
-
-local function truthy_type(self, t, seen)
-   seen = seen or {}
-   if seen[t] then
-      return t, false
-   end
-   seen[t] = true
-
-   if t.typename == "typedecl" then
-      return truthy_type(self, t.def, seen)
-   elseif t.typename == "nominal" then
-      local resolved = self:resolve_nominal(t)
-      if resolved then
-         return truthy_type(self, resolved, seen)
-      end
-      return t, false
-   elseif t.typename == "typevar" and t.constraint then
-      return truthy_type(self, t.constraint, seen)
-   elseif t.typename == "union" then
-      local out = {}
-      local has_falsy = false
-      for _, ut in ipairs(t.types) do
-         local tt, hf = truthy_type(self, ut, seen)
-         if tt then
-            table.insert(out, tt)
-         end
-         if hf then
-            has_falsy = true
-         end
-      end
-      if #out == 0 then
-         return nil, true
-      end
-      return unite(t, out, nil, not self.feat_strict_nil), has_falsy
-   elseif t.typename == "nil" then
-      return nil, true
-   elseif t.typename == "boolean" then
-      if t.literal == nil then
-         local tt = a_type(t, "boolean", {})
-         tt.literal = true
-         return tt, true
-      elseif t.literal == false then
-         return nil, true
-      else
-         return t, false
-      end
-   else
-      return t, false
-   end
-end
-
-local function is_literal_value_type(t)
-   return (t.typename == "string" and t.literal ~= nil) or
-   (t.typename == "number" and t.literal ~= nil) or
-   (t.typename == "integer" and t.literal ~= nil) or
-   (t.typename == "boolean" and t.literal ~= nil)
-end
-
 
 local NONE = a_type({ f = "@none", x = -1, y = -1 }, "none", {})
 
@@ -8425,8 +7839,7 @@ local function infer_table_literal(self, node, children)
 
       self.errs:check_redeclared_key(node[i], nil, seen_keys, key)
 
-      local raw_vtype = untuple(child.vtype)
-      local uvtype = raw_vtype
+      local uvtype = untuple(child.vtype)
       if ck then
          is_record = true
          if not fields then
@@ -8449,30 +7862,25 @@ local function infer_table_literal(self, node, children)
             if i == #children and cv.typename == "tuple" then
 
                for _, c in ipairs(cv.tuple) do
-                  local ct = c
-                  local elem = drop_constant_values(ct, false)
-                  elements = self:expand_type(node, elements, elem)
-                  typs[last_array_idx] = untuple(ct)
+                  elements = self:expand_type(node, elements, c)
+                  typs[last_array_idx] = untuple(c)
                   last_array_idx = last_array_idx + 1
                end
             else
                typs[last_array_idx] = uvtype
                last_array_idx = last_array_idx + 1
-               local elem = drop_constant_values(uvtype, false)
-               elements = self:expand_type(node, elements, elem)
+               elements = self:expand_type(node, elements, uvtype)
             end
          else
             if not is_positive_int(n) then
-               local elem = drop_constant_values(uvtype, false)
-               elements = self:expand_type(node, elements, elem)
+               elements = self:expand_type(node, elements, uvtype)
                is_not_tuple = true
             elseif n then
                typs[n] = uvtype
                if n > largest_array_idx then
                   largest_array_idx = n
                end
-               local elem = drop_constant_values(uvtype, false)
-               elements = self:expand_type(node, elements, elem)
+               elements = self:expand_type(node, elements, uvtype)
             end
          end
 
@@ -8484,8 +7892,8 @@ local function infer_table_literal(self, node, children)
          end
       else
          is_map = true
-         keys = self:expand_type(node, keys, cktype, false)
-         values = self:expand_type(node, values, uvtype, false)
+         keys = self:expand_type(node, keys, drop_constant_value(cktype))
+         values = self:expand_type(node, values, uvtype)
       end
    end
 
@@ -8548,7 +7956,7 @@ local function infer_table_literal(self, node, children)
          local last_t
          for _, current_t in pairs(typs) do
             if last_t then
-               if not self:same_type(drop_constant_values(last_t, false), drop_constant_values(current_t, false)) then
+               if not self:same_type(last_t, current_t) then
                   pure_array = false
                   break
                end
@@ -8595,35 +8003,16 @@ local function total_check_key(key, seen_keys, is_total, missing)
    return is_total, missing
 end
 
-local function field_requires_literal_entry(ftype)
-   return not (ftype.typename == "typedecl" or (ftype.typename == "function" and (ftype.is_record_function or ftype.macroexp)))
-end
-
 local function total_record_check(t, seen_keys)
    local is_total = true
    local missing
    for _, key in ipairs(t.field_order) do
       local ftype = t.fields[key]
-      if field_requires_literal_entry(ftype) then
+      if not (ftype.typename == "typedecl" or (ftype.typename == "function" and ftype.is_record_function)) then
          is_total, missing = total_check_key(key, seen_keys, is_total, missing)
       end
    end
    return is_total, missing
-end
-
-local function required_record_check(self, t, seen_keys)
-   local missing
-   local niltype = a_type(t, "nil", {})
-   for _, key in ipairs(t.field_order) do
-      local ftype = t.fields[key]
-      if field_requires_literal_entry(ftype) then
-         if not seen_keys[key] and not self:is_a(niltype, ftype) then
-            missing = missing or {}
-            table.insert(missing, tostring(key))
-         end
-      end
-   end
-   return missing
 end
 
 local function total_map_check(keys, seen_keys)
@@ -8711,7 +8100,7 @@ visit_node.cbs = {
       before = function(self, node)
          local name = node.var.tk
          local resolved, aliasing = self:get_typedecl(node.value)
-         local var = self:add_var(node.var, name, resolved, node.var.attribute, nil, true)
+         local var = self:add_var(node.var, name, resolved, node.var.attribute)
          if aliasing then
             var.aliasing = aliasing
          end
@@ -8786,20 +8175,7 @@ visit_node.cbs = {
             end
 
             assert(var)
-            local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
-            if not keep_literal and node.exps and node.exps[i] then
-               local exp = node.exps[i]
-               if not (exp.kind == "string" or
-                  exp.kind == "number" or
-                  exp.kind == "integer" or
-                  exp.kind == "boolean" or
-                  exp.kind == "nil" or
-                  exp.kind == "literal_table") then
-
-                  keep_literal = true
-               end
-            end
-            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing", keep_literal)
+            self:add_var(var, var.tk, t, var.attribute, is_localizing_a_variable(node, i) and "localizing")
             if var.elide_type then
                self.errs:add_warning("hint", node, "hint: consider using 'local type' instead")
             end
@@ -9145,14 +8521,10 @@ visit_node.cbs = {
                self:resolve_nominal(module_type)
                self.module_type = module_type.resolved
             else
-               self.module_type = drop_constant_values(module_type, true)
+               self.module_type = drop_constant_value(module_type)
             end
 
             expected = self:infer_at(node, got)
-            local dropped = drop_constant_values(expected, false)
-            if dropped.typename == "tuple" then
-               expected = dropped
-            end
             self.st[2].vars["@return"] = { t = expected }
          end
          local expected_t = expected.tuple
@@ -9365,13 +8737,6 @@ visit_node.cbs = {
             end
          end
 
-         if self.feat_strict_nil and decltype.typename == "record" then
-            local missing = required_record_check(self, decltype, seen_keys)
-            if missing then
-               self.errs:add(node, "record literal is missing required fields (missing: " .. table.concat(missing, ", ") .. ")")
-            end
-         end
-
          local t = force_array and a_type(node, "array", { elements = force_array }) or node.expected
          t = self:infer_at(node, t)
 
@@ -9427,8 +8792,8 @@ visit_node.cbs = {
          local args = children[2]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
-         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
+         self:add_internal_function_variables(node, args)
+         self:add_function_definition_for_recursion(node, args, self.feat_arity)
       end,
       after = function(self, node, children)
          local args = children[2]
@@ -9444,7 +8809,7 @@ visit_node.cbs = {
             rets = self.get_rets(rets),
          }))
 
-         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.args, node.rets))
+         self:add_var(node, node.name.tk, t)
          return t
       end,
    },
@@ -9473,7 +8838,7 @@ visit_node.cbs = {
             macroexp = node.macrodef,
          }))
 
-         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.macrodef.args, node.macrodef.rets))
+         self:add_var(node, node.name.tk, t)
          return t
       end,
    },
@@ -9498,8 +8863,8 @@ visit_node.cbs = {
          local args = children[2]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
-         self:add_function_definition_for_recursion(node, args, self.feat_arity, function_has_explicit_types(node.args, node.rets))
+         self:add_internal_function_variables(node, args)
+         self:add_function_definition_for_recursion(node, args, self.feat_arity)
       end,
       after = function(self, node, children)
          local args = children[2]
@@ -9549,7 +8914,7 @@ visit_node.cbs = {
          local rtype = self:to_structural(resolve_typedecl(t))
 
 
-         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
+         self:add_internal_function_variables(node, args)
 
          if rtype.typename == "generic" then
             rtype = rtype.t
@@ -9688,7 +9053,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
+         self:add_internal_function_variables(node, args)
       end,
       after = function(self, node, children)
          local args = children[1]
@@ -9714,7 +9079,7 @@ visit_node.cbs = {
          local args = children[1]
          assert(args.typename == "tuple")
 
-         self:add_internal_function_variables(node, args, function_has_explicit_types(node.args, node.rets))
+         self:add_internal_function_variables(node, args)
       end,
       after = function(self, node, children)
          local args = children[1]
@@ -9961,7 +9326,7 @@ visit_node.cbs = {
             elseif expected and expected.typename == "union" then
 
                self.fdb:set_or(node, node.e1, node.e2)
-               local u = unite(node, { ra, rb }, true, not self.feat_strict_nil)
+               local u = unite(node, { ra, rb }, true)
                if u.typename == "union" then
                   ok, err = is_valid_union(u)
                   if not ok then
@@ -9973,22 +9338,7 @@ visit_node.cbs = {
 
             elseif ra.typename == "union" and not (rb.typename == "union") and self:is_a(rb, ra) then
 
-               if self.feat_strict_nil then
-                  local truthy_ra, has_falsy = truthy_type(self, ua)
-                  if has_falsy then
-                     if not truthy_ra then
-                        t = drop_constant_value(ub)
-                     elseif self:is_a(rb, truthy_ra) then
-                        t = drop_constant_value(truthy_ra)
-                     else
-                        t = drop_constant_value(ra)
-                     end
-                  else
-                     t = drop_constant_value(ra)
-                  end
-               else
-                  t = drop_constant_value(ra)
-               end
+               t = drop_constant_value(ra)
 
             elseif rb.typename == "union" and not (ra.typename == "union") and self:is_a(ra, rb) then
 
@@ -9997,16 +9347,12 @@ visit_node.cbs = {
             else
 
 
-               local ua_cmp = drop_constant_value(ua)
-               local ub_cmp = drop_constant_value(ub)
-               local a_ge_b = self:is_a(ub_cmp, ua_cmp)
-               local b_ge_a = self:is_a(ua_cmp, ub_cmp)
+               local a_ge_b = self:is_a(ub, ua)
+               local b_ge_a = self:is_a(ua, ub)
                self.fdb:set_or(node, node.e1, node.e2)
 
 
-               local ra_cmp = self:to_structural(ua_cmp)
-               local rb_cmp = self:to_structural(ub_cmp)
-               local is_same = self:same_type(ra_cmp, rb_cmp)
+               local is_same = self:same_type(ra, rb)
 
 
                local ambiguous = a_ge_b and b_ge_a and not is_same
@@ -10046,10 +9392,6 @@ visit_node.cbs = {
          end
 
          if node.op.op == "==" or node.op.op == "~=" then
-            local ua_cmp = drop_constant_value(ua)
-            local ub_cmp = drop_constant_value(ub)
-            local ua_literal = is_literal_value_type(ua)
-            local ub_literal = is_literal_value_type(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
 
                self:check_metamethod(node, "__eq", ra, rb, ua, ub)
@@ -10061,52 +9403,18 @@ visit_node.cbs = {
                end
             elseif ra.typename == "tupletable" and rb.typename == "tupletable" and #ra.types ~= #rb.types then
                return self.errs:invalid_at(node, "tuples are not the same size")
-            else
-               local nil_in_a = type_has_explicit_nil(self, ua_cmp)
-               local nil_in_b = type_has_explicit_nil(self, ub_cmp)
-               if nil_in_a or nil_in_b then
-
-                  local niltype = a_type(node, "nil", {})
-                  local variable_against_nil = false
-
-                  if node.e1.kind == "variable" and node.e2.kind == "nil" and nil_in_a then
-                     variable_against_nil = true
-                     if node.op.op == "==" then
-                        self.fdb:set_is(node, node.e1.tk, niltype)
-                     else
-                        self.fdb:set_is(node, node.e1.tk, niltype)
-                        self.fdb:set_not(node, node)
-                     end
-                  elseif node.e2.kind == "variable" and node.e1.kind == "nil" and nil_in_b then
-                     variable_against_nil = true
-                     if node.op.op == "==" then
-                        self.fdb:set_is(node, node.e2.tk, niltype)
-                     else
-                        self.fdb:set_is(node, node.e2.tk, niltype)
-                        self.fdb:set_not(node, node)
-                     end
-                  end
-
-                  if not variable_against_nil and node.op.op == "==" then
-                     if node.e1.kind == "variable" and ua.typename == "invalid" then
-                        self.fdb:set_eq(node, node.e1.tk, ub)
-                     elseif node.e2.kind == "variable" and ub.typename == "invalid" then
-                        self.fdb:set_eq(node, node.e2.tk, ua)
-                     end
-                  end
-               elseif self:is_a(ub_cmp, ua_cmp) or (ub_literal and self:is_a(ub, ua)) or ua.typename == "typevar" then
-                  if node.op.op == "==" and node.e1.kind == "variable" then
-                     self.fdb:set_eq(node, node.e1.tk, ub)
-                  end
-               elseif self:is_a(ua_cmp, ub_cmp) or (ua_literal and self:is_a(ua, ub)) or ub.typename == "typevar" then
-                  if node.op.op == "==" and node.e2.kind == "variable" then
-                     self.fdb:set_eq(node, node.e2.tk, ua)
-                  end
-               elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
-                  return a_type(node, "unknown", {})
-               else
-                  return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
+            elseif self:is_a(ub, ua) or ua.typename == "typevar" then
+               if node.op.op == "==" and node.e1.kind == "variable" then
+                  self.fdb:set_eq(node, node.e1.tk, ub)
                end
+            elseif self:is_a(ua, ub) or ub.typename == "typevar" then
+               if node.op.op == "==" and node.e2.kind == "variable" then
+                  self.fdb:set_eq(node, node.e2.tk, ua)
+               end
+            elseif self.feat_lax and (is_unknown(ua) or is_unknown(ub)) then
+               return a_type(node, "unknown", {})
+            else
+               return self.errs:invalid_at(node, "types are not comparable for equality: %s and %s", ua, ub)
             end
 
             return a_type(node, "boolean", {})
@@ -10114,7 +9422,7 @@ visit_node.cbs = {
 
          if node.op.arity == 1 and unop_types[node.op.op] then
             if ra.typename == "union" then
-               ra = unite(node, ra.types, true, not self.feat_strict_nil)
+               ra = unite(node, ra.types, true)
             end
 
             local types_op = unop_types[node.op.op]
@@ -10174,10 +9482,10 @@ visit_node.cbs = {
             end
 
             if ra.typename == "union" then
-               ra = unite(ra, ra.types, true, not self.feat_strict_nil)
+               ra = unite(ra, ra.types, true)
             end
             if rb.typename == "union" then
-               rb = unite(rb, rb.types, true, not self.feat_strict_nil)
+               rb = unite(rb, rb.types, true)
             end
 
             local types_op = binop_types[node.op.op]
@@ -10217,7 +9525,7 @@ visit_node.cbs = {
 
             if not t then
                if node.op.op == "or" then
-                  local u = unite(node, { ua, ub }, nil, not self.feat_strict_nil)
+                  local u = unite(node, { ua, ub })
                   if u.typename == "union" and is_valid_union(u) then
                      self.errs:add_warning("hint", node, "if a union type was intended, consider declaring it explicitly")
                   end
@@ -10258,11 +9566,6 @@ visit_node.cbs = {
 
          if t.typename == "typedecl" then
             t = typedecl_to_nominal(node, node.tk, t, t)
-         end
-
-         local truthy, has_falsy = truthy_type(self, t)
-         if has_falsy and truthy then
-            self.fdb:set_is(node, node.tk, truthy)
          end
 
          return t
@@ -10308,11 +9611,6 @@ visit_node.cbs = {
                is_named_vararg = true
             end
             t = a_vararg(node, { t })
-         elseif node.opt and self.feat_strict_nil then
-            local niltype = a_type(node, "nil", {})
-            if not self:is_a(niltype, t) then
-               t = unite(node, { t, niltype }, nil, false)
-            end
          end
 
          local arg_var = self:add_var(node, node.tk, t)
@@ -10348,16 +9646,6 @@ visit_node.cbs = {
             else
                return self.errs:invalid_at(node, "invalid value for pragma 'arity': " .. node.pvalue)
             end
-         elseif node.pkey == "strict_nil" then
-            if node.pvalue == "on" then
-               self.feat_strict_nil = true
-               self.env.opts.feat_strict_nil = "on"
-            elseif node.pvalue == "off" then
-               self.feat_strict_nil = false
-               self.env.opts.feat_strict_nil = "off"
-            else
-               return self.errs:invalid_at(node, "invalid value for pragma 'strict_nil': " .. node.pvalue)
-            end
          else
             return self.errs:invalid_at(node, "invalid pragma: " .. node.pkey)
          end
@@ -10380,15 +9668,7 @@ visit_node.cbs["do"] = visit_node.cbs["break"]
 
 local function after_literal(self, node)
    self.fdb:set_truthy(node)
-   local t = a_type(node, node.kind, {})
-   if node.kind == "number" then
-      (t).literal = node.constnum
-   elseif node.kind == "integer" then
-      (t).literal = node.constnum
-   elseif node.kind == "boolean" then
-      (t).literal = node.tk == "true"
-   end
-   return t
+   return a_type(node, node.kind, {})
 end
 
 visit_node.cbs["string"] = {
@@ -10708,7 +9988,6 @@ package.preload["teal.debug"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local debug = _tl_compat and _tl_compat.debug or debug; local io = _tl_compat and _tl_compat.io or io; local math = _tl_compat and _tl_compat.math or math; local _tl_math_maxinteger = math.maxinteger or math.pow(2, 53); local os = _tl_compat and _tl_compat.os or os; local string = _tl_compat and _tl_compat.string or string
 
 
-
 local tldebug = {}
 
 
@@ -10785,14 +10064,13 @@ do
 
    function tldebug.indent_push(mark, y, x, fmt, ...)
       if curr_entry then
-         local entry = curr_entry
-         if entry.y and (entry.y > curr_y) then
+         if curr_entry.y and (curr_entry.y > curr_y) then
             tldebug.write("\n")
-            curr_y = entry.y
+            curr_y = curr_entry.y
          end
-         tldebug.write(("   "):rep(curr_indent) .. entry.mark .. " " ..
-         loc(entry.y, entry.x) .. " " ..
-         entry.msg .. "\n")
+         tldebug.write(("   "):rep(curr_indent) .. curr_entry.mark .. " " ..
+         loc(curr_entry.y, curr_entry.x) .. " " ..
+         curr_entry.msg .. "\n")
          tldebug.flush()
          curr_entry = nil
          curr_indent = curr_indent + 1
@@ -10807,8 +10085,7 @@ do
 
    function tldebug.indent_pop(mark, single, y, x, fmt, ...)
       if curr_entry then
-         local entry = curr_entry
-         local msg = entry.msg
+         local msg = curr_entry.msg
          if fmt then
             msg = fmt:format(...)
          end
@@ -10836,7 +10113,6 @@ end
 -- module teal.environment from teal/environment.lua
 package.preload["teal.environment"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-
 local VERSION = "0.25.0-alpha+dev"
 
 local tldebug = require("teal.debug")
@@ -10869,7 +10145,6 @@ local a_type = types.a_type
 
 
 local environment = { EnvOptions = {}, Env = {}, Result = {} }
-
 
 
 
@@ -11151,8 +10426,7 @@ end
 
 -- module teal.errors from teal/errors.lua
 package.preload["teal.errors"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
-local errors = { Error = {}, ErrorContext = {} }
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local errors = { Error = {}, ErrorContext = {} }
 
 
 
@@ -11257,8 +10531,7 @@ end
 
 -- module teal.facts from teal/facts.lua
 package.preload["teal.facts"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
 local TL_DEBUG_FACTS = tldebug.TL_DEBUG_FACTS
 
 
@@ -11479,8 +10752,8 @@ function facts.facts_not(w, f1)
 end
 
 
-local function unite_types(ck, w, t1, t2)
-   return unite(w, { t2, t1 }, nil, not ck.feat_strict_nil)
+local function unite_types(w, t1, t2)
+   return unite(w, { t2, t1 })
 end
 
 
@@ -11496,7 +10769,7 @@ local function intersect_types(ck, w, t1, t2)
          end
       end
       if #out > 0 then
-         return unite(w, out, nil, not ck.feat_strict_nil)
+         return unite(w, out)
       end
    end
    if ck:is_a(t1, t2) then
@@ -11547,7 +10820,7 @@ local function subtract_types(ck, w, t1, t2)
       return a_type(w, "nil", {})
    end
 
-   return unite(w, typs, nil, not ck.feat_strict_nil)
+   return unite(w, typs)
 end
 
 local eval_not
@@ -11609,12 +10882,12 @@ eval_not = function(ck, f)
    end
 end
 
-or_facts = function(ck, fs1, fs2)
+or_facts = function(_ck, fs1, fs2)
    local ret = {}
 
    for var, f in pairs(fs2) do
       if fs1[var] then
-         local united = unite_types(ck, f.w, f.typ, fs1[var].typ)
+         local united = unite_types(f.w, f.typ, fs1[var].typ)
          if fs1[var].fact == "is" and f.fact == "is" then
             ret[var] = IsFact({ var = var, typ = united, w = f.w })
          else
@@ -11772,8 +11045,7 @@ end
 
 -- module teal.gen.lua_compat from teal/gen/lua_compat.lua
 package.preload["teal.gen.lua_compat"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")
@@ -12094,7 +11366,6 @@ end
 -- module teal.gen.lua_generator from teal/gen/lua_generator.lua
 package.preload["teal.gen.lua_generator"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8
-
 
 
 
@@ -12951,7 +12222,6 @@ end
 
 -- module teal.gen.targets from teal/gen/targets.lua
 package.preload["teal.gen.targets"] = function(...)
-
 local targets = {}
 
 
@@ -12979,9 +12249,418 @@ return targets
 
 end
 
+-- module teal.init from teal/init.lua
+package.preload["teal.init"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local check = require("teal.check.check")
+local environment = require("teal.environment")
+
+local errors = require("teal.errors")
+local lexer = require("teal.lexer")
+local loader = require("teal.loader")
+local lua_compat = require("teal.gen.lua_compat")
+local lua_generator = require("teal.gen.lua_generator")
+local package_loader = require("teal.package_loader")
+local parser = require("teal.parser")
+local require_file = require("teal.check.require_file")
+local targets = require("teal.gen.targets")
+
+local util = require("teal.util")
+
+local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, ParseTree = {}, Module = {}, CompilerOptions = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local Compiler = teal.Compiler
+local Module = teal.Module
+
+
+
+local Input = teal.Input
+
+
+local ParseTree = teal.ParseTree
+
+
+local TokenList = teal.TokenList
+
+
+
+local Compiler_mt = { __index = Compiler }
+local Input_mt = { __index = Input }
+local TokenList_mt = { __index = TokenList }
+local ParseTree_mt = { __index = ParseTree }
+local Module_mt = { __index = Module }
+
+environment.set_require_module_fn(require_file.require_module)
+
+
+
+
+
+local function module_from_result(result)
+   local module = setmetatable({
+      filename = result.filename,
+      parse_tree = setmetatable({
+         filename = result.filename,
+         ast = result.ast,
+         required_modules = util.sorted_keys(result.dependencies),
+         syntax_errors = result.syntax_errors,
+      }, ParseTree_mt),
+      env = result.env,
+   }, Module_mt)
+
+   local check_error = {
+      syntax_errors = result.syntax_errors or {},
+      type_errors = result.type_errors or {},
+      warnings = result.warnings or {},
+   }
+
+   return module, check_error
+end
+
+
+
+
+
+function Compiler:input(teal_code, filename)
+   if teal_code == nil then
+      return nil, "missing Teal code as input"
+   end
+   return setmetatable({
+      filename = filename or "<input>.tl",
+      teal_code = teal_code,
+      env = self.env,
+   }, Input_mt)
+end
+
+function Compiler:open(filename)
+   local fd, err = io.open(filename, "rb")
+   if not fd then
+      return nil, "could not open " .. err
+   end
+
+   local teal_code, read_err = fd:read("*a")
+   if not teal_code then
+      return nil, "could not open " .. read_err
+   end
+
+   return self:input(teal_code, filename)
+end
+
+function Compiler:require(module_name)
+   local ok, err = environment.load_module(self.env, module_name)
+   if not ok then
+      return nil, nil, err
+   end
+
+   local filename = self.env.module_filenames[module_name]
+   local result = self.env.loaded[filename]
+   return module_from_result(result)
+end
+
+function Compiler:enable_type_reporting(enable)
+   self.env.keep_going = enable
+   self.env.report_types = enable
+end
+
+function Compiler:get_type_report()
+   if not self.env.reporter then
+      return nil
+   end
+
+   return self.env.reporter:get_report()
+end
+
+function Compiler:loaded_files()
+   local i = 0
+   return function()
+      i = i + 1
+      return self.env.loaded_order[i]
+   end
+end
+
+function Compiler:recall(filename)
+   local result = self.env.loaded[filename]
+   if not result then
+      return nil, nil
+   end
+   lua_compat.apply(result)
+   return module_from_result(result)
+end
+
+
+
+
+
+function Input:lex()
+   local tokens, errs = lexer.lex(self.teal_code, self.filename)
+   return setmetatable({
+      filename = self.filename,
+      tokens = tokens,
+      lexical_errors = errs,
+      env = self.env,
+   }, TokenList_mt), errs
+end
+
+function Input:parse()
+   local token_list = self:lex()
+   return token_list:parse()
+end
+
+function Input:check(module_name)
+   local parse_tree, parse_error = self:parse()
+
+   if parse_error and not self.env.keep_going then
+      return nil, {
+         syntax_errors = parse_error,
+         type_errors = {},
+         warnings = {},
+      }
+   end
+
+   return parse_tree:check(module_name)
+end
+
+function Input:gen(opts)
+   local module, check_error = self:check()
+   if #check_error.syntax_errors > 0 then
+      return nil, module, check_error
+   end
+   local output = module:gen(opts)
+   return output, module, check_error
+end
+
+
+
+
+
+function TokenList:get_token_at(line, column)
+   return lexer.get_token_at(self.tokens, line, column)
+end
+
+function TokenList:parse()
+   local errs = self.lexical_errors or {}
+   local ast, required_modules = parser.parse_program(self.tokens, errs, self.filename)
+
+   if #errs > 0 and not self.env.keep_going then
+      environment.register_failed(self.env, self.filename, errs)
+   end
+
+   return setmetatable({
+      filename = self.filename,
+      required_modules = required_modules,
+      ast = ast,
+      env = self.env,
+      syntax_errors = errs,
+   }, ParseTree_mt), #errs > 0 and errs or nil
+end
+
+
+
+
+
+function ParseTree:check(module_name)
+   if #self.syntax_errors > 0 and not self.env.keep_going then
+      local result = self.env.loaded[self.filename]
+      local _, check_err = module_from_result(result)
+      return nil, check_err
+   end
+
+   local result = check.check(self.ast, self.env, self.filename)
+   if result then
+      result.syntax_errors = self.syntax_errors
+
+      lua_compat.apply(result)
+
+      if module_name then
+         self.env.modules[module_name] = result.type
+         if module_name:match("%.init$") then
+            module_name = module_name:sub(1, -6)
+            self.env.modules[module_name] = result.type
+         end
+      end
+   end
+
+   return module_from_result(result)
+end
+
+
+
+
+
+function Module:gen(opts)
+   return lua_generator.generate(self.parse_tree.ast, self.env.opts.gen_target, opts)
+end
+
+
+
+
+
+function teal.compiler(opts)
+   local compiler = setmetatable({}, Compiler_mt)
+
+   local env_opts = {
+      feat_arity = opts and opts.feat_arity,
+      gen_compat = opts and opts.gen_compat,
+      gen_target = opts and opts.gen_target,
+      no_stdlib = opts and not not opts.no_stdlib,
+   }
+
+   compiler.env = environment.new(env_opts)
+
+   return compiler
+end
+
+teal.load = loader.load
+
+function teal.loader()
+   package_loader.install_loader()
+end
+
+function teal.search_module(module_name, extension_set)
+   local found, _, tried = require_file.search_module(module_name, extension_set)
+   if not found then
+      return nil, tried
+   end
+   return found
+end
+
+teal.runtime_target = targets.detect
+
+function teal.warning_set()
+   local warning_set = {}
+   for k, v in pairs(errors.warning_kinds) do
+      warning_set[k] = v
+   end
+   return warning_set
+end
+
+function teal.version()
+   return environment.VERSION
+end
+
+return teal
+
+end
+
 -- module teal.input from teal/input.lua
 package.preload["teal.input"] = function(...)
-
 local check = require("teal.check.check")
 
 local parser = require("teal.parser")
@@ -13019,7 +12698,6 @@ end
 -- module teal.lexer from teal/lexer.lua
 package.preload["teal.lexer"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-
 
 
 local errors = require("teal.errors")
@@ -13859,8 +13537,8 @@ end
 
 -- module teal.loader from teal/loader.lua
 package.preload["teal.loader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local environment = require("teal.environment")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local environment = require("teal.environment")
+local lua_compat = require("teal.gen.lua_compat")
 local lua_generator = require("teal.gen.lua_generator")
 local package_loader = require("teal.package_loader")
 local input = require("teal.input")
@@ -13934,8 +13612,7 @@ end
 
 -- module teal.macro_eval from teal/macro_eval.lua
 package.preload["teal.macro_eval"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local rawlen = _tl_compat and _tl_compat.rawlen or rawlen; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8; local xpcall = _tl_compat and _tl_compat.xpcall or xpcall
-local block = require("teal.block")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local rawlen = _tl_compat and _tl_compat.rawlen or rawlen; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8; local xpcall = _tl_compat and _tl_compat.xpcall or xpcall; local block = require("teal.block")
 
 
 local BLOCK_INDEXES = block.BLOCK_INDEXES
@@ -13947,7 +13624,6 @@ local ast = require("teal.ast")
 
 
 local macro_eval = {}
-
 
 
 
@@ -14026,82 +13702,10 @@ local function reanchor_block_positions(b, where_y, where_x, seen_blocks)
    end
 end
 
-local function unquote(str)
-   local f = str:sub(1, 1)
-   if f == '"' or f == "'" then
-      return str:sub(2, -2)
-   end
-   f = str:match("^%[=*%[")
-   if not f then
-      return str
-   end
-   local l = #f + 1
-   return str:sub(l, -l)
-end
-
-local function path_block_to_string(node)
-   if not node then
-      return nil
-   end
-   if node.kind == "identifier" then
-      return node.tk
-   elseif node.kind == "op_dot" then
-      local lhs = path_block_to_string(node[BLOCK_INDEXES.OP.E1])
-      local rhs = node[BLOCK_INDEXES.OP.E2]
-      if lhs and rhs and rhs.kind == "identifier" then
-         return lhs .. "." .. rhs.tk
-      end
-   end
-   return nil
-end
-
-local function macro_target_key(node)
-   if not node then
-      return nil, false
-   end
-   if node.kind == "paren" then
-      return macro_target_key(node[BLOCK_INDEXES.PAREN.EXP])
-   end
-   if node.kind == "identifier" then
-      return node.tk, false
-   end
-   if node.kind == "op_dot" then
-      local lhs, has_colon = macro_target_key(node[BLOCK_INDEXES.OP.E1])
-      local rhs = node[BLOCK_INDEXES.OP.E2]
-      if lhs and rhs and rhs.kind == "identifier" then
-         return lhs .. "." .. rhs.tk, has_colon
-      end
-      return nil, has_colon
-   end
-   if node.kind == "op_colon" then
-      return nil, true
-   end
-   return nil, false
-end
-
-local function require_call_module_name(n)
-   if not n then
-      return nil
-   end
-   if n.kind == "op_dot" then
-      return require_call_module_name(n[BLOCK_INDEXES.OP.E1])
-   elseif n.kind == "op_funcall" and
-      n[BLOCK_INDEXES.OP.E1] and n[BLOCK_INDEXES.OP.E1].kind == "identifier" and n[BLOCK_INDEXES.OP.E1].tk == "require" and
-      n[BLOCK_INDEXES.OP.E2] and n[BLOCK_INDEXES.OP.E2].kind == "expression_list" and #n[BLOCK_INDEXES.OP.E2] == 1 and
-      n[BLOCK_INDEXES.OP.E2][1] and
-      n[BLOCK_INDEXES.OP.E2][1].kind == "string" and
-      n[BLOCK_INDEXES.OP.E2][1].tk then
-
-      return unquote(n[BLOCK_INDEXES.OP.E2][1].tk)
-   end
-   return nil
-end
-
 function macro_eval.new_env(errs)
    local env = {
       macros = {},
       signatures = {},
-      imported_aliases = {},
       where = { f = "@macro", y = 1, x = 1 },
       sandbox = {
          block = function(_)
@@ -14228,12 +13832,6 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       return
    end
    local name = name_block.tk
-   local owner_key = path_block_to_string(mb[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
-   local macro_key = owner_key and (owner_key .. "." .. name) or name
-   local import_alias = mb[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS]
-   if import_alias and import_alias.kind == "identifier" then
-      env.imported_aliases[import_alias.tk] = true
-   end
 
    local sig = { kinds = {}, vararg = "" }
    local args = mb[BLOCK_INDEXES.LOCAL_MACRO.ARGS]
@@ -14243,7 +13841,7 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
          local expected
          local annot = ab[BLOCK_INDEXES.ARGUMENT.TYPE]
          if not annot then
-            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement' or 'Expression'" })
+            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. name .. "' argument missing type; expected 'Statement' or 'Expression'" })
          else
             if annot.kind == "nominal_type" and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
                local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
@@ -14252,10 +13850,10 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
                elseif tname == "Expression" then
                   expected = "expr"
                else
-                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
+                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. name .. "' argument type must be 'Statement' or 'Expression'" })
                end
             else
-               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
+               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. name .. "' argument type must be 'Statement' or 'Expression'" })
             end
          end
          if ab.tk == "..." then
@@ -14291,52 +13889,12 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       return
    end
    if type(fn_raw) == "function" then
-      env.macros[macro_key] = fn_raw
+      env.macros[name] = fn_raw
    else
-      table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = "macro '" .. macro_key .. "' did not compile to a function" })
+      table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = "macro '" .. name .. "' did not compile to a function" })
       return
    end
-   env.signatures[macro_key] = sig
-end
-
-local function compile_macro_alias(mb, env)
-   local name_block = mb[BLOCK_INDEXES.LOCAL_MACRO.NAME]
-   local target_key = path_block_to_string(mb[BLOCK_INDEXES.LOCAL_MACRO.TARGET])
-   if not name_block or name_block.kind ~= "identifier" or not target_key then
-      return true
-   end
-
-   local target = env.macros[target_key]
-   if not target then
-      return false
-   end
-
-   env.macros[name_block.tk] = target
-   env.signatures[name_block.tk] = env.signatures[target_key]
-   return true
-end
-
-local function compile_macro_aliases(aliases, env)
-   local pending = aliases
-
-   while #pending > 0 do
-      local unresolved = {}
-      local resolved_any = false
-
-      for _, alias in ipairs(pending) do
-         if compile_macro_alias(alias, env) then
-            resolved_any = true
-         else
-            table.insert(unresolved, alias)
-         end
-      end
-
-      if #unresolved == 0 or not resolved_any then
-         return
-      end
-
-      pending = unresolved
-   end
+   env.signatures[name] = sig
 end
 
 local seen
@@ -14347,17 +13905,11 @@ local eval_macro_invocation
 eval_macro_invocation = function(b, filename, env, errs, context)
    local mexp = b
    local mname_block = mexp[BLOCK_INDEXES.MACRO_INVOCATION.MACRO]
-   local mname
-   local has_colon
-   mname, has_colon = macro_target_key(mname_block)
-   if has_colon then
-      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "method-style macro invocation is not supported; use owner.macro!()" })
-      return b
-   end
-   if not mname then
+   if not mname_block or mname_block.kind ~= "identifier" then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "invalid macro invocation target" })
       return b
    end
+   local mname = mname_block.tk
    local fn = env.macros[mname]
    if not fn then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "unknown macro '" .. mname .. "'" })
@@ -14442,9 +13994,6 @@ traverse_invoking_macros = function(b, filename, env, errs, context)
 
    if seen and seen[b] then return b end
    if seen then seen[b] = true end
-   if b.kind == "macro_invocation" then
-      return eval_macro_invocation(b, filename, env, errs, context)
-   end
 
    local patches
    for i, child in children(b) do
@@ -14477,76 +14026,22 @@ traverse_invoking_macros = function(b, filename, env, errs, context)
    return b
 end
 
-local function local_require_alias(stmt)
-   if not stmt or stmt.kind ~= "local_declaration" then
-      return nil
-   end
-   local vars = stmt[BLOCK_INDEXES.LOCAL_DECLARATION.VARS]
-   local exps = stmt[BLOCK_INDEXES.LOCAL_DECLARATION.EXPS]
-   if not vars or not exps or #vars ~= 1 or #exps ~= 1 then
-      return nil
-   end
-   local v = vars[1]
-   if not v or v.kind ~= "identifier" then
-      return nil
-   end
-   local module_name = require_call_module_name(exps[1])
-   if not module_name then
-      return nil
-   end
-   return v.tk
-end
-
-local function block_uses_name(b, name, skip)
-   if not b or b == skip then
-      return false
-   end
-   if b.kind == "identifier" and b.tk == name then
-      return true
-   end
-   for _, child in children(b) do
-      if block_uses_name(child, name, skip) then
-         return true
-      end
-   end
-   return false
-end
-
-local function remove_macro_only_requires(node, imported_aliases)
-   for i = #node, 1, -1 do
-      local stmt = node[i]
-      local alias = local_require_alias(stmt)
-      if alias and imported_aliases[alias] and not block_uses_name(node, alias, stmt) then
-         table.remove(node, i)
-      end
-   end
-end
-
 function macro_eval.compile_all_and_expand(node, filename, read_lang, errs)
    seen = setmetatable({}, { __mode = "k" })
    local env = macro_eval.new_env(errs)
-   local aliases = {}
 
    local i = 1
    while i <= #node do
       local it = node[i]
       if it and it.kind == "local_macro" then
+         compile_local_macro(it, filename, read_lang, env, errs)
          table.remove(node, i)
-         if it[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then
-            table.insert(aliases, it)
-         else
-            compile_local_macro(it, filename, read_lang, env, errs)
-         end
       else
          i = i + 1
       end
    end
 
-   compile_macro_aliases(aliases, env)
-
-   node = traverse_invoking_macros(node, filename, env, errs, "stmt")
-   remove_macro_only_requires(node, env.imported_aliases)
-   return node
+   return traverse_invoking_macros(node, filename, env, errs, "stmt")
 end
 
 return macro_eval
@@ -14556,7 +14051,6 @@ end
 -- module teal.macroexps from teal/macroexps.lua
 package.preload["teal.macroexps"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs
-
 
 
 local parser = require("teal.parser")
@@ -14573,7 +14067,6 @@ local traverse_nodes = traversal.traverse_nodes
 
 local util = require("teal.util")
 local shallow_copy_table = util.shallow_copy_table
-local lua_generator = require("teal.gen.lua_generator")
 
 local macroexps = {}
 
@@ -14666,7 +14159,6 @@ function macroexps.expand(orignode, args, macroexp)
 
    local p = traverse_macroexp(macroexp, on_arg_id, on_node)
    orignode.expanded = p[2]
-   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
 end
 
 function macroexps.check_arg_use(ck, macroexp)
@@ -14685,7 +14177,6 @@ end
 
 function macroexps.apply(orignode)
    local expanded = orignode.expanded
-   local expansion = orignode.macro_expansion
    orignode.expanded = nil
 
    for k, _ in pairs(orignode) do
@@ -14694,7 +14185,6 @@ function macroexps.apply(orignode)
    for k, v in pairs(expanded) do
       (orignode)[k] = v
    end
-   orignode.macro_expansion = expansion
 end
 
 return macroexps
@@ -14703,7 +14193,6 @@ end
 
 -- module teal.metamethods from teal/metamethods.lua
 package.preload["teal.metamethods"] = function(...)
-
 local metamethods = {}
 
 
@@ -14748,8 +14237,7 @@ end
 
 -- module teal.package_loader from teal/package_loader.lua
 package.preload["teal.package_loader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local load = _tl_compat and _tl_compat.load or load; local package = _tl_compat and _tl_compat.package or package; local table = _tl_compat and _tl_compat.table or table
-local environment = require("teal.environment")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local load = _tl_compat and _tl_compat.load or load; local package = _tl_compat and _tl_compat.package or package; local table = _tl_compat and _tl_compat.table or table; local environment = require("teal.environment")
 
 
 local require_file = require("teal.check.require_file")
@@ -14808,8 +14296,7 @@ end
 
 -- module teal.parser from teal/parser.lua
 package.preload["teal.parser"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
-local ast = require("teal.ast")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local ast = require("teal.ast")
 local reader = require("teal.reader")
 
 
@@ -14884,12 +14371,12 @@ end
 
 -- module teal.precompiled.default_env from teal/precompiled/default_env.lua
 package.preload["teal.precompiled.default_env"] = function(...)
-local K1,K2,K3,K4,K5,K6,K7,K8,K9,K10="typename","typeid","./teal/default/stdlib.d.tl","tuple","typevar","./teal/default/prelude.d.tl","min_arity","is_method","function","maybe_method"
+local K1,K2,K3,K4,K5,K6,K7,K8,K9,K10="typename","typeid","./teal/default/stdlib.d.tl","tuple","typevar","min_arity","is_method","function","./teal/default/prelude.d.tl","maybe_method"
 local K11,K12,K13,K14,K15,K16,K17,K18,K19,K20="typearg","string","integer","number","is_va","nominal","names","found","types","typeargs"
 local K21,K22,K23,K24,K25,K26,K27,K28,K29,K30="generic","const","attribute","identifier","is_global","declared_at","typedecl","union","fresh","boolean"
 local K31,K32,K33,K34,K35,K36,K37,K38,K39,K40="declname","needs_compat","values","elements","array","meta_field_comments","fields","field_order","field_comments","thread"
-local K41,K42,K43,K44,K45,K46,K47,K48,K49,K50="special_function_handler","closed","value_comments","record","field_locations","enumset","resolved","AnyFunction","close","write"
-local K={"interfaces_expanded","SeekWhence","SetVBufMode","flush","lines","setvbuf","FileNumberMode","FileStringMode","FileMode","interface_list","__close","FileType","OpenMode","input","output","popen","stderr","stdin","stdout","tmpfile","used_as_type","interface","assert","coroutine","Function","create","isyieldable","resume","running","status","yield","debug","GetInfoTable","HookEvent","HookFunction","gethook","getinfo","getlocal","getmetatable","getregistry","getupvalue","getuservalue","sethook","setlocal","setmetatable","setupvalue","setuservalue","traceback","upvalueid","upvaluejoin","activelines","currentline","ftransfer","istailcall","isvararg","lastlinedefined","linedefined","namewhat","nparams","ntransfer","short_src","source","metatable","__add","__band","__bnot","__bor","__bxor","__call","__concat","__div","__idiv","__index","__len","__mod","__mode","__mul","__name","__newindex","__pairs","__pow","__shl","__shr","__sub","__tostring","__unm","typevals","userdata","ipairs","LoadMode","Numeric","atan2","floor","frexp","ldexp","log10","maxinteger","mininteger","random","randomseed","tointeger","constraint","DateMode","DateTable","clock","difftime","execute","getenv","remove","rename","setlocale","tmpname","isdst","month","package","config","cpath","loaded","loaders","loadlib","preload","searchers","searchpath","pairs","pcall","rawget","require","--[[special_function]]","format","gmatch","lower","match","packsize","reverse","unpack","upper","table","PackTable","SortFunction","concat","insert","--[[needs_compat]]","tupletable","charpattern","codepoint","codes","offset","xpcall"}
+local K41,K42,K43,K44,K45,K46,K47,K48,K49,K50="special_function_handler","closed","value_comments","record","enumset","resolved","AnyFunction","close","--[[special_function]]","typevals"
+local K={"interfaces_expanded","SeekWhence","SetVBufMode","flush","lines","setvbuf","write","FileNumberMode","FileStringMode","FileMode","interface_list","__close","FileType","OpenMode","input","output","popen","stderr","stdin","stdout","tmpfile","used_as_type","interface","assert","coroutine","Function","create","isyieldable","resume","running","status","yield","debug","GetInfoTable","HookEvent","HookFunction","gethook","getinfo","getlocal","getmetatable","getregistry","getupvalue","getuservalue","sethook","setlocal","setmetatable","setupvalue","setuservalue","traceback","upvalueid","upvaluejoin","activelines","currentline","ftransfer","istailcall","isvararg","lastlinedefined","linedefined","namewhat","nparams","ntransfer","short_src","source","metatable","__add","__band","__bnot","__bor","__bxor","__call","__concat","__div","__idiv","__index","__len","__mod","__mode","__mul","__name","__newindex","__pairs","__pow","__shl","__shr","__sub","__tostring","__unm","userdata","ipairs","LoadMode","Numeric","atan2","floor","frexp","ldexp","log10","maxinteger","mininteger","random","randomseed","tointeger","constraint","DateMode","DateTable","clock","difftime","execute","getenv","remove","rename","setlocale","tmpname","isdst","month","package","config","cpath","loaded","loaders","loadlib","preload","searchers","searchpath","pairs","pcall","rawget","require","format","gmatch","lower","match","packsize","reverse","unpack","upper","table","PackTable","SortFunction","concat","insert","--[[needs_compat]]","tupletable","charpattern","codepoint","codes","offset","xpcall"}
 local T1 = {[K42]=true,f=K3,[K2]=1158,[K1]=K27,x=1,y=142,}
 local T2 = {[K31]="FILE",f=K3,[K[1]]=true,["is_userdata"]=true,[K2]=1004,[K1]=K44,x=1,y=142,}
 local T3 = {f=K3,[K2]=1008,[K1]=K27,x=4,y=146,}
@@ -14906,9 +14393,9 @@ local T13 = {f=K3,[K2]=674,[K1]=K27,x=23,y=65,}
 local T14 = {[K42]=true,f=K3,[K2]=654,[K1]=K27,x=4,y=40,}
 local T15 = {f=K3,[K2]=658,[K1]=K27,x=4,y=59,}
 local T16 = {f=K3,[K2]=666,[K1]=K27,x=24,y=63,}
-local T17 = {f=K6,[K2]=239,[K1]=K27,x=1,y=18,}
-local T18 = {f=K6,[K2]=24,[K1]=K27,x=4,y=19,}
-local T19 = {[K42]=true,f=K6,[K2]=16,[K1]=K27,x=1,y=14,}
+local T17 = {f=K9,[K2]=239,[K1]=K27,x=1,y=18,}
+local T18 = {f=K9,[K2]=24,[K1]=K27,x=4,y=19,}
+local T19 = {[K42]=true,f=K9,[K2]=16,[K1]=K27,x=1,y=14,}
 local T20 = {f=K3,[K2]=1963,[K1]=K27,x=24,y=362,}
 local T21 = {f=K3,[K2]=1967,[K1]=K27,x=4,y=364,}
 local T22 = {f=K3,[K2]=1167,[K1]=K27,x=19,y=178,}
@@ -14916,55 +14403,52 @@ local T23 = {f=K3,[K2]=1169,[K1]=K16,x=23,y=180,}
 local T24 = {f=K3,[K2]=1414,[K1]=K27,x=4,y=247,}
 local T25 = {[K42]=true,f=K3,[K2]=1410,[K1]=K27,x=4,y=235,}
 local T26 = {f=K3,[K2]=1743,[K1]=K27,x=4,y=309,}
-local T27 = {f=K3,[K2]=2453,[K1]=K5,[K5]="A",x=11,y=310,}
+local T27 = {f=K3,[K2]=2451,[K1]=K5,[K5]="A",x=11,y=310,}
 local T28 = {f=K3,[K2]=1734,[K1]=K27,x=24,y=307,}
-local T0 = {["..."]={t={[K15]=true,[K4]={[1]={[K2]=2924,[K1]=K12,x=1,y=1,},},[K2]=2925,[K1]=K4,x=1,y=1,},},["@is_va"]={t={[K2]=2926,[K1]="any",x=1,y=1,},},FILE={[K26]={f=K3,kind=K24,tk="FILE",x=15,xend=18,y=142,yend=142,},[K25]=true,t=T1,[K[21]]=true,},["_VERSION"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="_VERSION",x=8,xend=15,y=450,yend=450,},[K25]=true,t={f=K3,[K2]=2322,[K1]=K12,x=14,y=423,},},any={[K26]={f=K6,kind=K24,tk="any",x=18,xend=20,y=8,yend=8,},[K25]=true,t={[K42]=true,def={[K31]="any",f=K6,[K39]={},[K38]={},[K37]={},[K[10]]={},[K[1]]=true,[K36]={},[K2]=7,[K1]=K[22],x=1,y=8,},f=K6,[K2]=8,[K1]=K27,x=1,y=8,},},arg={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="arg",x=8,xend=10,y=426,yend=426,},[K25]=true,t={[K34]={f=K3,[K2]=1977,[K1]=K12,x=10,y=370,},f=K3,[K2]=1976,[K1]=K35,x=9,xend=16,y=370,yend=370,},},[K[23]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[23],x=8,xend=13,y=427,yend=427,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2651,[K1]=K28,[K19]={[1]={f=K3,[K2]=2650,[K1]=K5,[K5]="A@43",x=27,y=371,},[2]={f=K3,[K2]=1984,[K1]="nil",x=31,y=371,},},x=27,y=371,},[2]={f=K3,[K2]=2652,[K1]=K5,[K5]="B@43",x=38,y=371,},[3]={f=K3,[K2]=1986,[K1]="any",x=46,y=371,},},[K2]=2653,[K1]=K4,x=50,y=371,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2654,[K1]=K5,[K5]="A@43",x=52,y=371,},},[K2]=2655,[K1]=K4,x=50,y=371,},[K41]=K[23],[K2]=2656,[K1]=K9,x=12,y=371,},[K20]={[1]={f=K3,[K11]="A@43",[K2]=2648,[K1]=K11,x=21,y=371,},[2]={f=K3,[K11]="B@43",[K2]=2649,[K1]=K11,x=24,y=371,},},[K2]=2657,[K1]=K21,x=4,y=373,},},["collectgarbage"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="collectgarbage",x=8,xend=21,y=428,yend=428,},[K25]=true,t={f=K3,[K2]=2001,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageCommand",[K46]={["collect"]=true,["count"]=true,["restart"]=true,stop=true,},f=K3,[K2]=1947,[K1]="enum",[K43]={},x=4,y=345,},f=K3,[K2]=1948,[K1]=K27,x=4,y=345,},[K17]={[1]="CollectGarbageCommand",},[K2]=1992,[K1]=K16,x=31,y=373,},},[K2]=1991,[K1]=K4,x=53,y=373,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1994,[K1]=K14,x=55,y=373,},},[K2]=1993,[K1]=K4,x=53,y=373,},[K2]=1990,[K1]=K9,x=20,y=373,},[2]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageSetValue",[K46]={["setpause"]=true,["setstepmul"]=true,step=true,},f=K3,[K2]=1951,[K1]="enum",[K43]={},x=4,y=352,},f=K3,[K2]=1952,[K1]=K27,x=4,y=352,},[K17]={[1]="CollectGarbageSetValue",},[K2]=1997,[K1]=K16,x=29,y=374,},[2]={f=K3,[K2]=1998,[K1]=K13,x=53,y=374,},},[K2]=1996,[K1]=K4,x=61,y=374,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2000,[K1]=K14,x=63,y=374,},},[K2]=1999,[K1]=K4,x=61,y=374,},[K2]=1995,[K1]=K9,x=20,y=374,},[3]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageIsRunning",[K46]={["isrunning"]=true,},f=K3,[K2]=1955,[K1]="enum",[K43]={},x=4,y=358,},f=K3,[K2]=1956,[K1]=K27,x=4,y=358,},[K17]={[1]="CollectGarbageIsRunning",},[K2]=2004,[K1]=K16,x=29,y=375,},},[K2]=2003,[K1]=K4,x=53,y=375,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2006,[K1]=K30,x=55,y=375,},},[K2]=2005,[K1]=K4,x=53,y=375,},[K2]=2002,[K1]=K9,x=20,y=375,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=2009,[K1]=K12,x=29,y=376,},[2]={f=K3,[K2]=2010,[K1]=K14,x=39,y=376,},},[K2]=2008,[K1]=K4,x=46,y=376,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2012,[K1]=K28,[K19]={[1]={f=K3,[K2]=2013,[K1]=K30,x=49,y=376,},[2]={f=K3,[K2]=2014,[K1]=K14,x=59,y=376,},},x=49,y=376,},},[K2]=2011,[K1]=K4,x=46,y=376,},[K2]=2007,[K1]=K9,x=20,y=376,},},x=4,y=374,},},[K[24]]={[K26]={f=K3,kind=K24,tk=K[24],x=15,xend=23,y=26,yend=26,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[24],f=K3,[K39]={[K[25]]={},[K49]={},[K[26]]={},[K[27]]={},[K[28]]={},[K[29]]={},[K[30]]={},wrap={},[K[31]]={},},[K45]={[K[25]]={f=K3,x=9,y=27,},[K49]={f=K3,x=4,y=29,},[K[26]]={f=K3,x=4,y=30,},[K[27]]={f=K3,x=4,y=31,},[K[28]]={f=K3,x=4,y=32,},[K[29]]={f=K3,x=4,y=33,},[K[30]]={f=K3,x=4,y=34,},wrap={f=K3,x=4,y=35,},[K[31]]={f=K3,x=4,y=36,},},[K38]={[1]=K[25],[2]=K49,[3]=K[26],[4]=K[27],[5]=K[28],[6]=K[29],[7]=K[30],[8]="wrap",[9]=K[31],},[K37]={[K[25]]=T12,[K49]={args={f=K3,[K4]={[1]={f=K3,[K2]=587,[K1]=K40,x=20,y=29,},},[K2]=586,[K1]=K4,x=27,y=29,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=589,[K1]=K30,x=29,y=29,},[2]={f=K3,[K2]=590,[K1]=K12,x=38,y=29,},},[K2]=588,[K1]=K4,x=27,y=29,},[K2]=585,[K1]=K9,x=11,y=29,},[K[26]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T12,[K17]={[1]=K[25],},[K2]=593,[K1]=K16,x=21,y=30,},},[K2]=592,[K1]=K4,x=30,y=30,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=595,[K1]=K40,x=32,y=30,},},[K2]=594,[K1]=K4,x=30,y=30,},[K2]=591,[K1]=K9,x=12,y=30,},[K[27]]={args={f=K3,[K4]={},[K2]=597,[K1]=K4,x=27,y=31,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=599,[K1]=K30,x=29,y=31,},},[K2]=598,[K1]=K4,x=27,y=31,},[K2]=596,[K1]=K9,x=17,y=31,},[K[28]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=602,[K1]=K40,x=21,y=32,},[2]={f=K3,[K2]=603,[K1]="any",x=29,y=32,},},[K2]=601,[K1]=K4,x=36,y=32,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=605,[K1]=K30,x=38,y=32,},[2]={f=K3,[K2]=606,[K1]="any",x=47,y=32,},},[K2]=604,[K1]=K4,x=36,y=32,},[K2]=600,[K1]=K9,x=12,y=32,},[K[29]]={args={f=K3,[K4]={},[K2]=608,[K1]=K4,x=23,y=33,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=610,[K1]=K40,x=25,y=33,},[2]={f=K3,[K2]=611,[K1]=K30,x=33,y=33,},},[K2]=609,[K1]=K4,x=23,y=33,},[K2]=607,[K1]=K9,x=13,y=33,},[K[30]]={args={f=K3,[K4]={[1]={f=K3,[K2]=614,[K1]=K40,x=21,y=34,},},[K2]=613,[K1]=K4,x=28,y=34,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=616,[K1]=K12,x=30,y=34,},},[K2]=615,[K1]=K4,x=28,y=34,},[K2]=612,[K1]=K9,x=12,y=34,},wrap={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2354,[K1]=K5,[K5]="F@23",x=22,y=35,},},[K2]=2355,[K1]=K4,x=24,y=35,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2356,[K1]=K5,[K5]="F@23",x=26,y=35,},},[K2]=2357,[K1]=K4,x=24,y=35,},[K2]=2358,[K1]=K9,x=10,y=35,},[K20]={[1]={f=K3,[K11]="F@23",[K2]=2353,[K1]=K11,x=19,y=35,},},[K2]=2359,[K1]=K21,x=4,y=36,},[K[31]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=626,[K1]="any",x=20,y=36,},},[K2]=625,[K1]=K4,x=27,y=36,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=628,[K1]="any",x=29,y=36,},},[K2]=627,[K1]=K4,x=27,y=36,},[K2]=624,[K1]=K9,x=11,y=36,},},[K36]={},[K2]=576,[K1]=K44,x=1,y=26,},f=K3,[K2]=629,[K1]=K27,x=1,y=26,},},[K[32]]={[K26]={f=K3,kind=K24,tk=K[32],x=15,xend=19,y=39,yend=39,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[32],f=K3,[K39]={[K48]={},[K[33]]={},[K[34]]={},[K[35]]={},[K[32]]={},[K[36]]={},[K[37]]={[1]={},},[K[38]]={[1]={},[2]={},[3]={},},[K[39]]={},[K[40]]={},[K[41]]={},[K[42]]={},[K[43]]={[1]={},},[K[44]]={[1]={},},[K[45]]={},[K[46]]={},[K[47]]={},[K[48]]={[1]={},[2]={},},[K[49]]={},[K[50]]={},},[K45]={[K48]={f=K3,x=9,y=65,},[K[33]]={f=K3,x=4,y=40,},[K[34]]={f=K3,x=4,y=59,},[K[35]]={f=K3,x=9,y=63,},[K[32]]={f=K3,x=4,y=67,},[K[36]]={f=K3,x=4,y=68,},[K[37]]={f=K3,x=4,y=70,},[K[38]]={f=K3,x=4,y=73,},[K[39]]={f=K3,x=4,y=78,},[K[40]]={f=K3,x=4,y=79,},[K[41]]={f=K3,x=4,y=80,},[K[42]]={f=K3,x=4,y=81,},[K[43]]={f=K3,x=4,y=83,},[K[44]]={f=K3,x=4,y=86,},[K[45]]={f=K3,x=4,y=89,},[K[46]]={f=K3,x=4,y=90,},[K[47]]={f=K3,x=4,y=91,},[K[48]]={f=K3,x=4,y=93,},[K[49]]={f=K3,x=4,y=97,},[K[50]]={f=K3,x=4,y=98,},},[K38]={[1]=K[33],[2]=K[34],[3]=K[35],[4]=K48,[5]=K[32],[6]=K[36],[7]=K[37],[8]=K[38],[9]=K[39],[10]=K[40],[11]=K[41],[12]=K[42],[13]=K[43],[14]=K[44],[15]=K[45],[16]=K[46],[17]=K[47],[18]=K[48],[19]=K[49],[20]=K[50],},[K37]={[K48]=T13,[K[33]]=T14,[K[34]]=T15,[K[35]]=T16,[K[32]]={args={f=K3,[K4]={},[K2]=676,[K1]=K4,x=4,y=68,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=677,[K1]=K4,x=20,y=67,},[K2]=675,[K1]=K9,x=11,y=67,},[K[36]]={args={f=K3,[K4]={[1]={f=K3,[K2]=680,[K1]=K40,x=24,y=68,},},[K2]=679,[K1]=K4,x=31,y=68,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T16,[K17]={[1]=K[35],},[K2]=682,[K1]=K16,x=33,y=68,},[2]={f=K3,[K2]=683,[K1]=K13,x=47,y=68,},},[K2]=681,[K1]=K4,x=31,y=68,},[K2]=678,[K1]=K9,x=13,y=68,},[K[37]]={f=K3,[K2]=701,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=686,[K1]=K40,x=22,y=70,},[2]={f=K3,[K2]=687,[K1]=K28,[K19]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=688,[K1]=K16,x=30,y=70,},[2]={f=K3,[K2]=689,[K1]=K13,x=44,y=70,},},x=30,y=70,},[3]={f=K3,[K2]=690,[K1]=K12,x=55,y=70,},},[K2]=685,[K1]=K4,x=62,y=70,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K18]=T14,[K17]={[1]=K[33],},[K2]=692,[K1]=K16,x=64,y=70,},},[K2]=691,[K1]=K4,x=62,y=70,},[K2]=684,[K1]=K9,x=13,y=70,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=695,[K1]=K28,[K19]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=696,[K1]=K16,x=30,y=71,},[2]={f=K3,[K2]=697,[K1]=K13,x=44,y=71,},},x=30,y=71,},[2]={f=K3,[K2]=698,[K1]=K12,x=55,y=71,},},[K2]=694,[K1]=K4,x=62,y=71,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T14,[K17]={[1]=K[33],},[K2]=700,[K1]=K16,x=64,y=71,},},[K2]=699,[K1]=K4,x=62,y=71,},[K2]=693,[K1]=K9,x=13,y=71,},},x=4,y=71,},[K[38]]={f=K3,[K2]=717,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=704,[K1]=K40,x=23,y=73,},[2]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=705,[K1]=K16,x=31,y=73,},[3]={f=K3,[K2]=706,[K1]=K13,x=44,y=73,},},[K2]=703,[K1]=K4,x=52,y=73,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=708,[K1]=K12,x=54,y=73,},},[K2]=707,[K1]=K4,x=52,y=73,},[K2]=702,[K1]=K9,x=14,y=73,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=711,[K1]=K40,x=23,y=74,},[2]={f=K3,[K2]=712,[K1]=K13,x=31,y=74,},[3]={f=K3,[K2]=713,[K1]=K13,x=40,y=74,},},[K2]=710,[K1]=K4,x=48,y=74,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=715,[K1]=K12,x=50,y=74,},[2]={f=K3,[K2]=716,[K1]="any",x=58,y=74,},},[K2]=714,[K1]=K4,x=48,y=74,},[K2]=709,[K1]=K9,x=14,y=74,},[3]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=720,[K1]=K16,x=23,y=75,},[2]={f=K3,[K2]=721,[K1]=K13,x=36,y=75,},},[K2]=719,[K1]=K4,x=44,y=75,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=723,[K1]=K12,x=46,y=75,},},[K2]=722,[K1]=K4,x=44,y=75,},[K2]=718,[K1]=K9,x=14,y=75,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=726,[K1]=K13,x=23,y=76,},[2]={f=K3,[K2]=727,[K1]=K13,x=32,y=76,},},[K2]=725,[K1]=K4,x=40,y=76,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=729,[K1]=K12,x=42,y=76,},[2]={f=K3,[K2]=730,[K1]="any",x=50,y=76,},},[K2]=728,[K1]=K4,x=40,y=76,},[K2]=724,[K1]=K9,x=14,y=76,},},x=4,y=74,},[K[39]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2366,[K1]=K5,[K5]="T@24",x=30,y=78,},},[K2]=2367,[K1]=K4,x=32,y=78,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T17,[K17]={[1]=K[63],},[K2]=2369,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2368,[K1]=K5,[K5]="T@24",x=44,y=78,},},x=34,y=78,},},[K2]=2370,[K1]=K4,x=32,y=78,},[K2]=2371,[K1]=K9,x=18,y=78,},[K20]={[1]={f=K3,[K11]="T@24",[K2]=2365,[K1]=K11,x=27,y=78,},},[K2]=2372,[K1]=K21,x=4,y=79,},[K[40]]={args={f=K3,[K4]={},[K2]=740,[K1]=K4,x=27,y=79,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=743,[K1]="any",x=30,y=79,},[K2]=742,[K1]="map",[K33]={f=K3,[K2]=744,[K1]="any",x=34,y=79,},x=29,xend=37,y=79,yend=79,},},[K2]=741,[K1]=K4,x=27,y=79,},[K2]=739,[K1]=K9,x=17,y=79,},[K[41]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=747,[K1]=K16,x=25,y=80,},[2]={f=K3,[K2]=748,[K1]=K13,x=38,y=80,},},[K2]=746,[K1]=K4,x=46,y=80,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=750,[K1]=K12,x=48,y=80,},[2]={f=K3,[K2]=751,[K1]="any",x=56,y=80,},},[K2]=749,[K1]=K4,x=46,y=80,},[K2]=745,[K1]=K9,x=16,y=80,},[K[42]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T19,[K17]={[1]=K[88],},[K2]=754,[K1]=K16,x=27,y=81,},[2]={f=K3,[K2]=755,[K1]=K13,x=39,y=81,},},[K2]=753,[K1]=K4,x=47,y=81,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=757,[K1]="any",x=49,y=81,},[2]={f=K3,[K2]=758,[K1]=K30,x=54,y=81,},},[K2]=756,[K1]=K4,x=47,y=81,},[K2]=752,[K1]=K9,x=18,y=81,},[K[43]]={f=K3,[K2]=772,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=761,[K1]=K40,x=22,y=83,},[2]={f=K3,[K18]=T16,[K17]={[1]=K[35],},[K2]=762,[K1]=K16,x=30,y=83,},[3]={f=K3,[K2]=763,[K1]=K12,x=44,y=83,},[4]={f=K3,[K2]=764,[K1]=K13,x=54,y=83,},},[K2]=760,[K1]=K4,x=4,y=84,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={},[K2]=765,[K1]=K4,x=61,y=83,},[K2]=759,[K1]=K9,x=13,y=83,},[2]={args={f=K3,[K4]={[1]={f=K3,[K18]=T16,[K17]={[1]=K[35],},[K2]=768,[K1]=K16,x=22,y=84,},[2]={f=K3,[K2]=769,[K1]=K12,x=36,y=84,},[3]={f=K3,[K2]=770,[K1]=K13,x=46,y=84,},},[K2]=767,[K1]=K4,x=4,y=86,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={},[K2]=771,[K1]=K4,x=53,y=84,},[K2]=766,[K1]=K9,x=13,y=84,},},x=4,y=84,},[K[44]]={f=K3,[K2]=788,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=775,[K1]=K40,x=23,y=86,},[2]={f=K3,[K2]=776,[K1]=K13,x=31,y=86,},[3]={f=K3,[K2]=777,[K1]=K13,x=40,y=86,},[4]={f=K3,[K2]=778,[K1]="any",x=49,y=86,},},[K2]=774,[K1]=K4,x=53,y=86,},f=K3,[K8]=false,[K10]=false,[K7]=4,rets={f=K3,[K4]={[1]={f=K3,[K2]=780,[K1]=K12,x=55,y=86,},},[K2]=779,[K1]=K4,x=53,y=86,},[K2]=773,[K1]=K9,x=14,y=86,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=783,[K1]=K13,x=23,y=87,},[2]={f=K3,[K2]=784,[K1]=K13,x=32,y=87,},[3]={f=K3,[K2]=785,[K1]="any",x=41,y=87,},},[K2]=782,[K1]=K4,x=45,y=87,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=787,[K1]=K12,x=47,y=87,},},[K2]=786,[K1]=K4,x=45,y=87,},[K2]=781,[K1]=K9,x=14,y=87,},},x=4,y=87,},[K[45]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2378,[K1]=K5,[K5]="T@25",x=30,y=89,},[2]={f=K3,[K18]=T17,[K17]={[1]=K[63],},[K2]=2380,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2379,[K1]=K5,[K5]="T@25",x=43,y=89,},},x=33,y=89,},},[K2]=2381,[K1]=K4,x=46,y=89,},f=K3,[K8]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2382,[K1]=K5,[K5]="T@25",x=48,y=89,},},[K2]=2383,[K1]=K4,x=46,y=89,},[K2]=2384,[K1]=K9,x=18,y=89,},[K20]={[1]={f=K3,[K11]="T@25",[K2]=2377,[K1]=K11,x=27,y=89,},},[K2]=2385,[K1]=K21,x=4,y=90,},[K[46]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=800,[K1]=K16,x=25,y=90,},[2]={f=K3,[K2]=801,[K1]=K13,x=38,y=90,},[3]={f=K3,[K2]=802,[K1]="any",x=47,y=90,},},[K2]=799,[K1]=K4,x=51,y=90,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=804,[K1]=K12,x=53,y=90,},},[K2]=803,[K1]=K4,x=51,y=90,},[K2]=798,[K1]=K9,x=16,y=90,},[K[47]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2390,[K1]=K5,[K5]="U@26",x=30,y=91,},[2]={f=K3,[K2]=809,[K1]="any",x=33,y=91,},[3]={f=K3,[K2]=810,[K1]=K13,x=38,y=91,},},[K2]=2391,[K1]=K4,x=46,y=91,},f=K3,[K8]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=2392,[K1]=K5,[K5]="U@26",x=48,y=91,},},[K2]=2393,[K1]=K4,x=46,y=91,},[K2]=2394,[K1]=K9,x=18,y=91,},[K20]={[1]={f=K3,[K11]="U@26",[K2]=2389,[K1]=K11,x=27,y=91,},},[K2]=2395,[K1]=K21,x=4,y=93,},[K[48]]={f=K3,[K2]=827,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=816,[K1]=K40,x=24,y=93,},[2]={f=K3,[K2]=817,[K1]=K12,x=34,y=93,},[3]={f=K3,[K2]=818,[K1]=K13,x=44,y=93,},},[K2]=815,[K1]=K4,x=52,y=93,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=820,[K1]=K12,x=54,y=93,},},[K2]=819,[K1]=K4,x=52,y=93,},[K2]=814,[K1]=K9,x=15,y=93,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=823,[K1]=K12,x=26,y=94,},[2]={f=K3,[K2]=824,[K1]=K13,x=36,y=94,},},[K2]=822,[K1]=K4,x=44,y=94,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=826,[K1]=K12,x=46,y=94,},},[K2]=825,[K1]=K4,x=44,y=94,},[K2]=821,[K1]=K9,x=15,y=94,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=830,[K1]="any",x=24,y=95,},},[K2]=829,[K1]=K4,x=28,y=95,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=832,[K1]="any",x=30,y=95,},},[K2]=831,[K1]=K4,x=28,y=95,},[K2]=828,[K1]=K9,x=15,y=95,},},x=4,y=94,},[K[49]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=835,[K1]=K16,x=24,y=97,},[2]={f=K3,[K2]=836,[K1]=K13,x=37,y=97,},},[K2]=834,[K1]=K4,x=45,y=97,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K18]=T19,[K17]={[1]=K[88],},[K2]=838,[K1]=K16,x=47,y=97,},},[K2]=837,[K1]=K4,x=45,y=97,},[K2]=833,[K1]=K9,x=15,y=97,},[K[50]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=841,[K1]=K16,x=26,y=98,},[2]={f=K3,[K2]=842,[K1]=K13,x=39,y=98,},[3]={f=K3,[K18]=T13,[K17]={[1]=K48,},[K2]=843,[K1]=K16,x=48,y=98,},[4]={f=K3,[K2]=844,[K1]=K13,x=61,y=98,},},[K2]=840,[K1]=K4,x=1,y=99,},f=K3,[K8]=false,[K10]=false,[K7]=4,rets={f=K3,[K4]={},[K2]=845,[K1]=K4,x=68,y=98,},[K2]=839,[K1]=K9,x=17,y=98,},},[K36]={},[K2]=632,[K1]=K44,x=1,y=39,},f=K3,[K2]=846,[K1]=K27,x=1,y=39,},},["dofile"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="dofile",x=8,xend=13,y=429,yend=429,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2017,[K1]=K12,x=23,y=378,},},[K2]=2016,[K1]=K4,x=30,y=378,},f=K3,[K8]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2019,[K1]="any",x=32,y=378,},},[K2]=2018,[K1]=K4,x=30,y=378,},[K2]=2015,[K1]=K9,x=12,y=378,},},["error"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="error",x=8,xend=12,y=430,yend=430,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2022,[K1]="any",x=22,y=380,},[2]={f=K3,[K2]=2023,[K1]=K13,x=29,y=380,},},[K2]=2021,[K1]=K4,x=4,y=381,},f=K3,[K8]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=2024,[K1]=K4,x=36,y=380,},[K2]=2020,[K1]=K9,x=11,y=380,},},[K[39]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[39],x=8,xend=19,y=431,yend=431,},[K25]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2662,[K1]=K5,[K5]="T@44",x=30,y=381,},},[K2]=2663,[K1]=K4,x=32,y=381,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T17,[K17]={[1]=K[63],},[K2]=2665,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2664,[K1]=K5,[K5]="T@44",x=44,y=381,},},x=34,y=381,},},[K2]=2666,[K1]=K4,x=32,y=381,},[K2]=2667,[K1]=K9,x=18,y=381,},[K20]={[1]={f=K3,[K11]="T@44",[K2]=2661,[K1]=K11,x=27,y=381,},},[K2]=2668,[K1]=K21,x=4,y=382,},},io={[K26]={f=K3,kind=K24,tk="io",x=15,xend=16,y=101,yend=101,},["has_been_read_from"]=true,[K25]=true,[K32]=true,t=T8,},[K[89]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[89],x=8,xend=13,y=447,yend=447,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2675,[K1]=K5,[K5]="A@45",x=25,y=382,},f=K3,[K2]=2676,[K1]=K35,x=24,y=382,},},[K2]=2677,[K1]=K4,x=28,y=382,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2678,[K1]=K5,[K5]="A@45",x=41,y=382,},f=K3,[K2]=2679,[K1]=K35,x=40,y=382,},[2]={f=K3,[K2]=2043,[K1]=K13,x=45,y=382,},},[K2]=2680,[K1]=K4,x=53,y=382,},f=K3,[K8]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2045,[K1]=K13,x=56,y=382,},[2]={f=K3,[K2]=2681,[K1]=K5,[K5]="A@45",x=65,y=382,},},[K2]=2682,[K1]=K4,x=53,y=382,},[K2]=2683,[K1]=K9,x=31,y=382,},[2]={[K34]={f=K3,[K2]=2684,[K1]=K5,[K5]="A@45",x=70,y=382,},f=K3,[K2]=2685,[K1]=K35,x=69,y=382,},[3]={f=K3,[K2]=2049,[K1]=K13,x=74,y=382,},},[K2]=2686,[K1]=K4,x=28,y=382,},[K41]=K[89],[K2]=2687,[K1]=K9,x=12,y=382,},[K20]={[1]={f=K3,[K11]="A@45",[K2]=2674,[K1]=K11,x=21,y=382,},},[K2]=2688,[K1]=K21,x=4,y=384,},},load={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="load",x=8,xend=11,y=432,yend=432,},[K25]=true,[K32]=true,t={f=K3,[K2]=2085,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2053,[K1]=K28,[K19]={[1]={f=K3,[K2]=2054,[K1]=K12,x=20,y=384,},[2]={f=K3,[K18]=T20,[K17]={[1]="LoadFunction",},[K2]=2055,[K1]=K16,x=29,y=384,},},x=20,y=384,},[2]={f=K3,[K2]=2056,[K1]=K12,x=46,y=384,},[3]={f=K3,[K18]=T21,[K17]={[1]=K[90],},[K2]=2057,[K1]=K16,x=56,y=384,},[4]={f=K3,keys={f=K3,[K2]=2059,[K1]="any",x=69,y=384,},[K2]=2058,[K1]="map",[K33]={f=K3,[K2]=2060,[K1]="any",x=73,y=384,},x=68,xend=76,y=384,yend=384,},},[K2]=2052,[K1]=K4,x=78,y=384,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2064,[K1]="any",x=89,y=384,},},[K2]=2063,[K1]=K4,x=89,y=384,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2066,[K1]="any",x=89,y=384,},},[K2]=2065,[K1]=K4,x=89,y=384,},[K2]=2062,[K1]=K9,x=81,y=384,},[2]={f=K3,[K2]=2067,[K1]=K12,x=91,y=384,},},[K2]=2061,[K1]=K4,x=78,y=384,},[K2]=2051,[K1]=K9,x=10,y=384,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2070,[K1]=K28,[K19]={[1]={f=K3,[K2]=2071,[K1]=K12,x=20,y=385,},[2]={f=K3,[K18]=T20,[K17]={[1]="LoadFunction",},[K2]=2072,[K1]=K16,x=29,y=385,},},x=20,y=385,},[2]={f=K3,[K2]=2073,[K1]=K12,x=46,y=385,},[3]={f=K3,[K2]=2074,[K1]=K12,x=56,y=385,},[4]={f=K3,keys={f=K3,[K2]=2076,[K1]="any",x=69,y=385,},[K2]=2075,[K1]="map",[K33]={f=K3,[K2]=2077,[K1]="any",x=73,y=385,},x=68,xend=76,y=385,yend=385,},},[K2]=2069,[K1]=K4,x=78,y=385,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2081,[K1]="any",x=89,y=385,},},[K2]=2080,[K1]=K4,x=89,y=385,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2083,[K1]="any",x=89,y=385,},},[K2]=2082,[K1]=K4,x=89,y=385,},[K2]=2079,[K1]=K9,x=81,y=385,},[2]={f=K3,[K2]=2084,[K1]=K12,x=91,y=385,},},[K2]=2078,[K1]=K4,x=78,y=385,},[K2]=2068,[K1]=K9,x=10,y=385,},},x=4,y=385,},},["loadfile"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="loadfile",x=8,xend=15,y=433,yend=433,},[K25]=true,[K32]=true,t={f=K3,[K2]=2114,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2088,[K1]=K12,x=25,y=387,},[2]={f=K3,[K18]=T21,[K17]={[1]=K[90],},[K2]=2089,[K1]=K16,x=35,y=387,},[3]={f=K3,keys={f=K3,[K2]=2091,[K1]="any",x=48,y=387,},[K2]=2090,[K1]="map",[K33]={f=K3,[K2]=2092,[K1]="any",x=52,y=387,},x=47,xend=55,y=387,yend=387,},},[K2]=2087,[K1]=K4,x=57,y=387,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2096,[K1]="any",x=68,y=387,},},[K2]=2095,[K1]=K4,x=68,y=387,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2098,[K1]="any",x=68,y=387,},},[K2]=2097,[K1]=K4,x=68,y=387,},[K2]=2094,[K1]=K9,x=60,y=387,},[2]={f=K3,[K2]=2099,[K1]=K12,x=70,y=387,},},[K2]=2093,[K1]=K4,x=57,y=387,},[K2]=2086,[K1]=K9,x=14,y=387,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2102,[K1]=K12,x=25,y=388,},[2]={f=K3,[K2]=2103,[K1]=K12,x=35,y=388,},[3]={f=K3,keys={f=K3,[K2]=2105,[K1]="any",x=48,y=388,},[K2]=2104,[K1]="map",[K33]={f=K3,[K2]=2106,[K1]="any",x=52,y=388,},x=47,xend=55,y=388,yend=388,},},[K2]=2101,[K1]=K4,x=57,y=388,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2110,[K1]="any",x=68,y=388,},},[K2]=2109,[K1]=K4,x=68,y=388,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2112,[K1]="any",x=68,y=388,},},[K2]=2111,[K1]=K4,x=68,y=388,},[K2]=2108,[K1]=K9,x=60,y=388,},[2]={f=K3,[K2]=2113,[K1]=K12,x=70,y=388,},},[K2]=2107,[K1]=K4,x=57,y=388,},[K2]=2100,[K1]=K9,x=14,y=388,},},x=4,y=388,},},math={[K26]={f=K3,kind=K24,tk="math",x=15,xend=18,y=177,yend=177,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="math",f=K3,[K39]={[K[91]]={},abs={},acos={},asin={},atan={},[K[92]]={},ceil={},cos={},cosh={},deg={},exp={},[K[93]]={},fmod={[1]={},},[K[94]]={},huge={},[K[95]]={},log={},[K[96]]={},max={[1]={},[2]={},[3]={},},[K[97]]={},min={[1]={},[2]={},[3]={},},[K[98]]={},modf={},pi={},pow={},rad={},[K[99]]={[1]={},},[K[100]]={},sin={},sinh={},sqrt={},tan={},tanh={},[K[101]]={},type={},ult={},},[K45]={[K[91]]={f=K3,x=9,y=178,},abs={f=K3,x=4,y=180,},acos={f=K3,x=4,y=181,},asin={f=K3,x=4,y=182,},atan={f=K3,x=4,y=183,},[K[92]]={f=K3,x=4,y=184,},ceil={f=K3,x=4,y=185,},cos={f=K3,x=4,y=186,},cosh={f=K3,x=4,y=187,},deg={f=K3,x=4,y=188,},exp={f=K3,x=4,y=189,},[K[93]]={f=K3,x=4,y=190,},fmod={f=K3,x=4,y=192,},[K[94]]={f=K3,x=4,y=195,},huge={f=K3,x=4,y=196,},[K[95]]={f=K3,x=4,y=197,},log={f=K3,x=4,y=198,},[K[96]]={f=K3,x=4,y=199,},max={f=K3,x=4,y=201,},[K[97]]={f=K3,x=4,y=206,},min={f=K3,x=4,y=208,},[K[98]]={f=K3,x=4,y=213,},modf={f=K3,x=4,y=215,},pi={f=K3,x=4,y=216,},pow={f=K3,x=4,y=217,},rad={f=K3,x=4,y=218,},[K[99]]={f=K3,x=4,y=220,},[K[100]]={f=K3,x=4,y=223,},sin={f=K3,x=4,y=224,},sinh={f=K3,x=4,y=225,},sqrt={f=K3,x=4,y=226,},tan={f=K3,x=4,y=227,},tanh={f=K3,x=4,y=228,},[K[101]]={f=K3,x=4,y=229,},type={f=K3,x=4,y=230,},ult={f=K3,x=4,y=231,},},[K38]={[1]=K[91],[2]="abs",[3]="acos",[4]="asin",[5]="atan",[6]=K[92],[7]="ceil",[8]="cos",[9]="cosh",[10]="deg",[11]="exp",[12]=K[93],[13]="fmod",[14]=K[94],[15]="huge",[16]=K[95],[17]="log",[18]=K[96],[19]="max",[20]=K[97],[21]="min",[22]=K[98],[23]="modf",[24]="pi",[25]="pow",[26]="rad",[27]=K[99],[28]=K[100],[29]="sin",[30]="sinh",[31]="sqrt",[32]="tan",[33]="tanh",[34]=K[101],[35]="type",[36]="ult",},[K37]={[K[91]]=T22,abs={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K[102]]=T23,f=K3,[K2]=2411,[K1]=K5,[K5]="N@27",x=32,y=180,},},[K2]=2412,[K1]=K4,x=34,y=180,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={[K[102]]=T23,f=K3,[K2]=2413,[K1]=K5,[K5]="N@27",x=36,y=180,},},[K2]=2414,[K1]=K4,x=34,y=180,},[K2]=2415,[K1]=K9,x=9,y=180,},[K20]={[1]={[K[102]]=T23,f=K3,[K11]="N@27",[K2]=2410,[K1]=K11,x=18,y=180,},},[K2]=2416,[K1]=K21,x=4,y=181,},acos={args={f=K3,[K4]={[1]={f=K3,[K2]=1178,[K1]=K14,x=19,y=181,},},[K2]=1177,[K1]=K4,x=26,y=181,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1180,[K1]=K14,x=28,y=181,},},[K2]=1179,[K1]=K4,x=26,y=181,},[K2]=1176,[K1]=K9,x=10,y=181,},asin={args={f=K3,[K4]={[1]={f=K3,[K2]=1183,[K1]=K14,x=19,y=182,},},[K2]=1182,[K1]=K4,x=26,y=182,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1185,[K1]=K14,x=28,y=182,},},[K2]=1184,[K1]=K4,x=26,y=182,},[K2]=1181,[K1]=K9,x=10,y=182,},atan={args={f=K3,[K4]={[1]={f=K3,[K2]=1188,[K1]=K14,x=19,y=183,},[2]={f=K3,[K2]=1189,[K1]=K14,x=29,y=183,},},[K2]=1187,[K1]=K4,x=36,y=183,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1191,[K1]=K14,x=38,y=183,},},[K2]=1190,[K1]=K4,x=36,y=183,},[K2]=1186,[K1]=K9,x=10,y=183,},[K[92]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1194,[K1]=K14,x=20,y=184,},[2]={f=K3,[K2]=1195,[K1]=K14,x=28,y=184,},},[K2]=1193,[K1]=K4,x=35,y=184,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1197,[K1]=K14,x=37,y=184,},},[K2]=1196,[K1]=K4,x=35,y=184,},[K2]=1192,[K1]=K9,x=11,y=184,},ceil={args={f=K3,[K4]={[1]={f=K3,[K2]=1200,[K1]=K14,x=19,y=185,},},[K2]=1199,[K1]=K4,x=26,y=185,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1202,[K1]=K13,x=28,y=185,},},[K2]=1201,[K1]=K4,x=26,y=185,},[K2]=1198,[K1]=K9,x=10,y=185,},cos={args={f=K3,[K4]={[1]={f=K3,[K2]=1205,[K1]=K14,x=18,y=186,},},[K2]=1204,[K1]=K4,x=25,y=186,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1207,[K1]=K14,x=27,y=186,},},[K2]=1206,[K1]=K4,x=25,y=186,},[K2]=1203,[K1]=K9,x=9,y=186,},cosh={args={f=K3,[K4]={[1]={f=K3,[K2]=1210,[K1]=K14,x=19,y=187,},},[K2]=1209,[K1]=K4,x=26,y=187,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1212,[K1]=K14,x=28,y=187,},},[K2]=1211,[K1]=K4,x=26,y=187,},[K2]=1208,[K1]=K9,x=10,y=187,},deg={args={f=K3,[K4]={[1]={f=K3,[K2]=1215,[K1]=K14,x=18,y=188,},},[K2]=1214,[K1]=K4,x=25,y=188,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1217,[K1]=K14,x=27,y=188,},},[K2]=1216,[K1]=K4,x=25,y=188,},[K2]=1213,[K1]=K9,x=9,y=188,},exp={args={f=K3,[K4]={[1]={f=K3,[K2]=1220,[K1]=K14,x=18,y=189,},},[K2]=1219,[K1]=K4,x=25,y=189,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1222,[K1]=K14,x=27,y=189,},},[K2]=1221,[K1]=K4,x=25,y=189,},[K2]=1218,[K1]=K9,x=9,y=189,},[K[93]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1225,[K1]=K14,x=20,y=190,},},[K2]=1224,[K1]=K4,x=27,y=190,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1227,[K1]=K13,x=29,y=190,},},[K2]=1226,[K1]=K4,x=27,y=190,},[K2]=1223,[K1]=K9,x=11,y=190,},fmod={f=K3,[K2]=1240,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1230,[K1]=K13,x=19,y=192,},[2]={f=K3,[K2]=1231,[K1]=K13,x=28,y=192,},},[K2]=1229,[K1]=K4,x=36,y=192,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1233,[K1]=K13,x=38,y=192,},},[K2]=1232,[K1]=K4,x=36,y=192,},[K2]=1228,[K1]=K9,x=10,y=192,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1236,[K1]=K14,x=19,y=193,},[2]={f=K3,[K2]=1237,[K1]=K14,x=27,y=193,},},[K2]=1235,[K1]=K4,x=34,y=193,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1239,[K1]=K14,x=36,y=193,},},[K2]=1238,[K1]=K4,x=34,y=193,},[K2]=1234,[K1]=K9,x=10,y=193,},},x=4,y=193,},[K[94]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1243,[K1]=K14,x=20,y=195,},},[K2]=1242,[K1]=K4,x=27,y=195,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1245,[K1]=K14,x=29,y=195,},[2]={f=K3,[K2]=1246,[K1]=K13,x=37,y=195,},},[K2]=1244,[K1]=K4,x=27,y=195,},[K2]=1241,[K1]=K9,x=11,y=195,},huge={f=K3,[K2]=1247,[K1]=K14,x=10,y=196,},[K[95]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1250,[K1]=K14,x=20,y=197,},[2]={f=K3,[K2]=1251,[K1]=K13,x=28,y=197,},},[K2]=1249,[K1]=K4,x=36,y=197,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1253,[K1]=K14,x=38,y=197,},},[K2]=1252,[K1]=K4,x=36,y=197,},[K2]=1248,[K1]=K9,x=11,y=197,},log={args={f=K3,[K4]={[1]={f=K3,[K2]=1256,[K1]=K14,x=18,y=198,},[2]={f=K3,[K2]=1257,[K1]=K14,x=28,y=198,},},[K2]=1255,[K1]=K4,x=35,y=198,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1259,[K1]=K14,x=37,y=198,},},[K2]=1258,[K1]=K4,x=35,y=198,},[K2]=1254,[K1]=K9,x=9,y=198,},[K[96]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1262,[K1]=K14,x=20,y=199,},},[K2]=1261,[K1]=K4,x=27,y=199,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1264,[K1]=K14,x=29,y=199,},},[K2]=1263,[K1]=K4,x=27,y=199,},[K2]=1260,[K1]=K9,x=11,y=199,},max={f=K3,[K2]=1277,[K1]="poly",[K19]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1267,[K1]=K13,x=18,y=201,},},[K2]=1266,[K1]=K4,x=29,y=201,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1269,[K1]=K13,x=31,y=201,},},[K2]=1268,[K1]=K4,x=29,y=201,},[K2]=1265,[K1]=K9,x=9,y=201,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1272,[K1]=K28,[K19]={[1]={f=K3,[K2]=1273,[K1]=K14,x=19,y=202,},[2]={f=K3,[K2]=1274,[K1]=K13,x=28,y=202,},},x=19,y=202,},},[K2]=1271,[K1]=K4,x=40,y=202,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1276,[K1]=K14,x=42,y=202,},},[K2]=1275,[K1]=K4,x=40,y=202,},[K2]=1270,[K1]=K9,x=9,y=202,},[3]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2418,[K1]=K5,[K5]="T",x=21,y=203,},},[K2]=1280,[K1]=K4,x=26,y=203,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=2419,[K1]=K5,[K5]="T",x=28,y=203,},},[K2]=1282,[K1]=K4,x=26,y=203,},[K2]=1279,[K1]=K9,x=9,y=203,},[K20]={[1]={f=K3,[K11]="T",[K2]=1278,[K1]=K11,x=18,y=203,},},[K2]=1284,[K1]=K21,x=4,y=204,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1287,[K1]="any",x=18,y=204,},},[K2]=1286,[K1]=K4,x=25,y=204,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1289,[K1]="any",x=27,y=204,},},[K2]=1288,[K1]=K4,x=25,y=204,},[K2]=1285,[K1]=K9,x=9,y=204,},},x=4,y=202,},[K[97]]={f=K3,[K32]=true,[K2]=1290,[K1]=K13,x=16,y=206,},min={f=K3,[K2]=1303,[K1]="poly",[K19]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1293,[K1]=K13,x=18,y=208,},},[K2]=1292,[K1]=K4,x=29,y=208,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1295,[K1]=K13,x=31,y=208,},},[K2]=1294,[K1]=K4,x=29,y=208,},[K2]=1291,[K1]=K9,x=9,y=208,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1298,[K1]=K28,[K19]={[1]={f=K3,[K2]=1299,[K1]=K14,x=19,y=209,},[2]={f=K3,[K2]=1300,[K1]=K13,x=28,y=209,},},x=19,y=209,},},[K2]=1297,[K1]=K4,x=40,y=209,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1302,[K1]=K14,x=42,y=209,},},[K2]=1301,[K1]=K4,x=40,y=209,},[K2]=1296,[K1]=K9,x=9,y=209,},[3]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2428,[K1]=K5,[K5]="T",x=21,y=210,},},[K2]=1306,[K1]=K4,x=26,y=210,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=2429,[K1]=K5,[K5]="T",x=28,y=210,},},[K2]=1308,[K1]=K4,x=26,y=210,},[K2]=1305,[K1]=K9,x=9,y=210,},[K20]={[1]={f=K3,[K11]="T",[K2]=1304,[K1]=K11,x=18,y=210,},},[K2]=1310,[K1]=K21,x=4,y=211,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1313,[K1]="any",x=18,y=211,},},[K2]=1312,[K1]=K4,x=25,y=211,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1315,[K1]="any",x=27,y=211,},},[K2]=1314,[K1]=K4,x=25,y=211,},[K2]=1311,[K1]=K9,x=9,y=211,},},x=4,y=209,},[K[98]]={f=K3,[K32]=true,[K2]=1316,[K1]=K13,x=16,y=213,},modf={args={f=K3,[K4]={[1]={f=K3,[K2]=1319,[K1]=K14,x=19,y=215,},},[K2]=1318,[K1]=K4,x=26,y=215,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1321,[K1]=K13,x=28,y=215,},[2]={f=K3,[K2]=1322,[K1]=K14,x=37,y=215,},},[K2]=1320,[K1]=K4,x=26,y=215,},[K2]=1317,[K1]=K9,x=10,y=215,},pi={f=K3,[K2]=1323,[K1]=K14,x=8,y=216,},pow={args={f=K3,[K4]={[1]={f=K3,[K2]=1326,[K1]=K14,x=18,y=217,},[2]={f=K3,[K2]=1327,[K1]=K14,x=26,y=217,},},[K2]=1325,[K1]=K4,x=33,y=217,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1329,[K1]=K14,x=35,y=217,},},[K2]=1328,[K1]=K4,x=33,y=217,},[K2]=1324,[K1]=K9,x=9,y=217,},rad={args={f=K3,[K4]={[1]={f=K3,[K2]=1332,[K1]=K14,x=18,y=218,},},[K2]=1331,[K1]=K4,x=25,y=218,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1334,[K1]=K14,x=27,y=218,},},[K2]=1333,[K1]=K4,x=25,y=218,},[K2]=1330,[K1]=K9,x=9,y=218,},[K[99]]={f=K3,[K2]=1345,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1337,[K1]=K13,x=21,y=220,},[2]={f=K3,[K2]=1338,[K1]=K13,x=32,y=220,},},[K2]=1336,[K1]=K4,x=40,y=220,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1340,[K1]=K13,x=42,y=220,},},[K2]=1339,[K1]=K4,x=40,y=220,},[K2]=1335,[K1]=K9,x=12,y=220,},[2]={args={f=K3,[K4]={},[K2]=1342,[K1]=K4,x=22,y=221,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1344,[K1]=K14,x=24,y=221,},},[K2]=1343,[K1]=K4,x=22,y=221,},[K2]=1341,[K1]=K9,x=12,y=221,},},x=4,y=221,},[K[100]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1348,[K1]=K13,x=27,y=223,},[2]={f=K3,[K2]=1349,[K1]=K13,x=38,y=223,},},[K2]=1347,[K1]=K4,x=46,y=223,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1351,[K1]=K13,x=48,y=223,},[2]={f=K3,[K2]=1352,[K1]=K13,x=57,y=223,},},[K2]=1350,[K1]=K4,x=46,y=223,},[K2]=1346,[K1]=K9,x=16,y=223,},sin={args={f=K3,[K4]={[1]={f=K3,[K2]=1355,[K1]=K14,x=18,y=224,},},[K2]=1354,[K1]=K4,x=25,y=224,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1357,[K1]=K14,x=27,y=224,},},[K2]=1356,[K1]=K4,x=25,y=224,},[K2]=1353,[K1]=K9,x=9,y=224,},sinh={args={f=K3,[K4]={[1]={f=K3,[K2]=1360,[K1]=K14,x=19,y=225,},},[K2]=1359,[K1]=K4,x=26,y=225,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1362,[K1]=K14,x=28,y=225,},},[K2]=1361,[K1]=K4,x=26,y=225,},[K2]=1358,[K1]=K9,x=10,y=225,},sqrt={args={f=K3,[K4]={[1]={f=K3,[K2]=1365,[K1]=K14,x=19,y=226,},},[K2]=1364,[K1]=K4,x=26,y=226,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1367,[K1]=K14,x=28,y=226,},},[K2]=1366,[K1]=K4,x=26,y=226,},[K2]=1363,[K1]=K9,x=10,y=226,},tan={args={f=K3,[K4]={[1]={f=K3,[K2]=1370,[K1]=K14,x=18,y=227,},},[K2]=1369,[K1]=K4,x=25,y=227,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1372,[K1]=K14,x=27,y=227,},},[K2]=1371,[K1]=K4,x=25,y=227,},[K2]=1368,[K1]=K9,x=9,y=227,},tanh={args={f=K3,[K4]={[1]={f=K3,[K2]=1375,[K1]=K14,x=19,y=228,},},[K2]=1374,[K1]=K4,x=26,y=228,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1377,[K1]=K14,x=28,y=228,},},[K2]=1376,[K1]=K4,x=26,y=228,},[K2]=1373,[K1]=K9,x=10,y=228,},[K[101]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1380,[K1]="any",x=24,y=229,},},[K2]=1379,[K1]=K4,x=28,y=229,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1382,[K1]=K13,x=30,y=229,},},[K2]=1381,[K1]=K4,x=28,y=229,},[K2]=1378,[K1]=K9,x=15,y=229,},type={args={f=K3,[K4]={[1]={f=K3,[K2]=1385,[K1]="any",x=19,y=230,},},[K2]=1384,[K1]=K4,x=23,y=230,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1387,[K1]=K12,x=25,y=230,},},[K2]=1386,[K1]=K4,x=23,y=230,},[K2]=1383,[K1]=K9,x=10,y=230,},ult={args={f=K3,[K4]={[1]={f=K3,[K2]=1390,[K1]=K14,x=18,y=231,},[2]={f=K3,[K2]=1391,[K1]=K14,x=26,y=231,},},[K2]=1389,[K1]=K4,x=33,y=231,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1393,[K1]=K30,x=35,y=231,},},[K2]=1392,[K1]=K4,x=33,y=231,},[K2]=1388,[K1]=K9,x=9,y=231,},},[K36]={},[K2]=1161,[K1]=K44,x=1,y=177,},f=K3,[K2]=1394,[K1]=K27,x=1,y=177,},},[K[63]]={[K26]={f=K6,kind=K24,tk=K[63],x=15,xend=23,y=18,yend=18,},[K25]=true,t=T17,[K[21]]=true,},next={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="next",x=8,xend=11,y=434,yend=434,},[K25]=true,t={f=K3,[K2]=2137,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2691,[K1]=K5,[K5]="K",x=26,y=390,},[K2]=2119,[K1]="map",[K33]={f=K3,[K2]=2692,[K1]=K5,[K5]="V",x=28,y=390,},x=25,xend=29,y=390,yend=390,},[2]={f=K3,[K2]=2693,[K1]=K5,[K5]="K",x=34,y=390,},},[K2]=2118,[K1]=K4,x=36,y=390,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2694,[K1]=K5,[K5]="K",x=39,y=390,},[2]={f=K3,[K2]=2695,[K1]=K5,[K5]="V",x=42,y=390,},},[K2]=2123,[K1]=K4,x=36,y=390,},[K2]=2117,[K1]=K9,x=10,y=390,},[K20]={[1]={f=K3,[K11]="K",[K2]=2115,[K1]=K11,x=19,y=390,},[2]={f=K3,[K11]="V",[K2]=2116,[K1]=K11,x=22,y=390,},},[K2]=2126,[K1]=K21,x=4,y=391,},[2]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2709,[K1]=K5,[K5]="A",x=23,y=391,},f=K3,[K2]=2130,[K1]=K35,x=22,xend=24,y=391,yend=391,},[2]={f=K3,[K2]=2132,[K1]=K13,x=29,y=391,},},[K2]=2129,[K1]=K4,x=37,y=391,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2134,[K1]=K13,x=40,y=391,},[2]={f=K3,[K2]=2710,[K1]=K5,[K5]="A",x=49,y=391,},},[K2]=2133,[K1]=K4,x=37,y=391,},[K2]=2128,[K1]=K9,x=10,y=391,},[K20]={[1]={f=K3,[K11]="A",[K2]=2127,[K1]=K11,x=19,y=391,},},[K2]=2136,[K1]=K21,x=4,y=393,},},x=4,y=391,},},os={[K26]={f=K3,kind=K24,tk="os",x=15,xend=16,y=234,yend=234,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="os",f=K3,[K39]={[K[103]]={},[K[104]]={},[K[105]]={},date={[1]={},},[K[106]]={},[K[107]]={},exit={},[K[108]]={},[K[109]]={},[K[110]]={},[K[111]]={},time={},[K[112]]={},},[K45]={[K[103]]={f=K3,x=4,y=247,},[K[104]]={f=K3,x=4,y=235,},[K[105]]={f=K3,x=4,y=251,},date={f=K3,x=4,y=253,},[K[106]]={f=K3,x=4,y=256,},[K[107]]={f=K3,x=4,y=257,},exit={f=K3,x=4,y=258,},[K[108]]={f=K3,x=4,y=259,},[K[109]]={f=K3,x=4,y=260,},[K[110]]={f=K3,x=4,y=261,},[K[111]]={f=K3,x=4,y=262,},time={f=K3,x=4,y=263,},[K[112]]={f=K3,x=4,y=264,},},[K38]={[1]=K[104],[2]=K[103],[3]=K[105],[4]="date",[5]=K[106],[6]=K[107],[7]="exit",[8]=K[108],[9]=K[109],[10]=K[110],[11]=K[111],[12]="time",[13]=K[112],},[K37]={[K[103]]=T24,[K[104]]=T25,[K[105]]={args={f=K3,[K4]={},[K2]=1416,[K1]=K4,x=21,y=251,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1418,[K1]=K14,x=23,y=251,},},[K2]=1417,[K1]=K4,x=21,y=251,},[K2]=1415,[K1]=K9,x=11,y=251,},date={f=K3,[K2]=1431,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T24,[K17]={[1]=K[103],},[K2]=1421,[K1]=K16,x=19,y=253,},[2]={f=K3,[K2]=1422,[K1]=K14,x=31,y=253,},},[K2]=1420,[K1]=K4,x=38,y=253,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T25,[K17]={[1]=K[104],},[K2]=1424,[K1]=K16,x=40,y=253,},},[K2]=1423,[K1]=K4,x=38,y=253,},[K2]=1419,[K1]=K9,x=10,y=253,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1427,[K1]=K12,x=21,y=254,},[2]={f=K3,[K2]=1428,[K1]=K14,x=31,y=254,},},[K2]=1426,[K1]=K4,x=38,y=254,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1430,[K1]=K12,x=40,y=254,},},[K2]=1429,[K1]=K4,x=38,y=254,},[K2]=1425,[K1]=K9,x=10,y=254,},},x=4,y=254,},[K[106]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1434,[K1]=K13,x=23,y=256,},[2]={f=K3,[K2]=1435,[K1]=K13,x=32,y=256,},},[K2]=1433,[K1]=K4,x=40,y=256,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1437,[K1]=K14,x=42,y=256,},},[K2]=1436,[K1]=K4,x=40,y=256,},[K2]=1432,[K1]=K9,x=14,y=256,},[K[107]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1440,[K1]=K12,x=22,y=257,},},[K2]=1439,[K1]=K4,x=29,y=257,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1442,[K1]=K30,x=31,y=257,},[2]={f=K3,[K2]=1443,[K1]=K12,x=40,y=257,},[3]={f=K3,[K2]=1444,[K1]=K13,x=48,y=257,},},[K2]=1441,[K1]=K4,x=29,y=257,},[K2]=1438,[K1]=K9,x=13,y=257,},exit={args={f=K3,[K4]={[1]={f=K3,[K2]=1447,[K1]=K28,[K19]={[1]={f=K3,[K2]=1448,[K1]=K13,x=22,y=258,},[2]={f=K3,[K2]=1449,[K1]=K30,x=32,y=258,},},x=22,y=258,},[2]={f=K3,[K2]=1450,[K1]=K30,x=44,y=258,},},[K2]=1446,[K1]=K4,x=4,y=259,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=1451,[K1]=K4,x=51,y=258,},[K2]=1445,[K1]=K9,x=10,y=258,},[K[108]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1454,[K1]=K12,x=21,y=259,},},[K2]=1453,[K1]=K4,x=28,y=259,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1456,[K1]=K12,x=30,y=259,},},[K2]=1455,[K1]=K4,x=28,y=259,},[K2]=1452,[K1]=K9,x=12,y=259,},[K[109]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1459,[K1]=K12,x=21,y=260,},},[K2]=1458,[K1]=K4,x=28,y=260,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1461,[K1]=K30,x=30,y=260,},[2]={f=K3,[K2]=1462,[K1]=K12,x=39,y=260,},},[K2]=1460,[K1]=K4,x=28,y=260,},[K2]=1457,[K1]=K9,x=12,y=260,},[K[110]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1465,[K1]=K12,x=21,y=261,},[2]={f=K3,[K2]=1466,[K1]=K12,x=29,y=261,},},[K2]=1464,[K1]=K4,x=36,y=261,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1468,[K1]=K30,x=38,y=261,},[2]={f=K3,[K2]=1469,[K1]=K12,x=47,y=261,},},[K2]=1467,[K1]=K4,x=36,y=261,},[K2]=1463,[K1]=K9,x=12,y=261,},[K[111]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1472,[K1]=K12,x=24,y=262,},[2]={f=K3,[K2]=1473,[K1]=K12,x=34,y=262,},},[K2]=1471,[K1]=K4,x=41,y=262,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1475,[K1]=K12,x=43,y=262,},},[K2]=1474,[K1]=K4,x=41,y=262,},[K2]=1470,[K1]=K9,x=15,y=262,},time={args={f=K3,[K4]={[1]={f=K3,[K18]=T25,[K17]={[1]=K[104],},[K2]=1478,[K1]=K16,x=21,y=263,},},[K2]=1477,[K1]=K4,x=31,y=263,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1480,[K1]=K13,x=33,y=263,},},[K2]=1479,[K1]=K4,x=31,y=263,},[K2]=1476,[K1]=K9,x=10,y=263,},[K[112]]={args={f=K3,[K4]={},[K2]=1482,[K1]=K4,x=23,y=264,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1484,[K1]=K12,x=25,y=264,},},[K2]=1483,[K1]=K4,x=23,y=264,},[K2]=1481,[K1]=K9,x=13,y=264,},},[K36]={},[K2]=1397,[K1]=K44,x=1,y=234,},f=K3,[K2]=1485,[K1]=K27,x=1,y=234,},},[K[115]]={[K26]={f=K3,kind=K24,tk=K[115],x=15,xend=21,y=267,yend=267,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[115],f=K3,[K39]={[K[116]]={},[K[117]]={},[K[118]]={},[K[119]]={},[K[120]]={},path={},[K[121]]={},[K[122]]={},[K[123]]={},},[K45]={[K[116]]={f=K3,x=4,y=268,},[K[117]]={f=K3,x=4,y=269,},[K[118]]={f=K3,x=4,y=270,},[K[119]]={f=K3,x=4,y=272,},[K[120]]={f=K3,x=4,y=271,},path={f=K3,x=4,y=273,},[K[121]]={f=K3,x=4,y=274,},[K[122]]={f=K3,x=4,y=275,},[K[123]]={f=K3,x=4,y=276,},},[K38]={[1]=K[116],[2]=K[117],[3]=K[118],[4]=K[120],[5]=K[119],[6]="path",[7]=K[121],[8]=K[122],[9]=K[123],},[K37]={[K[116]]={f=K3,[K2]=1489,[K1]=K12,x=12,y=268,},[K[117]]={f=K3,[K2]=1490,[K1]=K12,x=11,y=269,},[K[118]]={f=K3,keys={f=K3,[K2]=1492,[K1]=K12,x=13,y=270,},[K2]=1491,[K1]="map",[K33]={f=K3,[K2]=1493,[K1]="any",x=20,y=270,},x=12,xend=23,y=270,yend=270,},[K[119]]={[K34]={args={f=K3,[K4]={[1]={f=K3,[K2]=1507,[K1]=K12,x=25,y=272,},},[K2]=1506,[K1]=K4,x=32,y=272,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1511,[K1]=K12,x=46,y=272,},[2]={f=K3,[K2]=1512,[K1]="any",x=56,y=272,},},[K2]=1510,[K1]=K4,x=60,y=272,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1514,[K1]="any",x=63,y=272,},},[K2]=1513,[K1]=K4,x=60,y=272,},[K2]=1509,[K1]=K9,x=35,y=272,},[2]={f=K3,[K2]=1515,[K1]="any",x=69,y=272,},},[K2]=1508,[K1]=K4,x=32,y=272,},[K2]=1505,[K1]=K9,x=16,y=272,},f=K3,[K2]=1504,[K1]=K35,x=13,xend=75,y=272,yend=272,},[K[120]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1496,[K1]=K12,x=22,y=271,},[2]={f=K3,[K2]=1497,[K1]=K12,x=30,y=271,},},[K2]=1495,[K1]=K4,x=37,y=271,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1501,[K1]="any",x=48,y=271,},},[K2]=1500,[K1]=K4,x=48,y=271,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1503,[K1]="any",x=48,y=271,},},[K2]=1502,[K1]=K4,x=48,y=271,},[K2]=1499,[K1]=K9,x=40,y=271,},},[K2]=1498,[K1]=K4,x=37,y=271,},[K2]=1494,[K1]=K9,x=13,y=271,},path={f=K3,[K2]=1516,[K1]=K12,x=10,y=273,},[K[121]]={f=K3,keys={f=K3,[K2]=1518,[K1]=K12,x=14,y=274,},[K2]=1517,[K1]="map",[K33]={args={f=K3,[K4]={[1]={f=K3,[K2]=1521,[K1]=K12,x=34,y=274,},[2]={f=K3,[K2]=1522,[K1]="any",x=44,y=274,},},[K2]=1520,[K1]=K4,x=48,y=274,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1524,[K1]="any",x=51,y=274,},},[K2]=1523,[K1]=K4,x=48,y=274,},[K2]=1519,[K1]=K9,x=23,y=274,},x=13,xend=56,y=274,yend=274,},[K[122]]={[K34]={args={f=K3,[K4]={[1]={f=K3,[K2]=1528,[K1]=K12,x=27,y=275,},},[K2]=1527,[K1]=K4,x=34,y=275,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1532,[K1]=K12,x=48,y=275,},[2]={f=K3,[K2]=1533,[K1]="any",x=58,y=275,},},[K2]=1531,[K1]=K4,x=62,y=275,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1535,[K1]="any",x=65,y=275,},},[K2]=1534,[K1]=K4,x=62,y=275,},[K2]=1530,[K1]=K9,x=37,y=275,},[2]={f=K3,[K2]=1536,[K1]="any",x=71,y=275,},},[K2]=1529,[K1]=K4,x=34,y=275,},[K2]=1526,[K1]=K9,x=18,y=275,},f=K3,[K2]=1525,[K1]=K35,x=15,xend=77,y=275,yend=275,},[K[123]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1539,[K1]=K12,x=25,y=276,},[2]={f=K3,[K2]=1540,[K1]=K12,x=33,y=276,},[3]={f=K3,[K2]=1541,[K1]=K12,x=43,y=276,},[4]={f=K3,[K2]=1542,[K1]=K12,x=53,y=276,},},[K2]=1538,[K1]=K4,x=60,y=276,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1544,[K1]=K12,x=62,y=276,},[2]={f=K3,[K2]=1545,[K1]=K12,x=70,y=276,},},[K2]=1543,[K1]=K4,x=60,y=276,},[K2]=1537,[K1]=K9,x=16,y=276,},},[K36]={},[K2]=1488,[K1]=K44,x=1,y=267,},f=K3,[K2]=1546,[K1]=K27,x=1,y=267,},},[K[124]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[124],x=8,xend=12,y=435,yend=435,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2733,[K1]=K5,[K5]="K@48",x=27,y=393,},[K2]=2735,[K1]="map",[K33]={f=K3,[K2]=2734,[K1]=K5,[K5]="V@48",x=29,y=393,},x=26,y=393,},},[K2]=2736,[K1]=K4,x=32,y=393,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2737,[K1]=K5,[K5]="K@48",x=45,y=393,},[K2]=2739,[K1]="map",[K33]={f=K3,[K2]=2738,[K1]=K5,[K5]="V@48",x=47,y=393,},x=44,y=393,},[2]={f=K3,[K2]=2740,[K1]=K5,[K5]="K@48",x=53,y=393,},},[K2]=2741,[K1]=K4,x=55,y=393,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2742,[K1]=K5,[K5]="K@48",x=57,y=393,},[2]={f=K3,[K2]=2743,[K1]=K5,[K5]="V@48",x=60,y=393,},},[K2]=2744,[K1]=K4,x=55,y=393,},[K2]=2745,[K1]=K9,x=35,y=393,},[2]={f=K3,keys={f=K3,[K2]=2746,[K1]=K5,[K5]="K@48",x=65,y=393,},[K2]=2748,[K1]="map",[K33]={f=K3,[K2]=2747,[K1]=K5,[K5]="V@48",x=67,y=393,},x=64,y=393,},[3]={f=K3,[K2]=2749,[K1]=K5,[K5]="K@48",x=71,y=393,},},[K2]=2750,[K1]=K4,x=32,y=393,},[K41]=K[124],[K2]=2751,[K1]=K9,x=11,y=393,},[K20]={[1]={f=K3,[K11]="K@48",[K2]=2731,[K1]=K11,x=20,y=393,},[2]={f=K3,[K11]="V@48",[K2]=2732,[K1]=K11,x=23,y=393,},},[K2]=2752,[K1]=K21,x=4,y=394,},},[K[125]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[125],x=8,xend=12,y=436,yend=436,},[K25]=true,[K32]=true,t={args={f=K3,[K15]=true,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2164,[K1]="any",x=29,y=394,},},[K2]=2163,[K1]=K4,x=36,y=394,},f=K3,[K8]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2166,[K1]="any",x=38,y=394,},},[K2]=2165,[K1]=K4,x=36,y=394,},[K2]=2162,[K1]=K9,x=20,y=394,},[2]={f=K3,[K2]=2167,[K1]="any",x=47,y=394,},},[K2]=2161,[K1]=K4,x=54,y=394,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2169,[K1]=K30,x=56,y=394,},[2]={f=K3,[K2]=2170,[K1]="any",x=65,y=394,},},[K2]=2168,[K1]=K4,x=54,y=394,},[K41]=K[125],[K2]=2160,[K1]=K9,x=11,y=394,},},["print"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="print",x=8,xend=12,y=437,yend=437,},[K25]=true,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2173,[K1]="any",x=20,y=395,},},[K2]=2172,[K1]=K4,x=4,y=396,},f=K3,[K8]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=2174,[K1]=K4,x=26,y=395,},[K2]=2171,[K1]=K9,x=11,y=395,},},["rawequal"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawequal",x=8,xend=15,y=438,yend=438,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2177,[K1]="any",x=23,y=396,},[2]={f=K3,[K2]=2178,[K1]="any",x=28,y=396,},},[K2]=2176,[K1]=K4,x=32,y=396,},f=K3,[K8]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2180,[K1]=K30,x=34,y=396,},},[K2]=2179,[K1]=K4,x=32,y=396,},[K2]=2175,[K1]=K9,x=14,y=396,},},[K[126]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[126],x=8,xend=13,y=439,yend=439,},[K25]=true,t={f=K3,[K2]=2200,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2755,[K1]=K5,[K5]="K",x=28,y=398,},[K2]=2185,[K1]="map",[K33]={f=K3,[K2]=2756,[K1]=K5,[K5]="V",x=30,y=398,},x=27,xend=31,y=398,yend=398,},[2]={f=K3,[K2]=2757,[K1]=K5,[K5]="K",x=34,y=398,},},[K2]=2184,[K1]=K4,x=36,y=398,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2758,[K1]=K5,[K5]="V",x=38,y=398,},},[K2]=2189,[K1]=K4,x=36,y=398,},[K41]=K[126],[K2]=2183,[K1]=K9,x=12,y=398,},[K20]={[1]={f=K3,[K11]="K",[K2]=2181,[K1]=K11,x=21,y=398,},[2]={f=K3,[K11]="V",[K2]=2182,[K1]=K11,x=24,y=398,},},[K2]=2191,[K1]=K21,x=4,y=399,},[2]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2195,[K1]="any",x=22,y=399,},[K2]=2194,[K1]="map",[K33]={f=K3,[K2]=2196,[K1]="any",x=26,y=399,},x=21,xend=29,y=399,yend=399,},[2]={f=K3,[K2]=2197,[K1]="any",x=32,y=399,},},[K2]=2193,[K1]=K4,x=36,y=399,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2199,[K1]="any",x=38,y=399,},},[K2]=2198,[K1]=K4,x=36,y=399,},[K2]=2192,[K1]=K9,x=12,y=399,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=2203,[K1]="any",x=21,y=400,},[2]={f=K3,[K2]=2204,[K1]="any",x=26,y=400,},},[K2]=2202,[K1]=K4,x=30,y=400,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2206,[K1]="any",x=32,y=400,},},[K2]=2205,[K1]=K4,x=30,y=400,},[K2]=2201,[K1]=K9,x=12,y=400,},},x=4,y=399,},},["rawlen"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawlen",x=8,xend=13,y=440,yend=440,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2773,[K1]=K5,[K5]="A@50",x=25,y=402,},f=K3,[K2]=2774,[K1]=K35,x=24,y=402,},},[K2]=2775,[K1]=K4,x=28,y=402,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2213,[K1]=K13,x=30,y=402,},},[K2]=2212,[K1]=K4,x=28,y=402,},[K2]=2776,[K1]=K9,x=12,y=402,},[K20]={[1]={f=K3,[K11]="A@50",[K2]=2772,[K1]=K11,x=21,y=402,},},[K2]=2777,[K1]=K21,x=4,y=404,},},["rawset"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawset",x=8,xend=13,y=441,yend=441,},[K25]=true,t={f=K3,[K2]=2240,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2780,[K1]=K5,[K5]="K",x=28,y=404,},[K2]=2219,[K1]="map",[K33]={f=K3,[K2]=2781,[K1]=K5,[K5]="V",x=30,y=404,},x=27,xend=31,y=404,yend=404,},[2]={f=K3,[K2]=2782,[K1]=K5,[K5]="K",x=34,y=404,},[3]={f=K3,[K2]=2783,[K1]=K5,[K5]="V",x=37,y=404,},},[K2]=2218,[K1]=K4,x=39,y=404,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2784,[K1]=K5,[K5]="K",x=42,y=404,},[K2]=2225,[K1]="map",[K33]={f=K3,[K2]=2785,[K1]=K5,[K5]="V",x=44,y=404,},x=41,xend=45,y=404,yend=404,},},[K2]=2224,[K1]=K4,x=39,y=404,},[K2]=2217,[K1]=K9,x=12,y=404,},[K20]={[1]={f=K3,[K11]="K",[K2]=2215,[K1]=K11,x=21,y=404,},[2]={f=K3,[K11]="V",[K2]=2216,[K1]=K11,x=24,y=404,},},[K2]=2228,[K1]=K21,x=4,y=405,},[2]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2232,[K1]="any",x=22,y=405,},[K2]=2231,[K1]="map",[K33]={f=K3,[K2]=2233,[K1]="any",x=26,y=405,},x=21,xend=29,y=405,yend=405,},[2]={f=K3,[K2]=2234,[K1]="any",x=32,y=405,},[3]={f=K3,[K2]=2235,[K1]="any",x=37,y=405,},},[K2]=2230,[K1]=K4,x=41,y=405,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2238,[K1]="any",x=44,y=405,},[K2]=2237,[K1]="map",[K33]={f=K3,[K2]=2239,[K1]="any",x=48,y=405,},x=43,xend=51,y=405,yend=405,},},[K2]=2236,[K1]=K4,x=41,y=405,},[K2]=2229,[K1]=K9,x=12,y=405,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=2243,[K1]="any",x=21,y=406,},[2]={f=K3,[K2]=2244,[K1]="any",x=26,y=406,},[3]={f=K3,[K2]=2245,[K1]="any",x=31,y=406,},},[K2]=2242,[K1]=K4,x=35,y=406,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=2247,[K1]="any",x=37,y=406,},},[K2]=2246,[K1]=K4,x=35,y=406,},[K2]=2241,[K1]=K9,x=12,y=406,},},x=4,y=405,},},[K[127]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[127],x=8,xend=14,y=442,yend=442,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2250,[K1]=K12,x=22,y=408,},},[K2]=2249,[K1]=K4,x=29,y=408,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2252,[K1]="any",x=31,y=408,},},[K2]=2251,[K1]=K4,x=29,y=408,},[K41]=K[127],[K2]=2248,[K1]=K9,x=13,y=408,},},["select"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="select",x=8,xend=13,y=443,yend=443,},[K25]=true,t={f=K3,[K2]=2267,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2256,[K1]=K13,x=24,y=410,},[2]={f=K3,[K2]=2801,[K1]=K5,[K5]="T",x=33,y=410,},},[K2]=2255,[K1]=K4,x=38,y=410,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2802,[K1]=K5,[K5]="T",x=40,y=410,},},[K2]=2258,[K1]=K4,x=38,y=410,},[K2]=2254,[K1]=K9,x=12,y=410,},[K20]={[1]={f=K3,[K11]="T",[K2]=2253,[K1]=K11,x=21,y=410,},},[K2]=2260,[K1]=K21,x=4,y=411,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2263,[K1]=K13,x=21,y=411,},[2]={f=K3,[K2]=2264,[K1]="any",x=30,y=411,},},[K2]=2262,[K1]=K4,x=37,y=411,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2266,[K1]="any",x=39,y=411,},},[K2]=2265,[K1]=K4,x=37,y=411,},[K2]=2261,[K1]=K9,x=12,y=411,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2270,[K1]=K12,x=21,y=412,},[2]={f=K3,[K2]=2271,[K1]="any",x=29,y=412,},},[K2]=2269,[K1]=K4,x=36,y=412,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2273,[K1]=K13,x=38,y=412,},},[K2]=2272,[K1]=K4,x=36,y=412,},[K2]=2268,[K1]=K9,x=12,y=412,},},x=4,y=411,},},[K[45]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[45],x=8,xend=19,y=444,yend=444,},[K25]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2815,[K1]=K5,[K5]="T@53",x=30,y=414,},[2]={f=K3,[K18]=T17,[K17]={[1]=K[63],},[K2]=2817,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2816,[K1]=K5,[K5]="T@53",x=43,y=414,},},x=33,y=414,},},[K2]=2818,[K1]=K4,x=46,y=414,},f=K3,[K8]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2819,[K1]=K5,[K5]="T@53",x=48,y=414,},},[K2]=2820,[K1]=K4,x=46,y=414,},[K2]=2821,[K1]=K9,x=18,y=414,},[K20]={[1]={f=K3,[K11]="T@53",[K2]=2814,[K1]=K11,x=27,y=414,},},[K2]=2822,[K1]=K21,x=4,y=416,},},[K12]={[K26]={f=K3,kind=K24,tk=K12,x=15,xend=20,y=279,yend=279,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K12,f=K3,[K39]={byte={[1]={},},char={},dump={},find={},[K[129]]={[1]={[1]={text=K[128],x=86,y=285,},},},[K[130]]={[1]={[1]={text=K[128],x=45,y=286,},},},gsub={[1]={},[2]={[1]={text=K[128],x=71,y=289,},},[3]={[1]={text=K[128],x=95,y=290,},},[4]={[1]={text=K[128],x=96,y=291,},},},len={},[K[131]]={},[K[132]]={},pack={[1]={[1]={text=K[128],x=58,y=296,},},},[K[133]]={[1]={[1]={text=K[128],x=43,y=297,},},},rep={},[K[134]]={},sub={},[K[135]]={},[K[136]]={[1]={[1]={text=K[128],x=56,y=302,},},},},[K45]={byte={f=K3,x=4,y=280,},char={f=K3,x=4,y=283,},dump={f=K3,x=4,y=284,},find={f=K3,x=4,y=285,},[K[129]]={f=K3,x=4,y=286,},[K[130]]={f=K3,x=4,y=287,},gsub={f=K3,x=4,y=289,},len={f=K3,x=4,y=294,},[K[131]]={f=K3,x=4,y=295,},[K[132]]={f=K3,x=4,y=296,},pack={f=K3,x=4,y=297,},[K[133]]={f=K3,x=4,y=298,},rep={f=K3,x=4,y=299,},[K[134]]={f=K3,x=4,y=300,},sub={f=K3,x=4,y=301,},[K[135]]={f=K3,x=4,y=302,},[K[136]]={f=K3,x=4,y=303,},},[K38]={[1]="byte",[2]="char",[3]="dump",[4]="find",[5]=K[129],[6]=K[130],[7]="gsub",[8]="len",[9]=K[131],[10]=K[132],[11]="pack",[12]=K[133],[13]="rep",[14]=K[134],[15]="sub",[16]=K[135],[17]=K[136],},[K37]={byte={f=K3,[K2]=1563,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1552,[K1]=K12,x=19,y=280,},[2]={f=K3,[K2]=1553,[K1]=K13,x=29,y=280,},},[K2]=1551,[K1]=K4,x=37,y=280,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1555,[K1]=K13,x=39,y=280,},},[K2]=1554,[K1]=K4,x=37,y=280,},[K2]=1550,[K1]=K9,x=10,y=280,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1558,[K1]=K12,x=19,y=281,},[2]={f=K3,[K2]=1559,[K1]=K13,x=27,y=281,},[3]={f=K3,[K2]=1560,[K1]=K13,x=38,y=281,},},[K2]=1557,[K1]=K4,x=46,y=281,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1562,[K1]=K13,x=48,y=281,},},[K2]=1561,[K1]=K4,x=46,y=281,},[K2]=1556,[K1]=K9,x=10,y=281,},},x=4,y=281,},char={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1566,[K1]=K13,x=19,y=283,},},[K2]=1565,[K1]=K4,x=30,y=283,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1568,[K1]=K12,x=32,y=283,},},[K2]=1567,[K1]=K4,x=30,y=283,},[K2]=1564,[K1]=K9,x=10,y=283,},dump={args={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1573,[K1]="any",x=28,y=284,},},[K2]=1572,[K1]=K4,x=35,y=284,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1575,[K1]="any",x=38,y=284,},},[K2]=1574,[K1]=K4,x=35,y=284,},[K2]=1571,[K1]=K9,x=19,y=284,},[2]={f=K3,[K2]=1576,[K1]=K30,x=46,y=284,},},[K2]=1570,[K1]=K4,x=54,y=284,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1578,[K1]=K12,x=56,y=284,},},[K2]=1577,[K1]=K4,x=54,y=284,},[K2]=1569,[K1]=K9,x=10,y=284,},find={args={f=K3,[K4]={[1]={f=K3,[K2]=1581,[K1]=K12,x=19,y=285,},[2]={f=K3,[K2]=1582,[K1]=K12,x=27,y=285,},[3]={f=K3,[K2]=1583,[K1]=K13,x=37,y=285,},[4]={f=K3,[K2]=1584,[K1]=K30,x=48,y=285,},},[K2]=1580,[K1]=K4,x=56,y=285,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1586,[K1]=K13,x=58,y=285,},[2]={f=K3,[K2]=1587,[K1]=K13,x=67,y=285,},[3]={f=K3,[K2]=1588,[K1]=K12,x=76,y=285,},},[K2]=1585,[K1]=K4,x=56,y=285,},[K41]="string.find",[K2]=1579,[K1]=K9,x=10,y=285,},[K[129]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1591,[K1]=K12,x=21,y=286,},[2]={f=K3,[K2]=1592,[K1]="any",x=29,y=286,},},[K2]=1590,[K1]=K4,x=36,y=286,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1594,[K1]=K12,x=38,y=286,},},[K2]=1593,[K1]=K4,x=36,y=286,},[K41]="string.format",[K2]=1589,[K1]=K9,x=12,y=286,},[K[130]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1597,[K1]=K12,x=21,y=287,},[2]={f=K3,[K2]=1598,[K1]=K12,x=29,y=287,},[3]={f=K3,[K2]=1599,[K1]=K13,x=39,y=287,},},[K2]=1596,[K1]=K4,x=47,y=287,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1602,[K1]=K4,x=60,y=287,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1604,[K1]=K12,x=62,y=287,},},[K2]=1603,[K1]=K4,x=60,y=287,},[K2]=1601,[K1]=K9,x=50,y=287,},},[K2]=1600,[K1]=K4,x=47,y=287,},[K41]="string.gmatch",[K2]=1595,[K1]=K9,x=12,y=287,},gsub={f=K3,[K2]=1628,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1607,[K1]=K12,x=19,y=289,},[2]={f=K3,[K2]=1608,[K1]=K12,x=27,y=289,},[3]={f=K3,[K2]=1609,[K1]=K12,x=35,y=289,},[4]={f=K3,[K2]=1610,[K1]=K13,x=45,y=289,},},[K2]=1606,[K1]=K4,x=53,y=289,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1612,[K1]=K12,x=55,y=289,},[2]={f=K3,[K2]=1613,[K1]=K13,x=63,y=289,},},[K2]=1611,[K1]=K4,x=53,y=289,},[K41]="string.gsub",[K2]=1605,[K1]=K9,x=10,y=289,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1616,[K1]=K12,x=19,y=290,},[2]={f=K3,[K2]=1617,[K1]=K12,x=27,y=290,},[3]={f=K3,keys={f=K3,[K2]=1619,[K1]=K12,x=36,y=290,},[K2]=1618,[K1]="map",[K33]={f=K3,[K2]=1620,[K1]=K28,[K19]={[1]={f=K3,[K2]=1621,[K1]=K12,x=43,y=290,},[2]={f=K3,[K2]=1622,[K1]=K13,x=50,y=290,},[3]={f=K3,[K2]=1623,[K1]=K14,x=58,y=290,},},x=43,y=290,},x=35,xend=64,y=290,yend=290,},[4]={f=K3,[K2]=1624,[K1]=K13,x=69,y=290,},},[K2]=1615,[K1]=K4,x=77,y=290,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1626,[K1]=K12,x=79,y=290,},[2]={f=K3,[K2]=1627,[K1]=K13,x=87,y=290,},},[K2]=1625,[K1]=K4,x=77,y=290,},[K2]=1614,[K1]=K9,x=10,y=290,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=1631,[K1]=K12,x=19,y=291,},[2]={f=K3,[K2]=1632,[K1]=K12,x=27,y=291,},[3]={f=K3,keys={f=K3,[K2]=1634,[K1]=K13,x=36,y=291,},[K2]=1633,[K1]="map",[K33]={f=K3,[K2]=1635,[K1]=K28,[K19]={[1]={f=K3,[K2]=1636,[K1]=K12,x=44,y=291,},[2]={f=K3,[K2]=1637,[K1]=K13,x=51,y=291,},[3]={f=K3,[K2]=1638,[K1]=K14,x=59,y=291,},},x=44,y=291,},x=35,xend=65,y=291,yend=291,},[4]={f=K3,[K2]=1639,[K1]=K13,x=70,y=291,},},[K2]=1630,[K1]=K4,x=78,y=291,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1641,[K1]=K12,x=80,y=291,},[2]={f=K3,[K2]=1642,[K1]=K13,x=88,y=291,},},[K2]=1640,[K1]=K4,x=78,y=291,},[K2]=1629,[K1]=K9,x=10,y=291,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=1645,[K1]=K12,x=19,y=292,},[2]={f=K3,[K2]=1646,[K1]=K12,x=27,y=292,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1649,[K1]=K28,[K19]={[1]={f=K3,[K2]=1650,[K1]=K12,x=45,y=292,},[2]={f=K3,[K2]=1651,[K1]=K13,x=52,y=292,},},x=45,y=292,},},[K2]=1648,[K1]=K4,x=64,y=292,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1653,[K1]=K28,[K19]={[1]={f=K3,[K2]=1654,[K1]=K12,x=68,y=292,},[2]={f=K3,[K2]=1655,[K1]=K13,x=75,y=292,},[3]={f=K3,[K2]=1656,[K1]=K14,x=83,y=292,},},x=68,y=292,},},[K2]=1652,[K1]=K4,x=64,y=292,},[K2]=1647,[K1]=K9,x=35,y=292,},[4]={f=K3,[K2]=1657,[K1]=K13,x=98,y=292,},},[K2]=1644,[K1]=K4,x=106,y=292,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1659,[K1]=K12,x=108,y=292,},[2]={f=K3,[K2]=1660,[K1]=K13,x=116,y=292,},},[K2]=1658,[K1]=K4,x=106,y=292,},[K2]=1643,[K1]=K9,x=10,y=292,},},x=4,y=290,},len={args={f=K3,[K4]={[1]={f=K3,[K2]=1663,[K1]=K12,x=18,y=294,},},[K2]=1662,[K1]=K4,x=25,y=294,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1665,[K1]=K13,x=27,y=294,},},[K2]=1664,[K1]=K4,x=25,y=294,},[K2]=1661,[K1]=K9,x=9,y=294,},[K[131]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1668,[K1]=K12,x=20,y=295,},},[K2]=1667,[K1]=K4,x=27,y=295,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1670,[K1]=K12,x=29,y=295,},},[K2]=1669,[K1]=K4,x=27,y=295,},[K2]=1666,[K1]=K9,x=11,y=295,},[K[132]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1673,[K1]=K12,x=20,y=296,},[2]={f=K3,[K2]=1674,[K1]=K12,x=28,y=296,},[3]={f=K3,[K2]=1675,[K1]=K13,x=38,y=296,},},[K2]=1672,[K1]=K4,x=46,y=296,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1677,[K1]=K12,x=48,y=296,},},[K2]=1676,[K1]=K4,x=46,y=296,},[K41]="string.match",[K2]=1671,[K1]=K9,x=11,y=296,},pack={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1680,[K1]=K12,x=19,y=297,},[2]={f=K3,[K2]=1681,[K1]="any",x=27,y=297,},},[K2]=1679,[K1]=K4,x=34,y=297,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1683,[K1]=K12,x=36,y=297,},},[K2]=1682,[K1]=K4,x=34,y=297,},[K41]="string.pack",[K2]=1678,[K1]=K9,x=10,y=297,},[K[133]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1686,[K1]=K12,x=23,y=298,},},[K2]=1685,[K1]=K4,x=30,y=298,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1688,[K1]=K13,x=32,y=298,},},[K2]=1687,[K1]=K4,x=30,y=298,},[K2]=1684,[K1]=K9,x=14,y=298,},rep={args={f=K3,[K4]={[1]={f=K3,[K2]=1691,[K1]=K12,x=18,y=299,},[2]={f=K3,[K2]=1692,[K1]=K13,x=26,y=299,},[3]={f=K3,[K2]=1693,[K1]=K12,x=37,y=299,},},[K2]=1690,[K1]=K4,x=44,y=299,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1695,[K1]=K12,x=46,y=299,},},[K2]=1694,[K1]=K4,x=44,y=299,},[K2]=1689,[K1]=K9,x=9,y=299,},[K[134]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1698,[K1]=K12,x=22,y=300,},},[K2]=1697,[K1]=K4,x=29,y=300,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1700,[K1]=K12,x=31,y=300,},},[K2]=1699,[K1]=K4,x=29,y=300,},[K2]=1696,[K1]=K9,x=13,y=300,},sub={args={f=K3,[K4]={[1]={f=K3,[K2]=1703,[K1]=K12,x=18,y=301,},[2]={f=K3,[K2]=1704,[K1]=K13,x=26,y=301,},[3]={f=K3,[K2]=1705,[K1]=K13,x=37,y=301,},},[K2]=1702,[K1]=K4,x=45,y=301,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1707,[K1]=K12,x=47,y=301,},},[K2]=1706,[K1]=K4,x=45,y=301,},[K2]=1701,[K1]=K9,x=9,y=301,},[K[135]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1710,[K1]=K12,x=21,y=302,},[2]={f=K3,[K2]=1711,[K1]=K12,x=29,y=302,},[3]={f=K3,[K2]=1712,[K1]=K13,x=39,y=302,},},[K2]=1709,[K1]=K4,x=47,y=302,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1714,[K1]="any",x=49,y=302,},},[K2]=1713,[K1]=K4,x=47,y=302,},[K41]="string.unpack",[K2]=1708,[K1]=K9,x=12,y=302,},[K[136]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1717,[K1]=K12,x=20,y=303,},},[K2]=1716,[K1]=K4,x=27,y=303,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1719,[K1]=K12,x=29,y=303,},},[K2]=1718,[K1]=K4,x=27,y=303,},[K2]=1715,[K1]=K9,x=11,y=303,},},[K36]={},[K2]=1549,[K1]=K44,x=1,y=279,},f=K3,[K2]=1720,[K1]=K27,x=1,y=279,},},[K[137]]={[K26]={f=K3,kind=K24,tk=K[137],x=15,xend=19,y=306,yend=306,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[137],f=K3,[K39]={[K[138]]={},[K[139]]={},[K[140]]={},[K[141]]={[1]={},},move={},pack={[1]={},[2]={[1]={text=K[142],x=42,y=322,},},},[K[109]]={},sort={},[K[135]]={[1]={},[2]={[1]={text=K[142],x=55,y=328,},},[3]={[1]={text=K[142],x=47,y=329,},},[4]={[1]={text=K[142],x=59,y=330,},},[5]={[1]={text=K[142],x=71,y=331,},},},},[K45]={[K[138]]={f=K3,x=4,y=309,},[K[139]]={f=K3,x=9,y=307,},[K[140]]={f=K3,x=4,y=315,},[K[141]]={f=K3,x=4,y=317,},move={f=K3,x=4,y=320,},pack={f=K3,x=4,y=322,},[K[109]]={f=K3,x=4,y=325,},sort={f=K3,x=4,y=326,},[K[135]]={f=K3,x=4,y=328,},},[K38]={[1]=K[139],[2]=K[138],[3]=K[140],[4]=K[141],[5]="move",[6]="pack",[7]=K[109],[8]="sort",[9]=K[135],},[K37]={[K[138]]=T26,[K[139]]=T28,[K[140]]={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=1747,[K1]=K28,[K19]={[1]={f=K3,[K2]=1748,[K1]=K12,x=23,y=315,},[2]={f=K3,[K2]=1749,[K1]=K14,x=32,y=315,},},x=23,y=315,},f=K3,[K2]=1746,[K1]=K35,x=21,xend=39,y=315,yend=315,},[2]={f=K3,[K2]=1750,[K1]=K12,x=44,y=315,},[3]={f=K3,[K2]=1751,[K1]=K13,x=54,y=315,},[4]={f=K3,[K2]=1752,[K1]=K13,x=65,y=315,},},[K2]=1745,[K1]=K4,x=73,y=315,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1754,[K1]=K12,x=75,y=315,},},[K2]=1753,[K1]=K4,x=73,y=315,},[K2]=1744,[K1]=K9,x=12,y=315,},[K[141]]={f=K3,[K2]=1772,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2459,[K1]=K5,[K5]="A",x=25,y=317,},f=K3,[K2]=1758,[K1]=K35,x=24,xend=26,y=317,yend=317,},[2]={f=K3,[K2]=1760,[K1]=K13,x=29,y=317,},[3]={f=K3,[K2]=2460,[K1]=K5,[K5]="A",x=38,y=317,},},[K2]=1757,[K1]=K4,x=4,y=318,},f=K3,[K8]=false,[K10]=false,[K7]=3,rets={f=K3,[K4]={},[K2]=1762,[K1]=K4,x=39,y=317,},[K2]=1756,[K1]=K9,x=12,y=317,},[K20]={[1]={f=K3,[K11]="A",[K2]=1755,[K1]=K11,x=21,y=317,},},[K2]=1763,[K1]=K21,x=4,y=318,},[2]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2469,[K1]=K5,[K5]="A",x=25,y=318,},f=K3,[K2]=1767,[K1]=K35,x=24,xend=26,y=318,yend=318,},[2]={f=K3,[K2]=2470,[K1]=K5,[K5]="A",x=29,y=318,},},[K2]=1766,[K1]=K4,x=4,y=320,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={},[K2]=1770,[K1]=K4,x=30,y=318,},[K2]=1765,[K1]=K9,x=12,y=318,},[K20]={[1]={f=K3,[K11]="A",[K2]=1764,[K1]=K11,x=21,y=318,},},[K2]=1771,[K1]=K21,x=4,y=320,},},x=4,y=318,},move={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2483,[K1]=K5,[K5]="A@34",x=23,y=320,},f=K3,[K2]=2484,[K1]=K35,x=22,y=320,},[2]={f=K3,[K2]=1778,[K1]=K13,x=27,y=320,},[3]={f=K3,[K2]=1779,[K1]=K13,x=36,y=320,},[4]={f=K3,[K2]=1780,[K1]=K13,x=45,y=320,},[5]={[K34]={f=K3,[K2]=2485,[K1]=K5,[K5]="A@34",x=57,y=320,},f=K3,[K2]=2486,[K1]=K35,x=56,y=320,},},[K2]=2487,[K1]=K4,x=60,y=320,},f=K3,[K8]=false,[K7]=4,rets={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2488,[K1]=K5,[K5]="A@34",x=63,y=320,},f=K3,[K2]=2489,[K1]=K35,x=62,y=320,},},[K2]=2490,[K1]=K4,x=60,y=320,},[K2]=2491,[K1]=K9,x=10,y=320,},[K20]={[1]={f=K3,[K11]="A@34",[K2]=2482,[K1]=K11,x=19,y=320,},},[K2]=2492,[K1]=K21,x=4,y=322,},pack={f=K3,[K32]=true,[K2]=1801,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2494,[K1]=K5,[K5]="T",x=22,y=322,},},[K2]=1789,[K1]=K4,x=27,y=322,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T26,[K17]={[1]=K[138],},[K2]=1792,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2495,[K1]=K5,[K5]="T",x=39,y=322,},},x=29,y=322,},},[K2]=1791,[K1]=K4,x=27,y=322,},[K2]=1788,[K1]=K9,x=10,y=322,},[K20]={[1]={f=K3,[K11]="T",[K2]=1787,[K1]=K11,x=19,y=322,},},[K2]=1794,[K1]=K21,x=4,y=323,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1797,[K1]="any",x=19,y=323,},},[K2]=1796,[K1]=K4,x=26,y=323,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T26,[K17]={[1]=K[138],},[K2]=1799,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=1800,[K1]="any",x=38,y=323,},},x=28,y=323,},},[K2]=1798,[K1]=K4,x=26,y=323,},[K2]=1795,[K1]=K9,x=10,y=323,},},x=4,y=323,},[K[109]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2508,[K1]=K5,[K5]="A@36",x=25,y=325,},f=K3,[K2]=2509,[K1]=K35,x=24,y=325,},[2]={f=K3,[K2]=1807,[K1]=K13,x=31,y=325,},},[K2]=2510,[K1]=K4,x=39,y=325,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2511,[K1]=K5,[K5]="A@36",x=41,y=325,},},[K2]=2512,[K1]=K4,x=39,y=325,},[K2]=2513,[K1]=K9,x=12,y=325,},[K20]={[1]={f=K3,[K11]="A@36",[K2]=2507,[K1]=K11,x=21,y=325,},},[K2]=2514,[K1]=K21,x=4,y=326,},sort={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2519,[K1]=K5,[K5]="A@37",x=23,y=326,},f=K3,[K2]=2520,[K1]=K35,x=22,y=326,},[2]={f=K3,[K18]=T28,[K17]={[1]=K[139],},[K2]=2522,[K1]=K16,[K[87]]={[1]={f=K3,[K2]=2521,[K1]=K5,[K5]="A@37",x=42,y=326,},},x=29,y=326,},},[K2]=2523,[K1]=K4,x=4,y=328,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={},[K2]=1818,[K1]=K4,x=44,y=326,},[K2]=2524,[K1]=K9,x=10,y=326,},[K20]={[1]={f=K3,[K11]="A@37",[K2]=2518,[K1]=K11,x=19,y=326,},},[K2]=2525,[K1]=K21,x=4,y=328,},[K[135]]={f=K3,[K32]=true,[K2]=1841,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2527,[K1]=K5,[K5]="A",x=25,y=328,},f=K3,[K2]=1823,[K1]=K35,x=24,xend=26,y=328,yend=328,},[2]={f=K3,[K2]=1825,[K1]=K14,x=31,y=328,},[3]={f=K3,[K2]=1826,[K1]=K14,x=41,y=328,},},[K2]=1822,[K1]=K4,x=48,y=328,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2528,[K1]=K5,[K5]="A",x=50,y=328,},},[K2]=1827,[K1]=K4,x=48,y=328,},[K41]="table.unpack",[K2]=1821,[K1]=K9,x=12,y=328,},[K20]={[1]={f=K3,[K11]="A",[K2]=1820,[K1]=K11,x=21,y=328,},},[K2]=1829,[K1]=K21,x=4,y=329,},[2]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1834,[K1]=K[143],[K19]={[1]={f=K3,[K2]=2539,[K1]=K5,[K5]="A1",x=30,y=329,},[2]={f=K3,[K2]=2540,[K1]=K5,[K5]="A2",x=34,y=329,},},x=29,xend=36,y=329,yend=329,},},[K2]=1833,[K1]=K4,x=38,y=329,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2541,[K1]=K5,[K5]="A1",x=40,y=329,},[2]={f=K3,[K2]=2542,[K1]=K5,[K5]="A2",x=44,y=329,},},[K2]=1837,[K1]=K4,x=38,y=329,},[K2]=1832,[K1]=K9,x=12,y=329,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1830,[K1]=K11,x=21,y=329,},[2]={f=K3,[K11]="A2",[K2]=1831,[K1]=K11,x=25,y=329,},},[K2]=1840,[K1]=K21,x=4,y=330,},[3]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1847,[K1]=K[143],[K19]={[1]={f=K3,[K2]=2557,[K1]=K5,[K5]="A1",x=34,y=330,},[2]={f=K3,[K2]=2558,[K1]=K5,[K5]="A2",x=38,y=330,},[3]={f=K3,[K2]=2559,[K1]=K5,[K5]="A3",x=42,y=330,},},x=33,xend=44,y=330,yend=330,},},[K2]=1846,[K1]=K4,x=46,y=330,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2560,[K1]=K5,[K5]="A1",x=48,y=330,},[2]={f=K3,[K2]=2561,[K1]=K5,[K5]="A2",x=52,y=330,},[3]={f=K3,[K2]=2562,[K1]=K5,[K5]="A3",x=56,y=330,},},[K2]=1851,[K1]=K4,x=46,y=330,},[K2]=1845,[K1]=K9,x=12,y=330,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1842,[K1]=K11,x=21,y=330,},[2]={f=K3,[K11]="A2",[K2]=1843,[K1]=K11,x=25,y=330,},[3]={f=K3,[K11]="A3",[K2]=1844,[K1]=K11,x=29,y=330,},},[K2]=1855,[K1]=K21,x=4,y=331,},[4]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1862,[K1]=K[143],[K19]={[1]={f=K3,[K2]=2581,[K1]=K5,[K5]="A1",x=38,y=331,},[2]={f=K3,[K2]=2582,[K1]=K5,[K5]="A2",x=42,y=331,},[3]={f=K3,[K2]=2583,[K1]=K5,[K5]="A3",x=46,y=331,},[4]={f=K3,[K2]=2584,[K1]=K5,[K5]="A4",x=50,y=331,},},x=37,xend=52,y=331,yend=331,},},[K2]=1861,[K1]=K4,x=54,y=331,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2585,[K1]=K5,[K5]="A1",x=56,y=331,},[2]={f=K3,[K2]=2586,[K1]=K5,[K5]="A2",x=60,y=331,},[3]={f=K3,[K2]=2587,[K1]=K5,[K5]="A3",x=64,y=331,},[4]={f=K3,[K2]=2588,[K1]=K5,[K5]="A4",x=68,y=331,},},[K2]=1867,[K1]=K4,x=54,y=331,},[K2]=1860,[K1]=K9,x=12,y=331,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1856,[K1]=K11,x=21,y=331,},[2]={f=K3,[K11]="A2",[K2]=1857,[K1]=K11,x=25,y=331,},[3]={f=K3,[K11]="A3",[K2]=1858,[K1]=K11,x=29,y=331,},[4]={f=K3,[K11]="A4",[K2]=1859,[K1]=K11,x=33,y=331,},},[K2]=1872,[K1]=K21,x=4,y=332,},[5]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1880,[K1]=K[143],[K19]={[1]={f=K3,[K2]=2611,[K1]=K5,[K5]="A1",x=42,y=332,},[2]={f=K3,[K2]=2612,[K1]=K5,[K5]="A2",x=46,y=332,},[3]={f=K3,[K2]=2613,[K1]=K5,[K5]="A3",x=50,y=332,},[4]={f=K3,[K2]=2614,[K1]=K5,[K5]="A4",x=54,y=332,},[5]={f=K3,[K2]=2615,[K1]=K5,[K5]="A5",x=58,y=332,},},x=41,xend=60,y=332,yend=332,},},[K2]=1879,[K1]=K4,x=62,y=332,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2616,[K1]=K5,[K5]="A1",x=64,y=332,},[2]={f=K3,[K2]=2617,[K1]=K5,[K5]="A2",x=68,y=332,},[3]={f=K3,[K2]=2618,[K1]=K5,[K5]="A3",x=72,y=332,},[4]={f=K3,[K2]=2619,[K1]=K5,[K5]="A4",x=76,y=332,},[5]={f=K3,[K2]=2620,[K1]=K5,[K5]="A5",x=80,y=332,},},[K2]=1886,[K1]=K4,x=62,y=332,},[K2]=1878,[K1]=K9,x=12,y=332,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1873,[K1]=K11,x=21,y=332,},[2]={f=K3,[K11]="A2",[K2]=1874,[K1]=K11,x=25,y=332,},[3]={f=K3,[K11]="A3",[K2]=1875,[K1]=K11,x=29,y=332,},[4]={f=K3,[K11]="A4",[K2]=1876,[K1]=K11,x=33,y=332,},[5]={f=K3,[K11]="A5",[K2]=1877,[K1]=K11,x=37,y=332,},},[K2]=1892,[K1]=K21,x=1,y=333,},},x=4,y=329,},},[K36]={},[K2]=1723,[K1]=K44,x=1,y=306,},f=K3,[K2]=1893,[K1]=K27,x=1,y=306,},},[K40]={[K26]={f=K6,kind=K24,tk=K40,x=18,xend=23,y=11,yend=11,},[K25]=true,t={[K42]=true,def={[K31]=K40,f=K6,[K39]={},[K38]={},[K37]={},[K[10]]={},[K[1]]=true,[K36]={},[K2]=11,[K1]=K[22],x=1,y=11,},f=K6,[K2]=12,[K1]=K27,x=1,y=11,},},["tonumber"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="tonumber",x=8,xend=15,y=446,yend=446,},[K25]=true,t={f=K3,[K2]=2294,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2285,[K1]="any",x=23,y=416,},},[K2]=2284,[K1]=K4,x=27,y=416,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2287,[K1]=K14,x=29,y=416,},},[K2]=2286,[K1]=K4,x=27,y=416,},[K2]=2283,[K1]=K9,x=14,y=416,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2290,[K1]="any",x=23,y=417,},[2]={f=K3,[K2]=2291,[K1]=K13,x=28,y=417,},},[K2]=2289,[K1]=K4,x=36,y=417,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2293,[K1]=K13,x=38,y=417,},},[K2]=2292,[K1]=K4,x=36,y=417,},[K2]=2288,[K1]=K9,x=14,y=417,},},x=4,y=417,},},["tostring"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="tostring",x=8,xend=15,y=445,yend=445,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2297,[K1]="any",x=23,y=419,},},[K2]=2296,[K1]=K4,x=27,y=419,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2299,[K1]=K12,x=29,y=419,},},[K2]=2298,[K1]=K4,x=27,y=419,},[K2]=2295,[K1]=K9,x=14,y=419,},},type={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="type",x=8,xend=11,y=448,yend=448,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2302,[K1]="any",x=19,y=420,},},[K2]=2301,[K1]=K4,x=23,y=420,},f=K3,[K8]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2304,[K1]=K12,x=25,y=420,},},[K2]=2303,[K1]=K4,x=23,y=420,},[K2]=2300,[K1]=K9,x=10,y=420,},},[K[88]]={[K26]={f=K6,kind=K24,tk=K[88],x=18,xend=25,y=14,yend=14,},[K25]=true,t=T19,[K[21]]=true,},utf8={[K26]={f=K3,kind=K24,tk="utf8",x=15,xend=18,y=335,yend=335,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="utf8",f=K3,[K39]={char={},[K[144]]={},[K[145]]={},[K[146]]={},len={},[K[147]]={},},[K45]={char={f=K3,x=4,y=336,},[K[144]]={f=K3,x=4,y=337,},[K[145]]={f=K3,x=4,y=338,},[K[146]]={f=K3,x=4,y=339,},len={f=K3,x=4,y=340,},[K[147]]={f=K3,x=4,y=341,},},[K38]={[1]="char",[2]=K[144],[3]=K[145],[4]=K[146],[5]="len",[6]=K[147],},[K37]={char={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1899,[K1]=K14,x=19,y=336,},},[K2]=1898,[K1]=K4,x=29,y=336,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1901,[K1]=K12,x=31,y=336,},},[K2]=1900,[K1]=K4,x=29,y=336,},[K2]=1897,[K1]=K9,x=10,y=336,},[K[144]]={f=K3,[K2]=1902,[K1]=K12,x=17,y=337,},[K[145]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1905,[K1]=K12,x=24,y=338,},[2]={f=K3,[K2]=1906,[K1]=K14,x=34,y=338,},[3]={f=K3,[K2]=1907,[K1]=K14,x=44,y=338,},[4]={f=K3,[K2]=1908,[K1]=K30,x=54,y=338,},},[K2]=1904,[K1]=K4,x=62,y=338,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1910,[K1]=K13,x=64,y=338,},},[K2]=1909,[K1]=K4,x=62,y=338,},[K2]=1903,[K1]=K9,x=15,y=338,},[K[146]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1913,[K1]=K12,x=20,y=339,},[2]={f=K3,[K2]=1914,[K1]=K30,x=30,y=339,},},[K2]=1912,[K1]=K4,x=38,y=339,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1918,[K1]=K12,x=50,y=339,},[2]={f=K3,[K2]=1919,[K1]=K13,x=60,y=339,},},[K2]=1917,[K1]=K4,x=68,y=339,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1921,[K1]=K13,x=71,y=339,},[2]={f=K3,[K2]=1922,[K1]=K13,x=80,y=339,},},[K2]=1920,[K1]=K4,x=68,y=339,},[K2]=1916,[K1]=K9,x=41,y=339,},[2]={f=K3,[K2]=1923,[K1]=K12,x=90,y=339,},[3]={f=K3,[K2]=1924,[K1]=K13,x=98,y=339,},},[K2]=1915,[K1]=K4,x=38,y=339,},[K2]=1911,[K1]=K9,x=11,y=339,},len={args={f=K3,[K4]={[1]={f=K3,[K2]=1927,[K1]=K12,x=18,y=340,},[2]={f=K3,[K2]=1928,[K1]=K14,x=28,y=340,},[3]={f=K3,[K2]=1929,[K1]=K14,x=38,y=340,},[4]={f=K3,[K2]=1930,[K1]=K30,x=48,y=340,},},[K2]=1926,[K1]=K4,x=56,y=340,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1932,[K1]=K13,x=58,y=340,},[2]={f=K3,[K2]=1933,[K1]=K13,x=67,y=340,},},[K2]=1931,[K1]=K4,x=56,y=340,},[K2]=1925,[K1]=K9,x=9,y=340,},[K[147]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1936,[K1]=K12,x=21,y=341,},[2]={f=K3,[K2]=1937,[K1]=K14,x=29,y=341,},[3]={f=K3,[K2]=1938,[K1]=K14,x=39,y=341,},},[K2]=1935,[K1]=K4,x=46,y=341,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1940,[K1]=K13,x=48,y=341,},},[K2]=1939,[K1]=K4,x=46,y=341,},[K2]=1934,[K1]=K9,x=12,y=341,},},[K36]={},[K2]=1896,[K1]=K44,x=1,y=335,},f=K3,[K2]=1941,[K1]=K27,x=1,y=335,},},[K[148]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[148],x=8,xend=13,y=449,yend=449,},[K25]=true,[K32]=true,t={args={f=K3,[K15]=true,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2314,[K1]="any",x=30,y=422,},},[K2]=2313,[K1]=K4,x=37,y=422,},f=K3,[K8]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2316,[K1]="any",x=39,y=422,},},[K2]=2315,[K1]=K4,x=37,y=422,},[K2]=2312,[K1]=K9,x=21,y=422,},[2]={f=K3,[K18]={def={args={f=K3,[K4]={[1]={f=K3,[K2]=1972,[K1]="any",x=39,y=368,},},[K2]=1971,[K1]=K4,x=43,y=368,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1974,[K1]="any",x=45,y=368,},},[K2]=1973,[K1]=K4,x=43,y=368,},[K2]=1970,[K1]=K9,x=30,y=368,},f=K3,[K2]=1975,[K1]=K27,x=30,y=368,},[K17]={[1]="XpcallMsghFunction",},[K2]=2317,[K1]=K16,x=48,y=422,},[3]={f=K3,[K2]=2318,[K1]="any",x=68,y=422,},},[K2]=2311,[K1]=K4,x=75,y=422,},f=K3,[K8]=false,[K7]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2320,[K1]=K30,x=77,y=422,},[2]={f=K3,[K2]=2321,[K1]="any",x=86,y=422,},},[K2]=2319,[K1]=K4,x=75,y=422,},[K41]=K[148],[K2]=2310,[K1]=K9,x=12,y=422,},},}
+local T0 = {["..."]={t={[K15]=true,[K4]={[1]={[K2]=2921,[K1]=K12,x=1,y=1,},},[K2]=2922,[K1]=K4,x=1,y=1,},},["@is_va"]={t={[K2]=2923,[K1]="any",x=1,y=1,},},FILE={[K26]={f=K3,kind=K24,tk="FILE",x=15,xend=18,y=142,yend=142,},[K25]=true,t=T1,[K[22]]=true,},["_VERSION"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="_VERSION",x=8,xend=15,y=450,yend=450,},[K25]=true,t={f=K3,[K2]=2320,[K1]=K12,x=14,y=423,},},any={[K26]={f=K9,kind=K24,tk="any",x=18,xend=20,y=8,yend=8,},[K25]=true,t={[K42]=true,def={[K31]="any",f=K9,[K39]={},[K38]={},[K37]={},[K[11]]={},[K[1]]=true,[K36]={},[K2]=7,[K1]=K[23],x=1,y=8,},f=K9,[K2]=8,[K1]=K27,x=1,y=8,},},arg={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="arg",x=8,xend=10,y=426,yend=426,},[K25]=true,t={[K34]={f=K3,[K2]=1977,[K1]=K12,x=10,y=370,},f=K3,[K2]=1976,[K1]=K35,x=9,xend=16,y=370,yend=370,},},[K[24]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[24],x=8,xend=13,y=427,yend=427,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2648,[K1]=K5,[K5]="A@43",x=27,y=371,},[2]={f=K3,[K2]=2649,[K1]=K5,[K5]="B@43",x=32,y=371,},[3]={f=K3,[K2]=1984,[K1]="any",x=40,y=371,},},[K2]=2650,[K1]=K4,x=44,y=371,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2651,[K1]=K5,[K5]="A@43",x=46,y=371,},},[K2]=2652,[K1]=K4,x=44,y=371,},[K41]=K[24],[K2]=2653,[K1]=K8,x=12,y=371,},[K20]={[1]={f=K3,[K11]="A@43",[K2]=2646,[K1]=K11,x=21,y=371,},[2]={f=K3,[K11]="B@43",[K2]=2647,[K1]=K11,x=24,y=371,},},[K2]=2654,[K1]=K21,x=4,y=373,},},["collectgarbage"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="collectgarbage",x=8,xend=21,y=428,yend=428,},[K25]=true,t={f=K3,[K2]=1999,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageCommand",[K45]={["collect"]=true,["count"]=true,["restart"]=true,stop=true,},f=K3,[K2]=1947,[K1]="enum",[K43]={},x=4,y=345,},f=K3,[K2]=1948,[K1]=K27,x=4,y=345,},[K17]={[1]="CollectGarbageCommand",},[K2]=1990,[K1]=K16,x=31,y=373,},},[K2]=1989,[K1]=K4,x=53,y=373,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1992,[K1]=K14,x=55,y=373,},},[K2]=1991,[K1]=K4,x=53,y=373,},[K2]=1988,[K1]=K8,x=20,y=373,},[2]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageSetValue",[K45]={["setpause"]=true,["setstepmul"]=true,step=true,},f=K3,[K2]=1951,[K1]="enum",[K43]={},x=4,y=352,},f=K3,[K2]=1952,[K1]=K27,x=4,y=352,},[K17]={[1]="CollectGarbageSetValue",},[K2]=1995,[K1]=K16,x=29,y=374,},[2]={f=K3,[K2]=1996,[K1]=K13,x=53,y=374,},},[K2]=1994,[K1]=K4,x=61,y=374,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1998,[K1]=K14,x=63,y=374,},},[K2]=1997,[K1]=K4,x=61,y=374,},[K2]=1993,[K1]=K8,x=20,y=374,},[3]={args={f=K3,[K4]={[1]={f=K3,[K18]={def={[K31]="CollectGarbageIsRunning",[K45]={["isrunning"]=true,},f=K3,[K2]=1955,[K1]="enum",[K43]={},x=4,y=358,},f=K3,[K2]=1956,[K1]=K27,x=4,y=358,},[K17]={[1]="CollectGarbageIsRunning",},[K2]=2002,[K1]=K16,x=29,y=375,},},[K2]=2001,[K1]=K4,x=53,y=375,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2004,[K1]=K30,x=55,y=375,},},[K2]=2003,[K1]=K4,x=53,y=375,},[K2]=2000,[K1]=K8,x=20,y=375,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=2007,[K1]=K12,x=29,y=376,},[2]={f=K3,[K2]=2008,[K1]=K14,x=39,y=376,},},[K2]=2006,[K1]=K4,x=46,y=376,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2010,[K1]=K28,[K19]={[1]={f=K3,[K2]=2011,[K1]=K30,x=49,y=376,},[2]={f=K3,[K2]=2012,[K1]=K14,x=59,y=376,},},x=49,y=376,},},[K2]=2009,[K1]=K4,x=46,y=376,},[K2]=2005,[K1]=K8,x=20,y=376,},},x=4,y=375,},},[K[25]]={[K26]={f=K3,kind=K24,tk=K[25],x=15,xend=23,y=26,yend=26,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[25],f=K3,[K39]={[K[26]]={},[K48]={},[K[27]]={},[K[28]]={},[K[29]]={},[K[30]]={},[K[31]]={},wrap={},[K[32]]={},},[K38]={[1]=K[26],[2]=K48,[3]=K[27],[4]=K[28],[5]=K[29],[6]=K[30],[7]=K[31],[8]="wrap",[9]=K[32],},[K37]={[K[26]]=T12,[K48]={args={f=K3,[K4]={[1]={f=K3,[K2]=587,[K1]=K40,x=20,y=29,},},[K2]=586,[K1]=K4,x=27,y=29,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=589,[K1]=K30,x=29,y=29,},[2]={f=K3,[K2]=590,[K1]=K12,x=38,y=29,},},[K2]=588,[K1]=K4,x=27,y=29,},[K2]=585,[K1]=K8,x=11,y=29,},[K[27]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T12,[K17]={[1]=K[26],},[K2]=593,[K1]=K16,x=21,y=30,},},[K2]=592,[K1]=K4,x=30,y=30,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=595,[K1]=K40,x=32,y=30,},},[K2]=594,[K1]=K4,x=30,y=30,},[K2]=591,[K1]=K8,x=12,y=30,},[K[28]]={args={f=K3,[K4]={},[K2]=597,[K1]=K4,x=27,y=31,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=599,[K1]=K30,x=29,y=31,},},[K2]=598,[K1]=K4,x=27,y=31,},[K2]=596,[K1]=K8,x=17,y=31,},[K[29]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=602,[K1]=K40,x=21,y=32,},[2]={f=K3,[K2]=603,[K1]="any",x=29,y=32,},},[K2]=601,[K1]=K4,x=36,y=32,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=605,[K1]=K30,x=38,y=32,},[2]={f=K3,[K2]=606,[K1]="any",x=47,y=32,},},[K2]=604,[K1]=K4,x=36,y=32,},[K2]=600,[K1]=K8,x=12,y=32,},[K[30]]={args={f=K3,[K4]={},[K2]=608,[K1]=K4,x=23,y=33,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=610,[K1]=K40,x=25,y=33,},[2]={f=K3,[K2]=611,[K1]=K30,x=33,y=33,},},[K2]=609,[K1]=K4,x=23,y=33,},[K2]=607,[K1]=K8,x=13,y=33,},[K[31]]={args={f=K3,[K4]={[1]={f=K3,[K2]=614,[K1]=K40,x=21,y=34,},},[K2]=613,[K1]=K4,x=28,y=34,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=616,[K1]=K12,x=30,y=34,},},[K2]=615,[K1]=K4,x=28,y=34,},[K2]=612,[K1]=K8,x=12,y=34,},wrap={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2352,[K1]=K5,[K5]="F@23",x=22,y=35,},},[K2]=2353,[K1]=K4,x=24,y=35,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2354,[K1]=K5,[K5]="F@23",x=26,y=35,},},[K2]=2355,[K1]=K4,x=24,y=35,},[K2]=2356,[K1]=K8,x=10,y=35,},[K20]={[1]={f=K3,[K11]="F@23",[K2]=2351,[K1]=K11,x=19,y=35,},},[K2]=2357,[K1]=K21,x=4,y=36,},[K[32]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=626,[K1]="any",x=20,y=36,},},[K2]=625,[K1]=K4,x=27,y=36,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=628,[K1]="any",x=29,y=36,},},[K2]=627,[K1]=K4,x=27,y=36,},[K2]=624,[K1]=K8,x=11,y=36,},},[K36]={},[K2]=576,[K1]=K44,x=1,y=26,},f=K3,[K2]=629,[K1]=K27,x=1,y=26,},},[K[33]]={[K26]={f=K3,kind=K24,tk=K[33],x=15,xend=19,y=39,yend=39,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[33],f=K3,[K39]={[K47]={},[K[34]]={},[K[35]]={},[K[36]]={},[K[33]]={},[K[37]]={},[K[38]]={[1]={},},[K[39]]={[1]={},[2]={},[3]={},},[K[40]]={},[K[41]]={},[K[42]]={},[K[43]]={},[K[44]]={[1]={},},[K[45]]={[1]={},},[K[46]]={},[K[47]]={},[K[48]]={},[K[49]]={[1]={},[2]={},},[K[50]]={},[K[51]]={},},[K38]={[1]=K[34],[2]=K[35],[3]=K[36],[4]=K47,[5]=K[33],[6]=K[37],[7]=K[38],[8]=K[39],[9]=K[40],[10]=K[41],[11]=K[42],[12]=K[43],[13]=K[44],[14]=K[45],[15]=K[46],[16]=K[47],[17]=K[48],[18]=K[49],[19]=K[50],[20]=K[51],},[K37]={[K47]=T13,[K[34]]=T14,[K[35]]=T15,[K[36]]=T16,[K[33]]={args={f=K3,[K4]={},[K2]=676,[K1]=K4,x=4,y=68,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=677,[K1]=K4,x=20,y=67,},[K2]=675,[K1]=K8,x=11,y=67,},[K[37]]={args={f=K3,[K4]={[1]={f=K3,[K2]=680,[K1]=K40,x=24,y=68,},},[K2]=679,[K1]=K4,x=31,y=68,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T16,[K17]={[1]=K[36],},[K2]=682,[K1]=K16,x=33,y=68,},[2]={f=K3,[K2]=683,[K1]=K13,x=47,y=68,},},[K2]=681,[K1]=K4,x=31,y=68,},[K2]=678,[K1]=K8,x=13,y=68,},[K[38]]={f=K3,[K2]=701,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=686,[K1]=K40,x=22,y=70,},[2]={f=K3,[K2]=687,[K1]=K28,[K19]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=688,[K1]=K16,x=30,y=70,},[2]={f=K3,[K2]=689,[K1]=K13,x=44,y=70,},},x=30,y=70,},[3]={f=K3,[K2]=690,[K1]=K12,x=55,y=70,},},[K2]=685,[K1]=K4,x=62,y=70,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K18]=T14,[K17]={[1]=K[34],},[K2]=692,[K1]=K16,x=64,y=70,},},[K2]=691,[K1]=K4,x=62,y=70,},[K2]=684,[K1]=K8,x=13,y=70,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=695,[K1]=K28,[K19]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=696,[K1]=K16,x=30,y=71,},[2]={f=K3,[K2]=697,[K1]=K13,x=44,y=71,},},x=30,y=71,},[2]={f=K3,[K2]=698,[K1]=K12,x=55,y=71,},},[K2]=694,[K1]=K4,x=62,y=71,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T14,[K17]={[1]=K[34],},[K2]=700,[K1]=K16,x=64,y=71,},},[K2]=699,[K1]=K4,x=62,y=71,},[K2]=693,[K1]=K8,x=13,y=71,},},x=4,y=73,},[K[39]]={f=K3,[K2]=717,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=704,[K1]=K40,x=23,y=73,},[2]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=705,[K1]=K16,x=31,y=73,},[3]={f=K3,[K2]=706,[K1]=K13,x=44,y=73,},},[K2]=703,[K1]=K4,x=52,y=73,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=708,[K1]=K12,x=54,y=73,},},[K2]=707,[K1]=K4,x=52,y=73,},[K2]=702,[K1]=K8,x=14,y=73,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=711,[K1]=K40,x=23,y=74,},[2]={f=K3,[K2]=712,[K1]=K13,x=31,y=74,},[3]={f=K3,[K2]=713,[K1]=K13,x=40,y=74,},},[K2]=710,[K1]=K4,x=48,y=74,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=715,[K1]=K12,x=50,y=74,},[2]={f=K3,[K2]=716,[K1]="any",x=58,y=74,},},[K2]=714,[K1]=K4,x=48,y=74,},[K2]=709,[K1]=K8,x=14,y=74,},[3]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=720,[K1]=K16,x=23,y=75,},[2]={f=K3,[K2]=721,[K1]=K13,x=36,y=75,},},[K2]=719,[K1]=K4,x=44,y=75,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=723,[K1]=K12,x=46,y=75,},},[K2]=722,[K1]=K4,x=44,y=75,},[K2]=718,[K1]=K8,x=14,y=75,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=726,[K1]=K13,x=23,y=76,},[2]={f=K3,[K2]=727,[K1]=K13,x=32,y=76,},},[K2]=725,[K1]=K4,x=40,y=76,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=729,[K1]=K12,x=42,y=76,},[2]={f=K3,[K2]=730,[K1]="any",x=50,y=76,},},[K2]=728,[K1]=K4,x=40,y=76,},[K2]=724,[K1]=K8,x=14,y=76,},},x=4,y=75,},[K[40]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2364,[K1]=K5,[K5]="T@24",x=30,y=78,},},[K2]=2365,[K1]=K4,x=32,y=78,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T17,[K17]={[1]=K[64],},[K2]=2367,[K1]=K16,[K50]={[1]={f=K3,[K2]=2366,[K1]=K5,[K5]="T@24",x=44,y=78,},},x=34,y=78,},},[K2]=2368,[K1]=K4,x=32,y=78,},[K2]=2369,[K1]=K8,x=18,y=78,},[K20]={[1]={f=K3,[K11]="T@24",[K2]=2363,[K1]=K11,x=27,y=78,},},[K2]=2370,[K1]=K21,x=4,y=79,},[K[41]]={args={f=K3,[K4]={},[K2]=740,[K1]=K4,x=27,y=79,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=743,[K1]="any",x=30,y=79,},[K2]=742,[K1]="map",[K33]={f=K3,[K2]=744,[K1]="any",x=34,y=79,},x=29,xend=37,y=79,yend=79,},},[K2]=741,[K1]=K4,x=27,y=79,},[K2]=739,[K1]=K8,x=17,y=79,},[K[42]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=747,[K1]=K16,x=25,y=80,},[2]={f=K3,[K2]=748,[K1]=K13,x=38,y=80,},},[K2]=746,[K1]=K4,x=46,y=80,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=750,[K1]=K12,x=48,y=80,},[2]={f=K3,[K2]=751,[K1]="any",x=56,y=80,},},[K2]=749,[K1]=K4,x=46,y=80,},[K2]=745,[K1]=K8,x=16,y=80,},[K[43]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T19,[K17]={[1]=K[88],},[K2]=754,[K1]=K16,x=27,y=81,},[2]={f=K3,[K2]=755,[K1]=K13,x=39,y=81,},},[K2]=753,[K1]=K4,x=47,y=81,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=757,[K1]="any",x=49,y=81,},[2]={f=K3,[K2]=758,[K1]=K30,x=54,y=81,},},[K2]=756,[K1]=K4,x=47,y=81,},[K2]=752,[K1]=K8,x=18,y=81,},[K[44]]={f=K3,[K2]=772,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=761,[K1]=K40,x=22,y=83,},[2]={f=K3,[K18]=T16,[K17]={[1]=K[36],},[K2]=762,[K1]=K16,x=30,y=83,},[3]={f=K3,[K2]=763,[K1]=K12,x=44,y=83,},[4]={f=K3,[K2]=764,[K1]=K13,x=54,y=83,},},[K2]=760,[K1]=K4,x=4,y=84,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={},[K2]=765,[K1]=K4,x=61,y=83,},[K2]=759,[K1]=K8,x=13,y=83,},[2]={args={f=K3,[K4]={[1]={f=K3,[K18]=T16,[K17]={[1]=K[36],},[K2]=768,[K1]=K16,x=22,y=84,},[2]={f=K3,[K2]=769,[K1]=K12,x=36,y=84,},[3]={f=K3,[K2]=770,[K1]=K13,x=46,y=84,},},[K2]=767,[K1]=K4,x=4,y=86,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={},[K2]=771,[K1]=K4,x=53,y=84,},[K2]=766,[K1]=K8,x=13,y=84,},},x=4,y=86,},[K[45]]={f=K3,[K2]=788,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=775,[K1]=K40,x=23,y=86,},[2]={f=K3,[K2]=776,[K1]=K13,x=31,y=86,},[3]={f=K3,[K2]=777,[K1]=K13,x=40,y=86,},[4]={f=K3,[K2]=778,[K1]="any",x=49,y=86,},},[K2]=774,[K1]=K4,x=53,y=86,},f=K3,[K7]=false,[K10]=false,[K6]=4,rets={f=K3,[K4]={[1]={f=K3,[K2]=780,[K1]=K12,x=55,y=86,},},[K2]=779,[K1]=K4,x=53,y=86,},[K2]=773,[K1]=K8,x=14,y=86,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=783,[K1]=K13,x=23,y=87,},[2]={f=K3,[K2]=784,[K1]=K13,x=32,y=87,},[3]={f=K3,[K2]=785,[K1]="any",x=41,y=87,},},[K2]=782,[K1]=K4,x=45,y=87,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=787,[K1]=K12,x=47,y=87,},},[K2]=786,[K1]=K4,x=45,y=87,},[K2]=781,[K1]=K8,x=14,y=87,},},x=4,y=89,},[K[46]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2376,[K1]=K5,[K5]="T@25",x=30,y=89,},[2]={f=K3,[K18]=T17,[K17]={[1]=K[64],},[K2]=2378,[K1]=K16,[K50]={[1]={f=K3,[K2]=2377,[K1]=K5,[K5]="T@25",x=43,y=89,},},x=33,y=89,},},[K2]=2379,[K1]=K4,x=46,y=89,},f=K3,[K7]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2380,[K1]=K5,[K5]="T@25",x=48,y=89,},},[K2]=2381,[K1]=K4,x=46,y=89,},[K2]=2382,[K1]=K8,x=18,y=89,},[K20]={[1]={f=K3,[K11]="T@25",[K2]=2375,[K1]=K11,x=27,y=89,},},[K2]=2383,[K1]=K21,x=4,y=90,},[K[47]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=800,[K1]=K16,x=25,y=90,},[2]={f=K3,[K2]=801,[K1]=K13,x=38,y=90,},[3]={f=K3,[K2]=802,[K1]="any",x=47,y=90,},},[K2]=799,[K1]=K4,x=51,y=90,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=804,[K1]=K12,x=53,y=90,},},[K2]=803,[K1]=K4,x=51,y=90,},[K2]=798,[K1]=K8,x=16,y=90,},[K[48]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2388,[K1]=K5,[K5]="U@26",x=30,y=91,},[2]={f=K3,[K2]=809,[K1]="any",x=33,y=91,},[3]={f=K3,[K2]=810,[K1]=K13,x=38,y=91,},},[K2]=2389,[K1]=K4,x=46,y=91,},f=K3,[K7]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=2390,[K1]=K5,[K5]="U@26",x=48,y=91,},},[K2]=2391,[K1]=K4,x=46,y=91,},[K2]=2392,[K1]=K8,x=18,y=91,},[K20]={[1]={f=K3,[K11]="U@26",[K2]=2387,[K1]=K11,x=27,y=91,},},[K2]=2393,[K1]=K21,x=4,y=93,},[K[49]]={f=K3,[K2]=827,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=816,[K1]=K40,x=24,y=93,},[2]={f=K3,[K2]=817,[K1]=K12,x=34,y=93,},[3]={f=K3,[K2]=818,[K1]=K13,x=44,y=93,},},[K2]=815,[K1]=K4,x=52,y=93,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=820,[K1]=K12,x=54,y=93,},},[K2]=819,[K1]=K4,x=52,y=93,},[K2]=814,[K1]=K8,x=15,y=93,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=823,[K1]=K12,x=26,y=94,},[2]={f=K3,[K2]=824,[K1]=K13,x=36,y=94,},},[K2]=822,[K1]=K4,x=44,y=94,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=826,[K1]=K12,x=46,y=94,},},[K2]=825,[K1]=K4,x=44,y=94,},[K2]=821,[K1]=K8,x=15,y=94,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=830,[K1]="any",x=24,y=95,},},[K2]=829,[K1]=K4,x=28,y=95,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=832,[K1]="any",x=30,y=95,},},[K2]=831,[K1]=K4,x=28,y=95,},[K2]=828,[K1]=K8,x=15,y=95,},},x=4,y=95,},[K[50]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=835,[K1]=K16,x=24,y=97,},[2]={f=K3,[K2]=836,[K1]=K13,x=37,y=97,},},[K2]=834,[K1]=K4,x=45,y=97,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K18]=T19,[K17]={[1]=K[88],},[K2]=838,[K1]=K16,x=47,y=97,},},[K2]=837,[K1]=K4,x=45,y=97,},[K2]=833,[K1]=K8,x=15,y=97,},[K[51]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=841,[K1]=K16,x=26,y=98,},[2]={f=K3,[K2]=842,[K1]=K13,x=39,y=98,},[3]={f=K3,[K18]=T13,[K17]={[1]=K47,},[K2]=843,[K1]=K16,x=48,y=98,},[4]={f=K3,[K2]=844,[K1]=K13,x=61,y=98,},},[K2]=840,[K1]=K4,x=1,y=99,},f=K3,[K7]=false,[K10]=false,[K6]=4,rets={f=K3,[K4]={},[K2]=845,[K1]=K4,x=68,y=98,},[K2]=839,[K1]=K8,x=17,y=98,},},[K36]={},[K2]=632,[K1]=K44,x=1,y=39,},f=K3,[K2]=846,[K1]=K27,x=1,y=39,},},["dofile"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="dofile",x=8,xend=13,y=429,yend=429,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2015,[K1]=K12,x=23,y=378,},},[K2]=2014,[K1]=K4,x=30,y=378,},f=K3,[K7]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2017,[K1]="any",x=32,y=378,},},[K2]=2016,[K1]=K4,x=30,y=378,},[K2]=2013,[K1]=K8,x=12,y=378,},},["error"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="error",x=8,xend=12,y=430,yend=430,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2020,[K1]="any",x=22,y=380,},[2]={f=K3,[K2]=2021,[K1]=K13,x=29,y=380,},},[K2]=2019,[K1]=K4,x=4,y=381,},f=K3,[K7]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=2022,[K1]=K4,x=36,y=380,},[K2]=2018,[K1]=K8,x=11,y=380,},},[K[40]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[40],x=8,xend=19,y=431,yend=431,},[K25]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2659,[K1]=K5,[K5]="T@44",x=30,y=381,},},[K2]=2660,[K1]=K4,x=32,y=381,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T17,[K17]={[1]=K[64],},[K2]=2662,[K1]=K16,[K50]={[1]={f=K3,[K2]=2661,[K1]=K5,[K5]="T@44",x=44,y=381,},},x=34,y=381,},},[K2]=2663,[K1]=K4,x=32,y=381,},[K2]=2664,[K1]=K8,x=18,y=381,},[K20]={[1]={f=K3,[K11]="T@44",[K2]=2658,[K1]=K11,x=27,y=381,},},[K2]=2665,[K1]=K21,x=4,y=382,},},io={[K26]={f=K3,kind=K24,tk="io",x=15,xend=16,y=101,yend=101,},["has_been_read_from"]=true,[K25]=true,[K32]=true,t=T8,},[K[89]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[89],x=8,xend=13,y=447,yend=447,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2672,[K1]=K5,[K5]="A@45",x=25,y=382,},f=K3,[K2]=2673,[K1]=K35,x=24,y=382,},},[K2]=2674,[K1]=K4,x=28,y=382,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2675,[K1]=K5,[K5]="A@45",x=41,y=382,},f=K3,[K2]=2676,[K1]=K35,x=40,y=382,},[2]={f=K3,[K2]=2041,[K1]=K13,x=45,y=382,},},[K2]=2677,[K1]=K4,x=53,y=382,},f=K3,[K7]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2043,[K1]=K13,x=56,y=382,},[2]={f=K3,[K2]=2678,[K1]=K5,[K5]="A@45",x=65,y=382,},},[K2]=2679,[K1]=K4,x=53,y=382,},[K2]=2680,[K1]=K8,x=31,y=382,},[2]={[K34]={f=K3,[K2]=2681,[K1]=K5,[K5]="A@45",x=70,y=382,},f=K3,[K2]=2682,[K1]=K35,x=69,y=382,},[3]={f=K3,[K2]=2047,[K1]=K13,x=74,y=382,},},[K2]=2683,[K1]=K4,x=28,y=382,},[K41]=K[89],[K2]=2684,[K1]=K8,x=12,y=382,},[K20]={[1]={f=K3,[K11]="A@45",[K2]=2671,[K1]=K11,x=21,y=382,},},[K2]=2685,[K1]=K21,x=4,y=384,},},load={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="load",x=8,xend=11,y=432,yend=432,},[K25]=true,[K32]=true,t={f=K3,[K2]=2083,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2051,[K1]=K28,[K19]={[1]={f=K3,[K2]=2052,[K1]=K12,x=20,y=384,},[2]={f=K3,[K18]=T20,[K17]={[1]="LoadFunction",},[K2]=2053,[K1]=K16,x=29,y=384,},},x=20,y=384,},[2]={f=K3,[K2]=2054,[K1]=K12,x=46,y=384,},[3]={f=K3,[K18]=T21,[K17]={[1]=K[90],},[K2]=2055,[K1]=K16,x=56,y=384,},[4]={f=K3,keys={f=K3,[K2]=2057,[K1]="any",x=69,y=384,},[K2]=2056,[K1]="map",[K33]={f=K3,[K2]=2058,[K1]="any",x=73,y=384,},x=68,xend=76,y=384,yend=384,},},[K2]=2050,[K1]=K4,x=78,y=384,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2062,[K1]="any",x=89,y=384,},},[K2]=2061,[K1]=K4,x=89,y=384,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2064,[K1]="any",x=89,y=384,},},[K2]=2063,[K1]=K4,x=89,y=384,},[K2]=2060,[K1]=K8,x=81,y=384,},[2]={f=K3,[K2]=2065,[K1]=K12,x=91,y=384,},},[K2]=2059,[K1]=K4,x=78,y=384,},[K2]=2049,[K1]=K8,x=10,y=384,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2068,[K1]=K28,[K19]={[1]={f=K3,[K2]=2069,[K1]=K12,x=20,y=385,},[2]={f=K3,[K18]=T20,[K17]={[1]="LoadFunction",},[K2]=2070,[K1]=K16,x=29,y=385,},},x=20,y=385,},[2]={f=K3,[K2]=2071,[K1]=K12,x=46,y=385,},[3]={f=K3,[K2]=2072,[K1]=K12,x=56,y=385,},[4]={f=K3,keys={f=K3,[K2]=2074,[K1]="any",x=69,y=385,},[K2]=2073,[K1]="map",[K33]={f=K3,[K2]=2075,[K1]="any",x=73,y=385,},x=68,xend=76,y=385,yend=385,},},[K2]=2067,[K1]=K4,x=78,y=385,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2079,[K1]="any",x=89,y=385,},},[K2]=2078,[K1]=K4,x=89,y=385,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2081,[K1]="any",x=89,y=385,},},[K2]=2080,[K1]=K4,x=89,y=385,},[K2]=2077,[K1]=K8,x=81,y=385,},[2]={f=K3,[K2]=2082,[K1]=K12,x=91,y=385,},},[K2]=2076,[K1]=K4,x=78,y=385,},[K2]=2066,[K1]=K8,x=10,y=385,},},x=4,y=387,},},["loadfile"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="loadfile",x=8,xend=15,y=433,yend=433,},[K25]=true,[K32]=true,t={f=K3,[K2]=2112,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2086,[K1]=K12,x=25,y=387,},[2]={f=K3,[K18]=T21,[K17]={[1]=K[90],},[K2]=2087,[K1]=K16,x=35,y=387,},[3]={f=K3,keys={f=K3,[K2]=2089,[K1]="any",x=48,y=387,},[K2]=2088,[K1]="map",[K33]={f=K3,[K2]=2090,[K1]="any",x=52,y=387,},x=47,xend=55,y=387,yend=387,},},[K2]=2085,[K1]=K4,x=57,y=387,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2094,[K1]="any",x=68,y=387,},},[K2]=2093,[K1]=K4,x=68,y=387,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2096,[K1]="any",x=68,y=387,},},[K2]=2095,[K1]=K4,x=68,y=387,},[K2]=2092,[K1]=K8,x=60,y=387,},[2]={f=K3,[K2]=2097,[K1]=K12,x=70,y=387,},},[K2]=2091,[K1]=K4,x=57,y=387,},[K2]=2084,[K1]=K8,x=14,y=387,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2100,[K1]=K12,x=25,y=388,},[2]={f=K3,[K2]=2101,[K1]=K12,x=35,y=388,},[3]={f=K3,keys={f=K3,[K2]=2103,[K1]="any",x=48,y=388,},[K2]=2102,[K1]="map",[K33]={f=K3,[K2]=2104,[K1]="any",x=52,y=388,},x=47,xend=55,y=388,yend=388,},},[K2]=2099,[K1]=K4,x=57,y=388,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2108,[K1]="any",x=68,y=388,},},[K2]=2107,[K1]=K4,x=68,y=388,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2110,[K1]="any",x=68,y=388,},},[K2]=2109,[K1]=K4,x=68,y=388,},[K2]=2106,[K1]=K8,x=60,y=388,},[2]={f=K3,[K2]=2111,[K1]=K12,x=70,y=388,},},[K2]=2105,[K1]=K4,x=57,y=388,},[K2]=2098,[K1]=K8,x=14,y=388,},},x=4,y=390,},},math={[K26]={f=K3,kind=K24,tk="math",x=15,xend=18,y=177,yend=177,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="math",f=K3,[K39]={[K[91]]={},abs={},acos={},asin={},atan={},[K[92]]={},ceil={},cos={},cosh={},deg={},exp={},[K[93]]={},fmod={[1]={},},[K[94]]={},huge={},[K[95]]={},log={},[K[96]]={},max={[1]={},[2]={},[3]={},},[K[97]]={},min={[1]={},[2]={},[3]={},},[K[98]]={},modf={},pi={},pow={},rad={},[K[99]]={[1]={},},[K[100]]={},sin={},sinh={},sqrt={},tan={},tanh={},[K[101]]={},type={},ult={},},[K38]={[1]=K[91],[2]="abs",[3]="acos",[4]="asin",[5]="atan",[6]=K[92],[7]="ceil",[8]="cos",[9]="cosh",[10]="deg",[11]="exp",[12]=K[93],[13]="fmod",[14]=K[94],[15]="huge",[16]=K[95],[17]="log",[18]=K[96],[19]="max",[20]=K[97],[21]="min",[22]=K[98],[23]="modf",[24]="pi",[25]="pow",[26]="rad",[27]=K[99],[28]=K[100],[29]="sin",[30]="sinh",[31]="sqrt",[32]="tan",[33]="tanh",[34]=K[101],[35]="type",[36]="ult",},[K37]={[K[91]]=T22,abs={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K[102]]=T23,f=K3,[K2]=2409,[K1]=K5,[K5]="N@27",x=32,y=180,},},[K2]=2410,[K1]=K4,x=34,y=180,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={[K[102]]=T23,f=K3,[K2]=2411,[K1]=K5,[K5]="N@27",x=36,y=180,},},[K2]=2412,[K1]=K4,x=34,y=180,},[K2]=2413,[K1]=K8,x=9,y=180,},[K20]={[1]={[K[102]]=T23,f=K3,[K11]="N@27",[K2]=2408,[K1]=K11,x=18,y=180,},},[K2]=2414,[K1]=K21,x=4,y=181,},acos={args={f=K3,[K4]={[1]={f=K3,[K2]=1178,[K1]=K14,x=19,y=181,},},[K2]=1177,[K1]=K4,x=26,y=181,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1180,[K1]=K14,x=28,y=181,},},[K2]=1179,[K1]=K4,x=26,y=181,},[K2]=1176,[K1]=K8,x=10,y=181,},asin={args={f=K3,[K4]={[1]={f=K3,[K2]=1183,[K1]=K14,x=19,y=182,},},[K2]=1182,[K1]=K4,x=26,y=182,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1185,[K1]=K14,x=28,y=182,},},[K2]=1184,[K1]=K4,x=26,y=182,},[K2]=1181,[K1]=K8,x=10,y=182,},atan={args={f=K3,[K4]={[1]={f=K3,[K2]=1188,[K1]=K14,x=19,y=183,},[2]={f=K3,[K2]=1189,[K1]=K14,x=29,y=183,},},[K2]=1187,[K1]=K4,x=36,y=183,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1191,[K1]=K14,x=38,y=183,},},[K2]=1190,[K1]=K4,x=36,y=183,},[K2]=1186,[K1]=K8,x=10,y=183,},[K[92]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1194,[K1]=K14,x=20,y=184,},[2]={f=K3,[K2]=1195,[K1]=K14,x=28,y=184,},},[K2]=1193,[K1]=K4,x=35,y=184,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1197,[K1]=K14,x=37,y=184,},},[K2]=1196,[K1]=K4,x=35,y=184,},[K2]=1192,[K1]=K8,x=11,y=184,},ceil={args={f=K3,[K4]={[1]={f=K3,[K2]=1200,[K1]=K14,x=19,y=185,},},[K2]=1199,[K1]=K4,x=26,y=185,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1202,[K1]=K13,x=28,y=185,},},[K2]=1201,[K1]=K4,x=26,y=185,},[K2]=1198,[K1]=K8,x=10,y=185,},cos={args={f=K3,[K4]={[1]={f=K3,[K2]=1205,[K1]=K14,x=18,y=186,},},[K2]=1204,[K1]=K4,x=25,y=186,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1207,[K1]=K14,x=27,y=186,},},[K2]=1206,[K1]=K4,x=25,y=186,},[K2]=1203,[K1]=K8,x=9,y=186,},cosh={args={f=K3,[K4]={[1]={f=K3,[K2]=1210,[K1]=K14,x=19,y=187,},},[K2]=1209,[K1]=K4,x=26,y=187,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1212,[K1]=K14,x=28,y=187,},},[K2]=1211,[K1]=K4,x=26,y=187,},[K2]=1208,[K1]=K8,x=10,y=187,},deg={args={f=K3,[K4]={[1]={f=K3,[K2]=1215,[K1]=K14,x=18,y=188,},},[K2]=1214,[K1]=K4,x=25,y=188,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1217,[K1]=K14,x=27,y=188,},},[K2]=1216,[K1]=K4,x=25,y=188,},[K2]=1213,[K1]=K8,x=9,y=188,},exp={args={f=K3,[K4]={[1]={f=K3,[K2]=1220,[K1]=K14,x=18,y=189,},},[K2]=1219,[K1]=K4,x=25,y=189,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1222,[K1]=K14,x=27,y=189,},},[K2]=1221,[K1]=K4,x=25,y=189,},[K2]=1218,[K1]=K8,x=9,y=189,},[K[93]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1225,[K1]=K14,x=20,y=190,},},[K2]=1224,[K1]=K4,x=27,y=190,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1227,[K1]=K13,x=29,y=190,},},[K2]=1226,[K1]=K4,x=27,y=190,},[K2]=1223,[K1]=K8,x=11,y=190,},fmod={f=K3,[K2]=1240,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1230,[K1]=K13,x=19,y=192,},[2]={f=K3,[K2]=1231,[K1]=K13,x=28,y=192,},},[K2]=1229,[K1]=K4,x=36,y=192,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1233,[K1]=K13,x=38,y=192,},},[K2]=1232,[K1]=K4,x=36,y=192,},[K2]=1228,[K1]=K8,x=10,y=192,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1236,[K1]=K14,x=19,y=193,},[2]={f=K3,[K2]=1237,[K1]=K14,x=27,y=193,},},[K2]=1235,[K1]=K4,x=34,y=193,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1239,[K1]=K14,x=36,y=193,},},[K2]=1238,[K1]=K4,x=34,y=193,},[K2]=1234,[K1]=K8,x=10,y=193,},},x=4,y=195,},[K[94]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1243,[K1]=K14,x=20,y=195,},},[K2]=1242,[K1]=K4,x=27,y=195,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1245,[K1]=K14,x=29,y=195,},[2]={f=K3,[K2]=1246,[K1]=K13,x=37,y=195,},},[K2]=1244,[K1]=K4,x=27,y=195,},[K2]=1241,[K1]=K8,x=11,y=195,},huge={f=K3,[K2]=1247,[K1]=K14,x=10,y=196,},[K[95]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1250,[K1]=K14,x=20,y=197,},[2]={f=K3,[K2]=1251,[K1]=K13,x=28,y=197,},},[K2]=1249,[K1]=K4,x=36,y=197,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1253,[K1]=K14,x=38,y=197,},},[K2]=1252,[K1]=K4,x=36,y=197,},[K2]=1248,[K1]=K8,x=11,y=197,},log={args={f=K3,[K4]={[1]={f=K3,[K2]=1256,[K1]=K14,x=18,y=198,},[2]={f=K3,[K2]=1257,[K1]=K14,x=28,y=198,},},[K2]=1255,[K1]=K4,x=35,y=198,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1259,[K1]=K14,x=37,y=198,},},[K2]=1258,[K1]=K4,x=35,y=198,},[K2]=1254,[K1]=K8,x=9,y=198,},[K[96]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1262,[K1]=K14,x=20,y=199,},},[K2]=1261,[K1]=K4,x=27,y=199,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1264,[K1]=K14,x=29,y=199,},},[K2]=1263,[K1]=K4,x=27,y=199,},[K2]=1260,[K1]=K8,x=11,y=199,},max={f=K3,[K2]=1277,[K1]="poly",[K19]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1267,[K1]=K13,x=18,y=201,},},[K2]=1266,[K1]=K4,x=29,y=201,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1269,[K1]=K13,x=31,y=201,},},[K2]=1268,[K1]=K4,x=29,y=201,},[K2]=1265,[K1]=K8,x=9,y=201,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1272,[K1]=K28,[K19]={[1]={f=K3,[K2]=1273,[K1]=K14,x=19,y=202,},[2]={f=K3,[K2]=1274,[K1]=K13,x=28,y=202,},},x=19,y=202,},},[K2]=1271,[K1]=K4,x=40,y=202,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1276,[K1]=K14,x=42,y=202,},},[K2]=1275,[K1]=K4,x=40,y=202,},[K2]=1270,[K1]=K8,x=9,y=202,},[3]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2416,[K1]=K5,[K5]="T",x=21,y=203,},},[K2]=1280,[K1]=K4,x=26,y=203,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=2417,[K1]=K5,[K5]="T",x=28,y=203,},},[K2]=1282,[K1]=K4,x=26,y=203,},[K2]=1279,[K1]=K8,x=9,y=203,},[K20]={[1]={f=K3,[K11]="T",[K2]=1278,[K1]=K11,x=18,y=203,},},[K2]=1284,[K1]=K21,x=4,y=204,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1287,[K1]="any",x=18,y=204,},},[K2]=1286,[K1]=K4,x=25,y=204,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1289,[K1]="any",x=27,y=204,},},[K2]=1288,[K1]=K4,x=25,y=204,},[K2]=1285,[K1]=K8,x=9,y=204,},},x=4,y=203,},[K[97]]={f=K3,[K32]=true,[K2]=1290,[K1]=K13,x=16,y=206,},min={f=K3,[K2]=1303,[K1]="poly",[K19]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1293,[K1]=K13,x=18,y=208,},},[K2]=1292,[K1]=K4,x=29,y=208,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1295,[K1]=K13,x=31,y=208,},},[K2]=1294,[K1]=K4,x=29,y=208,},[K2]=1291,[K1]=K8,x=9,y=208,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1298,[K1]=K28,[K19]={[1]={f=K3,[K2]=1299,[K1]=K14,x=19,y=209,},[2]={f=K3,[K2]=1300,[K1]=K13,x=28,y=209,},},x=19,y=209,},},[K2]=1297,[K1]=K4,x=40,y=209,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1302,[K1]=K14,x=42,y=209,},},[K2]=1301,[K1]=K4,x=40,y=209,},[K2]=1296,[K1]=K8,x=9,y=209,},[3]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2426,[K1]=K5,[K5]="T",x=21,y=210,},},[K2]=1306,[K1]=K4,x=26,y=210,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=2427,[K1]=K5,[K5]="T",x=28,y=210,},},[K2]=1308,[K1]=K4,x=26,y=210,},[K2]=1305,[K1]=K8,x=9,y=210,},[K20]={[1]={f=K3,[K11]="T",[K2]=1304,[K1]=K11,x=18,y=210,},},[K2]=1310,[K1]=K21,x=4,y=211,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1313,[K1]="any",x=18,y=211,},},[K2]=1312,[K1]=K4,x=25,y=211,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1315,[K1]="any",x=27,y=211,},},[K2]=1314,[K1]=K4,x=25,y=211,},[K2]=1311,[K1]=K8,x=9,y=211,},},x=4,y=210,},[K[98]]={f=K3,[K32]=true,[K2]=1316,[K1]=K13,x=16,y=213,},modf={args={f=K3,[K4]={[1]={f=K3,[K2]=1319,[K1]=K14,x=19,y=215,},},[K2]=1318,[K1]=K4,x=26,y=215,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1321,[K1]=K13,x=28,y=215,},[2]={f=K3,[K2]=1322,[K1]=K14,x=37,y=215,},},[K2]=1320,[K1]=K4,x=26,y=215,},[K2]=1317,[K1]=K8,x=10,y=215,},pi={f=K3,[K2]=1323,[K1]=K14,x=8,y=216,},pow={args={f=K3,[K4]={[1]={f=K3,[K2]=1326,[K1]=K14,x=18,y=217,},[2]={f=K3,[K2]=1327,[K1]=K14,x=26,y=217,},},[K2]=1325,[K1]=K4,x=33,y=217,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1329,[K1]=K14,x=35,y=217,},},[K2]=1328,[K1]=K4,x=33,y=217,},[K2]=1324,[K1]=K8,x=9,y=217,},rad={args={f=K3,[K4]={[1]={f=K3,[K2]=1332,[K1]=K14,x=18,y=218,},},[K2]=1331,[K1]=K4,x=25,y=218,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1334,[K1]=K14,x=27,y=218,},},[K2]=1333,[K1]=K4,x=25,y=218,},[K2]=1330,[K1]=K8,x=9,y=218,},[K[99]]={f=K3,[K2]=1345,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1337,[K1]=K13,x=21,y=220,},[2]={f=K3,[K2]=1338,[K1]=K13,x=32,y=220,},},[K2]=1336,[K1]=K4,x=40,y=220,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1340,[K1]=K13,x=42,y=220,},},[K2]=1339,[K1]=K4,x=40,y=220,},[K2]=1335,[K1]=K8,x=12,y=220,},[2]={args={f=K3,[K4]={},[K2]=1342,[K1]=K4,x=22,y=221,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1344,[K1]=K14,x=24,y=221,},},[K2]=1343,[K1]=K4,x=22,y=221,},[K2]=1341,[K1]=K8,x=12,y=221,},},x=4,y=223,},[K[100]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1348,[K1]=K13,x=27,y=223,},[2]={f=K3,[K2]=1349,[K1]=K13,x=38,y=223,},},[K2]=1347,[K1]=K4,x=46,y=223,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1351,[K1]=K13,x=48,y=223,},[2]={f=K3,[K2]=1352,[K1]=K13,x=57,y=223,},},[K2]=1350,[K1]=K4,x=46,y=223,},[K2]=1346,[K1]=K8,x=16,y=223,},sin={args={f=K3,[K4]={[1]={f=K3,[K2]=1355,[K1]=K14,x=18,y=224,},},[K2]=1354,[K1]=K4,x=25,y=224,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1357,[K1]=K14,x=27,y=224,},},[K2]=1356,[K1]=K4,x=25,y=224,},[K2]=1353,[K1]=K8,x=9,y=224,},sinh={args={f=K3,[K4]={[1]={f=K3,[K2]=1360,[K1]=K14,x=19,y=225,},},[K2]=1359,[K1]=K4,x=26,y=225,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1362,[K1]=K14,x=28,y=225,},},[K2]=1361,[K1]=K4,x=26,y=225,},[K2]=1358,[K1]=K8,x=10,y=225,},sqrt={args={f=K3,[K4]={[1]={f=K3,[K2]=1365,[K1]=K14,x=19,y=226,},},[K2]=1364,[K1]=K4,x=26,y=226,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1367,[K1]=K14,x=28,y=226,},},[K2]=1366,[K1]=K4,x=26,y=226,},[K2]=1363,[K1]=K8,x=10,y=226,},tan={args={f=K3,[K4]={[1]={f=K3,[K2]=1370,[K1]=K14,x=18,y=227,},},[K2]=1369,[K1]=K4,x=25,y=227,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1372,[K1]=K14,x=27,y=227,},},[K2]=1371,[K1]=K4,x=25,y=227,},[K2]=1368,[K1]=K8,x=9,y=227,},tanh={args={f=K3,[K4]={[1]={f=K3,[K2]=1375,[K1]=K14,x=19,y=228,},},[K2]=1374,[K1]=K4,x=26,y=228,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1377,[K1]=K14,x=28,y=228,},},[K2]=1376,[K1]=K4,x=26,y=228,},[K2]=1373,[K1]=K8,x=10,y=228,},[K[101]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1380,[K1]="any",x=24,y=229,},},[K2]=1379,[K1]=K4,x=28,y=229,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1382,[K1]=K13,x=30,y=229,},},[K2]=1381,[K1]=K4,x=28,y=229,},[K2]=1378,[K1]=K8,x=15,y=229,},type={args={f=K3,[K4]={[1]={f=K3,[K2]=1385,[K1]="any",x=19,y=230,},},[K2]=1384,[K1]=K4,x=23,y=230,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1387,[K1]=K12,x=25,y=230,},},[K2]=1386,[K1]=K4,x=23,y=230,},[K2]=1383,[K1]=K8,x=10,y=230,},ult={args={f=K3,[K4]={[1]={f=K3,[K2]=1390,[K1]=K14,x=18,y=231,},[2]={f=K3,[K2]=1391,[K1]=K14,x=26,y=231,},},[K2]=1389,[K1]=K4,x=33,y=231,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1393,[K1]=K30,x=35,y=231,},},[K2]=1392,[K1]=K4,x=33,y=231,},[K2]=1388,[K1]=K8,x=9,y=231,},},[K36]={},[K2]=1161,[K1]=K44,x=1,y=177,},f=K3,[K2]=1394,[K1]=K27,x=1,y=177,},},[K[64]]={[K26]={f=K9,kind=K24,tk=K[64],x=15,xend=23,y=18,yend=18,},[K25]=true,t=T17,[K[22]]=true,},next={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="next",x=8,xend=11,y=434,yend=434,},[K25]=true,t={f=K3,[K2]=2135,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2688,[K1]=K5,[K5]="K",x=26,y=390,},[K2]=2117,[K1]="map",[K33]={f=K3,[K2]=2689,[K1]=K5,[K5]="V",x=28,y=390,},x=25,xend=29,y=390,yend=390,},[2]={f=K3,[K2]=2690,[K1]=K5,[K5]="K",x=34,y=390,},},[K2]=2116,[K1]=K4,x=36,y=390,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2691,[K1]=K5,[K5]="K",x=39,y=390,},[2]={f=K3,[K2]=2692,[K1]=K5,[K5]="V",x=42,y=390,},},[K2]=2121,[K1]=K4,x=36,y=390,},[K2]=2115,[K1]=K8,x=10,y=390,},[K20]={[1]={f=K3,[K11]="K",[K2]=2113,[K1]=K11,x=19,y=390,},[2]={f=K3,[K11]="V",[K2]=2114,[K1]=K11,x=22,y=390,},},[K2]=2124,[K1]=K21,x=4,y=391,},[2]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2706,[K1]=K5,[K5]="A",x=23,y=391,},f=K3,[K2]=2128,[K1]=K35,x=22,xend=24,y=391,yend=391,},[2]={f=K3,[K2]=2130,[K1]=K13,x=29,y=391,},},[K2]=2127,[K1]=K4,x=37,y=391,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2132,[K1]=K13,x=40,y=391,},[2]={f=K3,[K2]=2707,[K1]=K5,[K5]="A",x=49,y=391,},},[K2]=2131,[K1]=K4,x=37,y=391,},[K2]=2126,[K1]=K8,x=10,y=391,},[K20]={[1]={f=K3,[K11]="A",[K2]=2125,[K1]=K11,x=19,y=391,},},[K2]=2134,[K1]=K21,x=4,y=393,},},x=4,y=393,},},os={[K26]={f=K3,kind=K24,tk="os",x=15,xend=16,y=234,yend=234,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="os",f=K3,[K39]={[K[103]]={},[K[104]]={},[K[105]]={},date={[1]={},},[K[106]]={},[K[107]]={},exit={},[K[108]]={},[K[109]]={},[K[110]]={},[K[111]]={},time={},[K[112]]={},},[K38]={[1]=K[104],[2]=K[103],[3]=K[105],[4]="date",[5]=K[106],[6]=K[107],[7]="exit",[8]=K[108],[9]=K[109],[10]=K[110],[11]=K[111],[12]="time",[13]=K[112],},[K37]={[K[103]]=T24,[K[104]]=T25,[K[105]]={args={f=K3,[K4]={},[K2]=1416,[K1]=K4,x=21,y=251,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1418,[K1]=K14,x=23,y=251,},},[K2]=1417,[K1]=K4,x=21,y=251,},[K2]=1415,[K1]=K8,x=11,y=251,},date={f=K3,[K2]=1431,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T24,[K17]={[1]=K[103],},[K2]=1421,[K1]=K16,x=19,y=253,},[2]={f=K3,[K2]=1422,[K1]=K14,x=31,y=253,},},[K2]=1420,[K1]=K4,x=38,y=253,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T25,[K17]={[1]=K[104],},[K2]=1424,[K1]=K16,x=40,y=253,},},[K2]=1423,[K1]=K4,x=38,y=253,},[K2]=1419,[K1]=K8,x=10,y=253,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1427,[K1]=K12,x=21,y=254,},[2]={f=K3,[K2]=1428,[K1]=K14,x=31,y=254,},},[K2]=1426,[K1]=K4,x=38,y=254,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1430,[K1]=K12,x=40,y=254,},},[K2]=1429,[K1]=K4,x=38,y=254,},[K2]=1425,[K1]=K8,x=10,y=254,},},x=4,y=256,},[K[106]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1434,[K1]=K13,x=23,y=256,},[2]={f=K3,[K2]=1435,[K1]=K13,x=32,y=256,},},[K2]=1433,[K1]=K4,x=40,y=256,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1437,[K1]=K14,x=42,y=256,},},[K2]=1436,[K1]=K4,x=40,y=256,},[K2]=1432,[K1]=K8,x=14,y=256,},[K[107]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1440,[K1]=K12,x=22,y=257,},},[K2]=1439,[K1]=K4,x=29,y=257,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1442,[K1]=K30,x=31,y=257,},[2]={f=K3,[K2]=1443,[K1]=K12,x=40,y=257,},[3]={f=K3,[K2]=1444,[K1]=K13,x=48,y=257,},},[K2]=1441,[K1]=K4,x=29,y=257,},[K2]=1438,[K1]=K8,x=13,y=257,},exit={args={f=K3,[K4]={[1]={f=K3,[K2]=1447,[K1]=K28,[K19]={[1]={f=K3,[K2]=1448,[K1]=K13,x=22,y=258,},[2]={f=K3,[K2]=1449,[K1]=K30,x=32,y=258,},},x=22,y=258,},[2]={f=K3,[K2]=1450,[K1]=K30,x=44,y=258,},},[K2]=1446,[K1]=K4,x=4,y=259,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=1451,[K1]=K4,x=51,y=258,},[K2]=1445,[K1]=K8,x=10,y=258,},[K[108]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1454,[K1]=K12,x=21,y=259,},},[K2]=1453,[K1]=K4,x=28,y=259,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1456,[K1]=K12,x=30,y=259,},},[K2]=1455,[K1]=K4,x=28,y=259,},[K2]=1452,[K1]=K8,x=12,y=259,},[K[109]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1459,[K1]=K12,x=21,y=260,},},[K2]=1458,[K1]=K4,x=28,y=260,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1461,[K1]=K30,x=30,y=260,},[2]={f=K3,[K2]=1462,[K1]=K12,x=39,y=260,},},[K2]=1460,[K1]=K4,x=28,y=260,},[K2]=1457,[K1]=K8,x=12,y=260,},[K[110]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1465,[K1]=K12,x=21,y=261,},[2]={f=K3,[K2]=1466,[K1]=K12,x=29,y=261,},},[K2]=1464,[K1]=K4,x=36,y=261,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1468,[K1]=K30,x=38,y=261,},[2]={f=K3,[K2]=1469,[K1]=K12,x=47,y=261,},},[K2]=1467,[K1]=K4,x=36,y=261,},[K2]=1463,[K1]=K8,x=12,y=261,},[K[111]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1472,[K1]=K12,x=24,y=262,},[2]={f=K3,[K2]=1473,[K1]=K12,x=34,y=262,},},[K2]=1471,[K1]=K4,x=41,y=262,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1475,[K1]=K12,x=43,y=262,},},[K2]=1474,[K1]=K4,x=41,y=262,},[K2]=1470,[K1]=K8,x=15,y=262,},time={args={f=K3,[K4]={[1]={f=K3,[K18]=T25,[K17]={[1]=K[104],},[K2]=1478,[K1]=K16,x=21,y=263,},},[K2]=1477,[K1]=K4,x=31,y=263,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1480,[K1]=K13,x=33,y=263,},},[K2]=1479,[K1]=K4,x=31,y=263,},[K2]=1476,[K1]=K8,x=10,y=263,},[K[112]]={args={f=K3,[K4]={},[K2]=1482,[K1]=K4,x=23,y=264,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1484,[K1]=K12,x=25,y=264,},},[K2]=1483,[K1]=K4,x=23,y=264,},[K2]=1481,[K1]=K8,x=13,y=264,},},[K36]={},[K2]=1397,[K1]=K44,x=1,y=234,},f=K3,[K2]=1485,[K1]=K27,x=1,y=234,},},[K[115]]={[K26]={f=K3,kind=K24,tk=K[115],x=15,xend=21,y=267,yend=267,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[115],f=K3,[K39]={[K[116]]={},[K[117]]={},[K[118]]={},[K[119]]={},[K[120]]={},path={},[K[121]]={},[K[122]]={},[K[123]]={},},[K38]={[1]=K[116],[2]=K[117],[3]=K[118],[4]=K[120],[5]=K[119],[6]="path",[7]=K[121],[8]=K[122],[9]=K[123],},[K37]={[K[116]]={f=K3,[K2]=1489,[K1]=K12,x=12,y=268,},[K[117]]={f=K3,[K2]=1490,[K1]=K12,x=11,y=269,},[K[118]]={f=K3,keys={f=K3,[K2]=1492,[K1]=K12,x=13,y=270,},[K2]=1491,[K1]="map",[K33]={f=K3,[K2]=1493,[K1]="any",x=20,y=270,},x=12,xend=23,y=270,yend=270,},[K[119]]={[K34]={args={f=K3,[K4]={[1]={f=K3,[K2]=1507,[K1]=K12,x=25,y=272,},},[K2]=1506,[K1]=K4,x=32,y=272,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1511,[K1]=K12,x=46,y=272,},[2]={f=K3,[K2]=1512,[K1]="any",x=56,y=272,},},[K2]=1510,[K1]=K4,x=60,y=272,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1514,[K1]="any",x=63,y=272,},},[K2]=1513,[K1]=K4,x=60,y=272,},[K2]=1509,[K1]=K8,x=35,y=272,},[2]={f=K3,[K2]=1515,[K1]="any",x=69,y=272,},},[K2]=1508,[K1]=K4,x=32,y=272,},[K2]=1505,[K1]=K8,x=16,y=272,},f=K3,[K2]=1504,[K1]=K35,x=13,xend=75,y=272,yend=272,},[K[120]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1496,[K1]=K12,x=22,y=271,},[2]={f=K3,[K2]=1497,[K1]=K12,x=30,y=271,},},[K2]=1495,[K1]=K4,x=37,y=271,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1501,[K1]="any",x=48,y=271,},},[K2]=1500,[K1]=K4,x=48,y=271,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1503,[K1]="any",x=48,y=271,},},[K2]=1502,[K1]=K4,x=48,y=271,},[K2]=1499,[K1]=K8,x=40,y=271,},},[K2]=1498,[K1]=K4,x=37,y=271,},[K2]=1494,[K1]=K8,x=13,y=271,},path={f=K3,[K2]=1516,[K1]=K12,x=10,y=273,},[K[121]]={f=K3,keys={f=K3,[K2]=1518,[K1]=K12,x=14,y=274,},[K2]=1517,[K1]="map",[K33]={args={f=K3,[K4]={[1]={f=K3,[K2]=1521,[K1]=K12,x=34,y=274,},[2]={f=K3,[K2]=1522,[K1]="any",x=44,y=274,},},[K2]=1520,[K1]=K4,x=48,y=274,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1524,[K1]="any",x=51,y=274,},},[K2]=1523,[K1]=K4,x=48,y=274,},[K2]=1519,[K1]=K8,x=23,y=274,},x=13,xend=56,y=274,yend=274,},[K[122]]={[K34]={args={f=K3,[K4]={[1]={f=K3,[K2]=1528,[K1]=K12,x=27,y=275,},},[K2]=1527,[K1]=K4,x=34,y=275,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1532,[K1]=K12,x=48,y=275,},[2]={f=K3,[K2]=1533,[K1]="any",x=58,y=275,},},[K2]=1531,[K1]=K4,x=62,y=275,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1535,[K1]="any",x=65,y=275,},},[K2]=1534,[K1]=K4,x=62,y=275,},[K2]=1530,[K1]=K8,x=37,y=275,},[2]={f=K3,[K2]=1536,[K1]="any",x=71,y=275,},},[K2]=1529,[K1]=K4,x=34,y=275,},[K2]=1526,[K1]=K8,x=18,y=275,},f=K3,[K2]=1525,[K1]=K35,x=15,xend=77,y=275,yend=275,},[K[123]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1539,[K1]=K12,x=25,y=276,},[2]={f=K3,[K2]=1540,[K1]=K12,x=33,y=276,},[3]={f=K3,[K2]=1541,[K1]=K12,x=43,y=276,},[4]={f=K3,[K2]=1542,[K1]=K12,x=53,y=276,},},[K2]=1538,[K1]=K4,x=60,y=276,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1544,[K1]=K12,x=62,y=276,},[2]={f=K3,[K2]=1545,[K1]=K12,x=70,y=276,},},[K2]=1543,[K1]=K4,x=60,y=276,},[K2]=1537,[K1]=K8,x=16,y=276,},},[K36]={},[K2]=1488,[K1]=K44,x=1,y=267,},f=K3,[K2]=1546,[K1]=K27,x=1,y=267,},},[K[124]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[124],x=8,xend=12,y=435,yend=435,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2730,[K1]=K5,[K5]="K@48",x=27,y=393,},[K2]=2732,[K1]="map",[K33]={f=K3,[K2]=2731,[K1]=K5,[K5]="V@48",x=29,y=393,},x=26,y=393,},},[K2]=2733,[K1]=K4,x=32,y=393,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2734,[K1]=K5,[K5]="K@48",x=45,y=393,},[K2]=2736,[K1]="map",[K33]={f=K3,[K2]=2735,[K1]=K5,[K5]="V@48",x=47,y=393,},x=44,y=393,},[2]={f=K3,[K2]=2737,[K1]=K5,[K5]="K@48",x=53,y=393,},},[K2]=2738,[K1]=K4,x=55,y=393,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2739,[K1]=K5,[K5]="K@48",x=57,y=393,},[2]={f=K3,[K2]=2740,[K1]=K5,[K5]="V@48",x=60,y=393,},},[K2]=2741,[K1]=K4,x=55,y=393,},[K2]=2742,[K1]=K8,x=35,y=393,},[2]={f=K3,keys={f=K3,[K2]=2743,[K1]=K5,[K5]="K@48",x=65,y=393,},[K2]=2745,[K1]="map",[K33]={f=K3,[K2]=2744,[K1]=K5,[K5]="V@48",x=67,y=393,},x=64,y=393,},[3]={f=K3,[K2]=2746,[K1]=K5,[K5]="K@48",x=71,y=393,},},[K2]=2747,[K1]=K4,x=32,y=393,},[K41]=K[124],[K2]=2748,[K1]=K8,x=11,y=393,},[K20]={[1]={f=K3,[K11]="K@48",[K2]=2728,[K1]=K11,x=20,y=393,},[2]={f=K3,[K11]="V@48",[K2]=2729,[K1]=K11,x=23,y=393,},},[K2]=2749,[K1]=K21,x=4,y=394,},},[K[125]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[125],x=8,xend=12,y=436,yend=436,},[K25]=true,[K32]=true,t={args={f=K3,[K15]=true,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2162,[K1]="any",x=29,y=394,},},[K2]=2161,[K1]=K4,x=36,y=394,},f=K3,[K7]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2164,[K1]="any",x=38,y=394,},},[K2]=2163,[K1]=K4,x=36,y=394,},[K2]=2160,[K1]=K8,x=20,y=394,},[2]={f=K3,[K2]=2165,[K1]="any",x=47,y=394,},},[K2]=2159,[K1]=K4,x=54,y=394,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2167,[K1]=K30,x=56,y=394,},[2]={f=K3,[K2]=2168,[K1]="any",x=65,y=394,},},[K2]=2166,[K1]=K4,x=54,y=394,},[K41]=K[125],[K2]=2158,[K1]=K8,x=11,y=394,},},["print"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="print",x=8,xend=12,y=437,yend=437,},[K25]=true,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2171,[K1]="any",x=20,y=395,},},[K2]=2170,[K1]=K4,x=4,y=396,},f=K3,[K7]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=2172,[K1]=K4,x=26,y=395,},[K2]=2169,[K1]=K8,x=11,y=395,},},["rawequal"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawequal",x=8,xend=15,y=438,yend=438,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2175,[K1]="any",x=23,y=396,},[2]={f=K3,[K2]=2176,[K1]="any",x=28,y=396,},},[K2]=2174,[K1]=K4,x=32,y=396,},f=K3,[K7]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2178,[K1]=K30,x=34,y=396,},},[K2]=2177,[K1]=K4,x=32,y=396,},[K2]=2173,[K1]=K8,x=14,y=396,},},[K[126]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[126],x=8,xend=13,y=439,yend=439,},[K25]=true,t={f=K3,[K2]=2198,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2752,[K1]=K5,[K5]="K",x=28,y=398,},[K2]=2183,[K1]="map",[K33]={f=K3,[K2]=2753,[K1]=K5,[K5]="V",x=30,y=398,},x=27,xend=31,y=398,yend=398,},[2]={f=K3,[K2]=2754,[K1]=K5,[K5]="K",x=34,y=398,},},[K2]=2182,[K1]=K4,x=36,y=398,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2755,[K1]=K5,[K5]="V",x=38,y=398,},},[K2]=2187,[K1]=K4,x=36,y=398,},[K41]=K[126],[K2]=2181,[K1]=K8,x=12,y=398,},[K20]={[1]={f=K3,[K11]="K",[K2]=2179,[K1]=K11,x=21,y=398,},[2]={f=K3,[K11]="V",[K2]=2180,[K1]=K11,x=24,y=398,},},[K2]=2189,[K1]=K21,x=4,y=399,},[2]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2193,[K1]="any",x=22,y=399,},[K2]=2192,[K1]="map",[K33]={f=K3,[K2]=2194,[K1]="any",x=26,y=399,},x=21,xend=29,y=399,yend=399,},[2]={f=K3,[K2]=2195,[K1]="any",x=32,y=399,},},[K2]=2191,[K1]=K4,x=36,y=399,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2197,[K1]="any",x=38,y=399,},},[K2]=2196,[K1]=K4,x=36,y=399,},[K2]=2190,[K1]=K8,x=12,y=399,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=2201,[K1]="any",x=21,y=400,},[2]={f=K3,[K2]=2202,[K1]="any",x=26,y=400,},},[K2]=2200,[K1]=K4,x=30,y=400,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2204,[K1]="any",x=32,y=400,},},[K2]=2203,[K1]=K4,x=30,y=400,},[K2]=2199,[K1]=K8,x=12,y=400,},},x=4,y=400,},},["rawlen"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawlen",x=8,xend=13,y=440,yend=440,},[K25]=true,[K32]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2770,[K1]=K5,[K5]="A@50",x=25,y=402,},f=K3,[K2]=2771,[K1]=K35,x=24,y=402,},},[K2]=2772,[K1]=K4,x=28,y=402,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2211,[K1]=K13,x=30,y=402,},},[K2]=2210,[K1]=K4,x=28,y=402,},[K2]=2773,[K1]=K8,x=12,y=402,},[K20]={[1]={f=K3,[K11]="A@50",[K2]=2769,[K1]=K11,x=21,y=402,},},[K2]=2774,[K1]=K21,x=4,y=404,},},["rawset"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="rawset",x=8,xend=13,y=441,yend=441,},[K25]=true,t={f=K3,[K2]=2238,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2777,[K1]=K5,[K5]="K",x=28,y=404,},[K2]=2217,[K1]="map",[K33]={f=K3,[K2]=2778,[K1]=K5,[K5]="V",x=30,y=404,},x=27,xend=31,y=404,yend=404,},[2]={f=K3,[K2]=2779,[K1]=K5,[K5]="K",x=34,y=404,},[3]={f=K3,[K2]=2780,[K1]=K5,[K5]="V",x=37,y=404,},},[K2]=2216,[K1]=K4,x=39,y=404,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2781,[K1]=K5,[K5]="K",x=42,y=404,},[K2]=2223,[K1]="map",[K33]={f=K3,[K2]=2782,[K1]=K5,[K5]="V",x=44,y=404,},x=41,xend=45,y=404,yend=404,},},[K2]=2222,[K1]=K4,x=39,y=404,},[K2]=2215,[K1]=K8,x=12,y=404,},[K20]={[1]={f=K3,[K11]="K",[K2]=2213,[K1]=K11,x=21,y=404,},[2]={f=K3,[K11]="V",[K2]=2214,[K1]=K11,x=24,y=404,},},[K2]=2226,[K1]=K21,x=4,y=405,},[2]={args={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2230,[K1]="any",x=22,y=405,},[K2]=2229,[K1]="map",[K33]={f=K3,[K2]=2231,[K1]="any",x=26,y=405,},x=21,xend=29,y=405,yend=405,},[2]={f=K3,[K2]=2232,[K1]="any",x=32,y=405,},[3]={f=K3,[K2]=2233,[K1]="any",x=37,y=405,},},[K2]=2228,[K1]=K4,x=41,y=405,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,keys={f=K3,[K2]=2236,[K1]="any",x=44,y=405,},[K2]=2235,[K1]="map",[K33]={f=K3,[K2]=2237,[K1]="any",x=48,y=405,},x=43,xend=51,y=405,yend=405,},},[K2]=2234,[K1]=K4,x=41,y=405,},[K2]=2227,[K1]=K8,x=12,y=405,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=2241,[K1]="any",x=21,y=406,},[2]={f=K3,[K2]=2242,[K1]="any",x=26,y=406,},[3]={f=K3,[K2]=2243,[K1]="any",x=31,y=406,},},[K2]=2240,[K1]=K4,x=35,y=406,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=2245,[K1]="any",x=37,y=406,},},[K2]=2244,[K1]=K4,x=35,y=406,},[K2]=2239,[K1]=K8,x=12,y=406,},},x=4,y=406,},},[K[127]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[127],x=8,xend=14,y=442,yend=442,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2248,[K1]=K12,x=22,y=408,},},[K2]=2247,[K1]=K4,x=29,y=408,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2250,[K1]="any",x=31,y=408,},},[K2]=2249,[K1]=K4,x=29,y=408,},[K41]=K[127],[K2]=2246,[K1]=K8,x=13,y=408,},},["select"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="select",x=8,xend=13,y=443,yend=443,},[K25]=true,t={f=K3,[K2]=2265,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2254,[K1]=K13,x=24,y=410,},[2]={f=K3,[K2]=2798,[K1]=K5,[K5]="T",x=33,y=410,},},[K2]=2253,[K1]=K4,x=38,y=410,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2799,[K1]=K5,[K5]="T",x=40,y=410,},},[K2]=2256,[K1]=K4,x=38,y=410,},[K2]=2252,[K1]=K8,x=12,y=410,},[K20]={[1]={f=K3,[K11]="T",[K2]=2251,[K1]=K11,x=21,y=410,},},[K2]=2258,[K1]=K21,x=4,y=411,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2261,[K1]=K13,x=21,y=411,},[2]={f=K3,[K2]=2262,[K1]="any",x=30,y=411,},},[K2]=2260,[K1]=K4,x=37,y=411,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2264,[K1]="any",x=39,y=411,},},[K2]=2263,[K1]=K4,x=37,y=411,},[K2]=2259,[K1]=K8,x=12,y=411,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2268,[K1]=K12,x=21,y=412,},[2]={f=K3,[K2]=2269,[K1]="any",x=29,y=412,},},[K2]=2267,[K1]=K4,x=36,y=412,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2271,[K1]=K13,x=38,y=412,},},[K2]=2270,[K1]=K4,x=36,y=412,},[K2]=2266,[K1]=K8,x=12,y=412,},},x=4,y=412,},},[K[46]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[46],x=8,xend=19,y=444,yend=444,},[K25]=true,t={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2812,[K1]=K5,[K5]="T@53",x=30,y=414,},[2]={f=K3,[K18]=T17,[K17]={[1]=K[64],},[K2]=2814,[K1]=K16,[K50]={[1]={f=K3,[K2]=2813,[K1]=K5,[K5]="T@53",x=43,y=414,},},x=33,y=414,},},[K2]=2815,[K1]=K4,x=46,y=414,},f=K3,[K7]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2816,[K1]=K5,[K5]="T@53",x=48,y=414,},},[K2]=2817,[K1]=K4,x=46,y=414,},[K2]=2818,[K1]=K8,x=18,y=414,},[K20]={[1]={f=K3,[K11]="T@53",[K2]=2811,[K1]=K11,x=27,y=414,},},[K2]=2819,[K1]=K21,x=4,y=416,},},[K12]={[K26]={f=K3,kind=K24,tk=K12,x=15,xend=20,y=279,yend=279,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K12,f=K3,[K39]={byte={[1]={},},char={},dump={},find={},[K[128]]={[1]={[1]={text=K49,x=86,y=285,},},},[K[129]]={[1]={[1]={text=K49,x=45,y=286,},},},gsub={[1]={},[2]={[1]={text=K49,x=71,y=289,},},[3]={[1]={text=K49,x=95,y=290,},},[4]={[1]={text=K49,x=96,y=291,},},},len={},[K[130]]={},[K[131]]={},pack={[1]={[1]={text=K49,x=58,y=296,},},},[K[132]]={[1]={[1]={text=K49,x=43,y=297,},},},rep={},[K[133]]={},sub={},[K[134]]={},[K[135]]={[1]={[1]={text=K49,x=56,y=302,},},},},[K38]={[1]="byte",[2]="char",[3]="dump",[4]="find",[5]=K[128],[6]=K[129],[7]="gsub",[8]="len",[9]=K[130],[10]=K[131],[11]="pack",[12]=K[132],[13]="rep",[14]=K[133],[15]="sub",[16]=K[134],[17]=K[135],},[K37]={byte={f=K3,[K2]=1563,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1552,[K1]=K12,x=19,y=280,},[2]={f=K3,[K2]=1553,[K1]=K13,x=29,y=280,},},[K2]=1551,[K1]=K4,x=37,y=280,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1555,[K1]=K13,x=39,y=280,},},[K2]=1554,[K1]=K4,x=37,y=280,},[K2]=1550,[K1]=K8,x=10,y=280,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1558,[K1]=K12,x=19,y=281,},[2]={f=K3,[K2]=1559,[K1]=K13,x=27,y=281,},[3]={f=K3,[K2]=1560,[K1]=K13,x=38,y=281,},},[K2]=1557,[K1]=K4,x=46,y=281,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1562,[K1]=K13,x=48,y=281,},},[K2]=1561,[K1]=K4,x=46,y=281,},[K2]=1556,[K1]=K8,x=10,y=281,},},x=4,y=283,},char={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1566,[K1]=K13,x=19,y=283,},},[K2]=1565,[K1]=K4,x=30,y=283,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1568,[K1]=K12,x=32,y=283,},},[K2]=1567,[K1]=K4,x=30,y=283,},[K2]=1564,[K1]=K8,x=10,y=283,},dump={args={f=K3,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1573,[K1]="any",x=28,y=284,},},[K2]=1572,[K1]=K4,x=35,y=284,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1575,[K1]="any",x=38,y=284,},},[K2]=1574,[K1]=K4,x=35,y=284,},[K2]=1571,[K1]=K8,x=19,y=284,},[2]={f=K3,[K2]=1576,[K1]=K30,x=46,y=284,},},[K2]=1570,[K1]=K4,x=54,y=284,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1578,[K1]=K12,x=56,y=284,},},[K2]=1577,[K1]=K4,x=54,y=284,},[K2]=1569,[K1]=K8,x=10,y=284,},find={args={f=K3,[K4]={[1]={f=K3,[K2]=1581,[K1]=K12,x=19,y=285,},[2]={f=K3,[K2]=1582,[K1]=K12,x=27,y=285,},[3]={f=K3,[K2]=1583,[K1]=K13,x=37,y=285,},[4]={f=K3,[K2]=1584,[K1]=K30,x=48,y=285,},},[K2]=1580,[K1]=K4,x=56,y=285,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1586,[K1]=K13,x=58,y=285,},[2]={f=K3,[K2]=1587,[K1]=K13,x=67,y=285,},[3]={f=K3,[K2]=1588,[K1]=K12,x=76,y=285,},},[K2]=1585,[K1]=K4,x=56,y=285,},[K41]="string.find",[K2]=1579,[K1]=K8,x=10,y=285,},[K[128]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1591,[K1]=K12,x=21,y=286,},[2]={f=K3,[K2]=1592,[K1]="any",x=29,y=286,},},[K2]=1590,[K1]=K4,x=36,y=286,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1594,[K1]=K12,x=38,y=286,},},[K2]=1593,[K1]=K4,x=36,y=286,},[K41]="string.format",[K2]=1589,[K1]=K8,x=12,y=286,},[K[129]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1597,[K1]=K12,x=21,y=287,},[2]={f=K3,[K2]=1598,[K1]=K12,x=29,y=287,},[3]={f=K3,[K2]=1599,[K1]=K13,x=39,y=287,},},[K2]=1596,[K1]=K4,x=47,y=287,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1602,[K1]=K4,x=60,y=287,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1604,[K1]=K12,x=62,y=287,},},[K2]=1603,[K1]=K4,x=60,y=287,},[K2]=1601,[K1]=K8,x=50,y=287,},},[K2]=1600,[K1]=K4,x=47,y=287,},[K41]="string.gmatch",[K2]=1595,[K1]=K8,x=12,y=287,},gsub={f=K3,[K2]=1628,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1607,[K1]=K12,x=19,y=289,},[2]={f=K3,[K2]=1608,[K1]=K12,x=27,y=289,},[3]={f=K3,[K2]=1609,[K1]=K12,x=35,y=289,},[4]={f=K3,[K2]=1610,[K1]=K13,x=45,y=289,},},[K2]=1606,[K1]=K4,x=53,y=289,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1612,[K1]=K12,x=55,y=289,},[2]={f=K3,[K2]=1613,[K1]=K13,x=63,y=289,},},[K2]=1611,[K1]=K4,x=53,y=289,},[K41]="string.gsub",[K2]=1605,[K1]=K8,x=10,y=289,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=1616,[K1]=K12,x=19,y=290,},[2]={f=K3,[K2]=1617,[K1]=K12,x=27,y=290,},[3]={f=K3,keys={f=K3,[K2]=1619,[K1]=K12,x=36,y=290,},[K2]=1618,[K1]="map",[K33]={f=K3,[K2]=1620,[K1]=K28,[K19]={[1]={f=K3,[K2]=1621,[K1]=K12,x=43,y=290,},[2]={f=K3,[K2]=1622,[K1]=K13,x=50,y=290,},[3]={f=K3,[K2]=1623,[K1]=K14,x=58,y=290,},},x=43,y=290,},x=35,xend=64,y=290,yend=290,},[4]={f=K3,[K2]=1624,[K1]=K13,x=69,y=290,},},[K2]=1615,[K1]=K4,x=77,y=290,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1626,[K1]=K12,x=79,y=290,},[2]={f=K3,[K2]=1627,[K1]=K13,x=87,y=290,},},[K2]=1625,[K1]=K4,x=77,y=290,},[K2]=1614,[K1]=K8,x=10,y=290,},[3]={args={f=K3,[K4]={[1]={f=K3,[K2]=1631,[K1]=K12,x=19,y=291,},[2]={f=K3,[K2]=1632,[K1]=K12,x=27,y=291,},[3]={f=K3,keys={f=K3,[K2]=1634,[K1]=K13,x=36,y=291,},[K2]=1633,[K1]="map",[K33]={f=K3,[K2]=1635,[K1]=K28,[K19]={[1]={f=K3,[K2]=1636,[K1]=K12,x=44,y=291,},[2]={f=K3,[K2]=1637,[K1]=K13,x=51,y=291,},[3]={f=K3,[K2]=1638,[K1]=K14,x=59,y=291,},},x=44,y=291,},x=35,xend=65,y=291,yend=291,},[4]={f=K3,[K2]=1639,[K1]=K13,x=70,y=291,},},[K2]=1630,[K1]=K4,x=78,y=291,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1641,[K1]=K12,x=80,y=291,},[2]={f=K3,[K2]=1642,[K1]=K13,x=88,y=291,},},[K2]=1640,[K1]=K4,x=78,y=291,},[K2]=1629,[K1]=K8,x=10,y=291,},[4]={args={f=K3,[K4]={[1]={f=K3,[K2]=1645,[K1]=K12,x=19,y=292,},[2]={f=K3,[K2]=1646,[K1]=K12,x=27,y=292,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1649,[K1]=K28,[K19]={[1]={f=K3,[K2]=1650,[K1]=K12,x=45,y=292,},[2]={f=K3,[K2]=1651,[K1]=K13,x=52,y=292,},},x=45,y=292,},},[K2]=1648,[K1]=K4,x=64,y=292,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1653,[K1]=K28,[K19]={[1]={f=K3,[K2]=1654,[K1]=K12,x=68,y=292,},[2]={f=K3,[K2]=1655,[K1]=K13,x=75,y=292,},[3]={f=K3,[K2]=1656,[K1]=K14,x=83,y=292,},},x=68,y=292,},},[K2]=1652,[K1]=K4,x=64,y=292,},[K2]=1647,[K1]=K8,x=35,y=292,},[4]={f=K3,[K2]=1657,[K1]=K13,x=98,y=292,},},[K2]=1644,[K1]=K4,x=106,y=292,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={[1]={f=K3,[K2]=1659,[K1]=K12,x=108,y=292,},[2]={f=K3,[K2]=1660,[K1]=K13,x=116,y=292,},},[K2]=1658,[K1]=K4,x=106,y=292,},[K2]=1643,[K1]=K8,x=10,y=292,},},x=4,y=291,},len={args={f=K3,[K4]={[1]={f=K3,[K2]=1663,[K1]=K12,x=18,y=294,},},[K2]=1662,[K1]=K4,x=25,y=294,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1665,[K1]=K13,x=27,y=294,},},[K2]=1664,[K1]=K4,x=25,y=294,},[K2]=1661,[K1]=K8,x=9,y=294,},[K[130]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1668,[K1]=K12,x=20,y=295,},},[K2]=1667,[K1]=K4,x=27,y=295,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1670,[K1]=K12,x=29,y=295,},},[K2]=1669,[K1]=K4,x=27,y=295,},[K2]=1666,[K1]=K8,x=11,y=295,},[K[131]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1673,[K1]=K12,x=20,y=296,},[2]={f=K3,[K2]=1674,[K1]=K12,x=28,y=296,},[3]={f=K3,[K2]=1675,[K1]=K13,x=38,y=296,},},[K2]=1672,[K1]=K4,x=46,y=296,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1677,[K1]=K12,x=48,y=296,},},[K2]=1676,[K1]=K4,x=46,y=296,},[K41]="string.match",[K2]=1671,[K1]=K8,x=11,y=296,},pack={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1680,[K1]=K12,x=19,y=297,},[2]={f=K3,[K2]=1681,[K1]="any",x=27,y=297,},},[K2]=1679,[K1]=K4,x=34,y=297,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1683,[K1]=K12,x=36,y=297,},},[K2]=1682,[K1]=K4,x=34,y=297,},[K41]="string.pack",[K2]=1678,[K1]=K8,x=10,y=297,},[K[132]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1686,[K1]=K12,x=23,y=298,},},[K2]=1685,[K1]=K4,x=30,y=298,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1688,[K1]=K13,x=32,y=298,},},[K2]=1687,[K1]=K4,x=30,y=298,},[K2]=1684,[K1]=K8,x=14,y=298,},rep={args={f=K3,[K4]={[1]={f=K3,[K2]=1691,[K1]=K12,x=18,y=299,},[2]={f=K3,[K2]=1692,[K1]=K13,x=26,y=299,},[3]={f=K3,[K2]=1693,[K1]=K12,x=37,y=299,},},[K2]=1690,[K1]=K4,x=44,y=299,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1695,[K1]=K12,x=46,y=299,},},[K2]=1694,[K1]=K4,x=44,y=299,},[K2]=1689,[K1]=K8,x=9,y=299,},[K[133]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1698,[K1]=K12,x=22,y=300,},},[K2]=1697,[K1]=K4,x=29,y=300,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1700,[K1]=K12,x=31,y=300,},},[K2]=1699,[K1]=K4,x=29,y=300,},[K2]=1696,[K1]=K8,x=13,y=300,},sub={args={f=K3,[K4]={[1]={f=K3,[K2]=1703,[K1]=K12,x=18,y=301,},[2]={f=K3,[K2]=1704,[K1]=K13,x=26,y=301,},[3]={f=K3,[K2]=1705,[K1]=K13,x=37,y=301,},},[K2]=1702,[K1]=K4,x=45,y=301,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1707,[K1]=K12,x=47,y=301,},},[K2]=1706,[K1]=K4,x=45,y=301,},[K2]=1701,[K1]=K8,x=9,y=301,},[K[134]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1710,[K1]=K12,x=21,y=302,},[2]={f=K3,[K2]=1711,[K1]=K12,x=29,y=302,},[3]={f=K3,[K2]=1712,[K1]=K13,x=39,y=302,},},[K2]=1709,[K1]=K4,x=47,y=302,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1714,[K1]="any",x=49,y=302,},},[K2]=1713,[K1]=K4,x=47,y=302,},[K41]="string.unpack",[K2]=1708,[K1]=K8,x=12,y=302,},[K[135]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1717,[K1]=K12,x=20,y=303,},},[K2]=1716,[K1]=K4,x=27,y=303,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1719,[K1]=K12,x=29,y=303,},},[K2]=1718,[K1]=K4,x=27,y=303,},[K2]=1715,[K1]=K8,x=11,y=303,},},[K36]={},[K2]=1549,[K1]=K44,x=1,y=279,},f=K3,[K2]=1720,[K1]=K27,x=1,y=279,},},[K[136]]={[K26]={f=K3,kind=K24,tk=K[136],x=15,xend=19,y=306,yend=306,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]=K[136],f=K3,[K39]={[K[137]]={},[K[138]]={},[K[139]]={},[K[140]]={[1]={},},move={},pack={[1]={},[2]={[1]={text=K[141],x=42,y=322,},},},[K[109]]={},sort={},[K[134]]={[1]={},[2]={[1]={text=K[141],x=55,y=328,},},[3]={[1]={text=K[141],x=47,y=329,},},[4]={[1]={text=K[141],x=59,y=330,},},[5]={[1]={text=K[141],x=71,y=331,},},},},[K38]={[1]=K[138],[2]=K[137],[3]=K[139],[4]=K[140],[5]="move",[6]="pack",[7]=K[109],[8]="sort",[9]=K[134],},[K37]={[K[137]]=T26,[K[138]]=T28,[K[139]]={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=1747,[K1]=K28,[K19]={[1]={f=K3,[K2]=1748,[K1]=K12,x=23,y=315,},[2]={f=K3,[K2]=1749,[K1]=K14,x=32,y=315,},},x=23,y=315,},f=K3,[K2]=1746,[K1]=K35,x=21,xend=39,y=315,yend=315,},[2]={f=K3,[K2]=1750,[K1]=K12,x=44,y=315,},[3]={f=K3,[K2]=1751,[K1]=K13,x=54,y=315,},[4]={f=K3,[K2]=1752,[K1]=K13,x=65,y=315,},},[K2]=1745,[K1]=K4,x=73,y=315,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1754,[K1]=K12,x=75,y=315,},},[K2]=1753,[K1]=K4,x=73,y=315,},[K2]=1744,[K1]=K8,x=12,y=315,},[K[140]]={f=K3,[K2]=1772,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2457,[K1]=K5,[K5]="A",x=25,y=317,},f=K3,[K2]=1758,[K1]=K35,x=24,xend=26,y=317,yend=317,},[2]={f=K3,[K2]=1760,[K1]=K13,x=29,y=317,},[3]={f=K3,[K2]=2458,[K1]=K5,[K5]="A",x=38,y=317,},},[K2]=1757,[K1]=K4,x=4,y=318,},f=K3,[K7]=false,[K10]=false,[K6]=3,rets={f=K3,[K4]={},[K2]=1762,[K1]=K4,x=39,y=317,},[K2]=1756,[K1]=K8,x=12,y=317,},[K20]={[1]={f=K3,[K11]="A",[K2]=1755,[K1]=K11,x=21,y=317,},},[K2]=1763,[K1]=K21,x=4,y=318,},[2]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2467,[K1]=K5,[K5]="A",x=25,y=318,},f=K3,[K2]=1767,[K1]=K35,x=24,xend=26,y=318,yend=318,},[2]={f=K3,[K2]=2468,[K1]=K5,[K5]="A",x=29,y=318,},},[K2]=1766,[K1]=K4,x=4,y=320,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={},[K2]=1770,[K1]=K4,x=30,y=318,},[K2]=1765,[K1]=K8,x=12,y=318,},[K20]={[1]={f=K3,[K11]="A",[K2]=1764,[K1]=K11,x=21,y=318,},},[K2]=1771,[K1]=K21,x=4,y=320,},},x=4,y=320,},move={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2481,[K1]=K5,[K5]="A@34",x=23,y=320,},f=K3,[K2]=2482,[K1]=K35,x=22,y=320,},[2]={f=K3,[K2]=1778,[K1]=K13,x=27,y=320,},[3]={f=K3,[K2]=1779,[K1]=K13,x=36,y=320,},[4]={f=K3,[K2]=1780,[K1]=K13,x=45,y=320,},[5]={[K34]={f=K3,[K2]=2483,[K1]=K5,[K5]="A@34",x=57,y=320,},f=K3,[K2]=2484,[K1]=K35,x=56,y=320,},},[K2]=2485,[K1]=K4,x=60,y=320,},f=K3,[K7]=false,[K6]=4,rets={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2486,[K1]=K5,[K5]="A@34",x=63,y=320,},f=K3,[K2]=2487,[K1]=K35,x=62,y=320,},},[K2]=2488,[K1]=K4,x=60,y=320,},[K2]=2489,[K1]=K8,x=10,y=320,},[K20]={[1]={f=K3,[K11]="A@34",[K2]=2480,[K1]=K11,x=19,y=320,},},[K2]=2490,[K1]=K21,x=4,y=322,},pack={f=K3,[K32]=true,[K2]=1801,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2492,[K1]=K5,[K5]="T",x=22,y=322,},},[K2]=1789,[K1]=K4,x=27,y=322,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T26,[K17]={[1]=K[137],},[K2]=1792,[K1]=K16,[K50]={[1]={f=K3,[K2]=2493,[K1]=K5,[K5]="T",x=39,y=322,},},x=29,y=322,},},[K2]=1791,[K1]=K4,x=27,y=322,},[K2]=1788,[K1]=K8,x=10,y=322,},[K20]={[1]={f=K3,[K11]="T",[K2]=1787,[K1]=K11,x=19,y=322,},},[K2]=1794,[K1]=K21,x=4,y=323,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1797,[K1]="any",x=19,y=323,},},[K2]=1796,[K1]=K4,x=26,y=323,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T26,[K17]={[1]=K[137],},[K2]=1799,[K1]=K16,[K50]={[1]={f=K3,[K2]=1800,[K1]="any",x=38,y=323,},},x=28,y=323,},},[K2]=1798,[K1]=K4,x=26,y=323,},[K2]=1795,[K1]=K8,x=10,y=323,},},x=4,y=325,},[K[109]]={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2506,[K1]=K5,[K5]="A@36",x=25,y=325,},f=K3,[K2]=2507,[K1]=K35,x=24,y=325,},[2]={f=K3,[K2]=1807,[K1]=K13,x=31,y=325,},},[K2]=2508,[K1]=K4,x=39,y=325,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2509,[K1]=K5,[K5]="A@36",x=41,y=325,},},[K2]=2510,[K1]=K4,x=39,y=325,},[K2]=2511,[K1]=K8,x=12,y=325,},[K20]={[1]={f=K3,[K11]="A@36",[K2]=2505,[K1]=K11,x=21,y=325,},},[K2]=2512,[K1]=K21,x=4,y=326,},sort={f=K3,[K29]=true,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2517,[K1]=K5,[K5]="A@37",x=23,y=326,},f=K3,[K2]=2518,[K1]=K35,x=22,y=326,},[2]={f=K3,[K18]=T28,[K17]={[1]=K[138],},[K2]=2520,[K1]=K16,[K50]={[1]={f=K3,[K2]=2519,[K1]=K5,[K5]="A@37",x=42,y=326,},},x=29,y=326,},},[K2]=2521,[K1]=K4,x=4,y=328,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={},[K2]=1818,[K1]=K4,x=44,y=326,},[K2]=2522,[K1]=K8,x=10,y=326,},[K20]={[1]={f=K3,[K11]="A@37",[K2]=2516,[K1]=K11,x=19,y=326,},},[K2]=2523,[K1]=K21,x=4,y=328,},[K[134]]={f=K3,[K32]=true,[K2]=1841,[K1]="poly",[K19]={[1]={f=K3,t={args={f=K3,[K4]={[1]={[K34]={f=K3,[K2]=2525,[K1]=K5,[K5]="A",x=25,y=328,},f=K3,[K2]=1823,[K1]=K35,x=24,xend=26,y=328,yend=328,},[2]={f=K3,[K2]=1825,[K1]=K14,x=31,y=328,},[3]={f=K3,[K2]=1826,[K1]=K14,x=41,y=328,},},[K2]=1822,[K1]=K4,x=48,y=328,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2526,[K1]=K5,[K5]="A",x=50,y=328,},},[K2]=1827,[K1]=K4,x=48,y=328,},[K41]="table.unpack",[K2]=1821,[K1]=K8,x=12,y=328,},[K20]={[1]={f=K3,[K11]="A",[K2]=1820,[K1]=K11,x=21,y=328,},},[K2]=1829,[K1]=K21,x=4,y=329,},[2]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1834,[K1]=K[142],[K19]={[1]={f=K3,[K2]=2537,[K1]=K5,[K5]="A1",x=30,y=329,},[2]={f=K3,[K2]=2538,[K1]=K5,[K5]="A2",x=34,y=329,},},x=29,xend=36,y=329,yend=329,},},[K2]=1833,[K1]=K4,x=38,y=329,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2539,[K1]=K5,[K5]="A1",x=40,y=329,},[2]={f=K3,[K2]=2540,[K1]=K5,[K5]="A2",x=44,y=329,},},[K2]=1837,[K1]=K4,x=38,y=329,},[K2]=1832,[K1]=K8,x=12,y=329,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1830,[K1]=K11,x=21,y=329,},[2]={f=K3,[K11]="A2",[K2]=1831,[K1]=K11,x=25,y=329,},},[K2]=1840,[K1]=K21,x=4,y=330,},[3]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1847,[K1]=K[142],[K19]={[1]={f=K3,[K2]=2555,[K1]=K5,[K5]="A1",x=34,y=330,},[2]={f=K3,[K2]=2556,[K1]=K5,[K5]="A2",x=38,y=330,},[3]={f=K3,[K2]=2557,[K1]=K5,[K5]="A3",x=42,y=330,},},x=33,xend=44,y=330,yend=330,},},[K2]=1846,[K1]=K4,x=46,y=330,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2558,[K1]=K5,[K5]="A1",x=48,y=330,},[2]={f=K3,[K2]=2559,[K1]=K5,[K5]="A2",x=52,y=330,},[3]={f=K3,[K2]=2560,[K1]=K5,[K5]="A3",x=56,y=330,},},[K2]=1851,[K1]=K4,x=46,y=330,},[K2]=1845,[K1]=K8,x=12,y=330,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1842,[K1]=K11,x=21,y=330,},[2]={f=K3,[K11]="A2",[K2]=1843,[K1]=K11,x=25,y=330,},[3]={f=K3,[K11]="A3",[K2]=1844,[K1]=K11,x=29,y=330,},},[K2]=1855,[K1]=K21,x=4,y=331,},[4]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1862,[K1]=K[142],[K19]={[1]={f=K3,[K2]=2579,[K1]=K5,[K5]="A1",x=38,y=331,},[2]={f=K3,[K2]=2580,[K1]=K5,[K5]="A2",x=42,y=331,},[3]={f=K3,[K2]=2581,[K1]=K5,[K5]="A3",x=46,y=331,},[4]={f=K3,[K2]=2582,[K1]=K5,[K5]="A4",x=50,y=331,},},x=37,xend=52,y=331,yend=331,},},[K2]=1861,[K1]=K4,x=54,y=331,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2583,[K1]=K5,[K5]="A1",x=56,y=331,},[2]={f=K3,[K2]=2584,[K1]=K5,[K5]="A2",x=60,y=331,},[3]={f=K3,[K2]=2585,[K1]=K5,[K5]="A3",x=64,y=331,},[4]={f=K3,[K2]=2586,[K1]=K5,[K5]="A4",x=68,y=331,},},[K2]=1867,[K1]=K4,x=54,y=331,},[K2]=1860,[K1]=K8,x=12,y=331,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1856,[K1]=K11,x=21,y=331,},[2]={f=K3,[K11]="A2",[K2]=1857,[K1]=K11,x=25,y=331,},[3]={f=K3,[K11]="A3",[K2]=1858,[K1]=K11,x=29,y=331,},[4]={f=K3,[K11]="A4",[K2]=1859,[K1]=K11,x=33,y=331,},},[K2]=1872,[K1]=K21,x=4,y=332,},[5]={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=1880,[K1]=K[142],[K19]={[1]={f=K3,[K2]=2609,[K1]=K5,[K5]="A1",x=42,y=332,},[2]={f=K3,[K2]=2610,[K1]=K5,[K5]="A2",x=46,y=332,},[3]={f=K3,[K2]=2611,[K1]=K5,[K5]="A3",x=50,y=332,},[4]={f=K3,[K2]=2612,[K1]=K5,[K5]="A4",x=54,y=332,},[5]={f=K3,[K2]=2613,[K1]=K5,[K5]="A5",x=58,y=332,},},x=41,xend=60,y=332,yend=332,},},[K2]=1879,[K1]=K4,x=62,y=332,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2614,[K1]=K5,[K5]="A1",x=64,y=332,},[2]={f=K3,[K2]=2615,[K1]=K5,[K5]="A2",x=68,y=332,},[3]={f=K3,[K2]=2616,[K1]=K5,[K5]="A3",x=72,y=332,},[4]={f=K3,[K2]=2617,[K1]=K5,[K5]="A4",x=76,y=332,},[5]={f=K3,[K2]=2618,[K1]=K5,[K5]="A5",x=80,y=332,},},[K2]=1886,[K1]=K4,x=62,y=332,},[K2]=1878,[K1]=K8,x=12,y=332,},[K20]={[1]={f=K3,[K11]="A1",[K2]=1873,[K1]=K11,x=21,y=332,},[2]={f=K3,[K11]="A2",[K2]=1874,[K1]=K11,x=25,y=332,},[3]={f=K3,[K11]="A3",[K2]=1875,[K1]=K11,x=29,y=332,},[4]={f=K3,[K11]="A4",[K2]=1876,[K1]=K11,x=33,y=332,},[5]={f=K3,[K11]="A5",[K2]=1877,[K1]=K11,x=37,y=332,},},[K2]=1892,[K1]=K21,x=1,y=333,},},x=4,y=330,},},[K36]={},[K2]=1723,[K1]=K44,x=1,y=306,},f=K3,[K2]=1893,[K1]=K27,x=1,y=306,},},[K40]={[K26]={f=K9,kind=K24,tk=K40,x=18,xend=23,y=11,yend=11,},[K25]=true,t={[K42]=true,def={[K31]=K40,f=K9,[K39]={},[K38]={},[K37]={},[K[11]]={},[K[1]]=true,[K36]={},[K2]=11,[K1]=K[23],x=1,y=11,},f=K9,[K2]=12,[K1]=K27,x=1,y=11,},},["tonumber"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="tonumber",x=8,xend=15,y=446,yend=446,},[K25]=true,t={f=K3,[K2]=2292,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=2283,[K1]="any",x=23,y=416,},},[K2]=2282,[K1]=K4,x=27,y=416,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2285,[K1]=K14,x=29,y=416,},},[K2]=2284,[K1]=K4,x=27,y=416,},[K2]=2281,[K1]=K8,x=14,y=416,},[2]={args={f=K3,[K4]={[1]={f=K3,[K2]=2288,[K1]="any",x=23,y=417,},[2]={f=K3,[K2]=2289,[K1]=K13,x=28,y=417,},},[K2]=2287,[K1]=K4,x=36,y=417,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=2291,[K1]=K13,x=38,y=417,},},[K2]=2290,[K1]=K4,x=36,y=417,},[K2]=2286,[K1]=K8,x=14,y=417,},},x=4,y=419,},},["tostring"]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="tostring",x=8,xend=15,y=445,yend=445,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2295,[K1]="any",x=23,y=419,},},[K2]=2294,[K1]=K4,x=27,y=419,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2297,[K1]=K12,x=29,y=419,},},[K2]=2296,[K1]=K4,x=27,y=419,},[K2]=2293,[K1]=K8,x=14,y=419,},},type={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk="type",x=8,xend=11,y=448,yend=448,},[K25]=true,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2300,[K1]="any",x=19,y=420,},},[K2]=2299,[K1]=K4,x=23,y=420,},f=K3,[K7]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=2302,[K1]=K12,x=25,y=420,},},[K2]=2301,[K1]=K4,x=23,y=420,},[K2]=2298,[K1]=K8,x=10,y=420,},},[K[88]]={[K26]={f=K9,kind=K24,tk=K[88],x=18,xend=25,y=14,yend=14,},[K25]=true,t=T19,[K[22]]=true,},utf8={[K26]={f=K3,kind=K24,tk="utf8",x=15,xend=18,y=335,yend=335,},[K25]=true,[K32]=true,t={[K42]=true,def={[K31]="utf8",f=K3,[K39]={char={},[K[143]]={},[K[144]]={},[K[145]]={},len={},[K[146]]={},},[K38]={[1]="char",[2]=K[143],[3]=K[144],[4]=K[145],[5]="len",[6]=K[146],},[K37]={char={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1899,[K1]=K14,x=19,y=336,},},[K2]=1898,[K1]=K4,x=29,y=336,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1901,[K1]=K12,x=31,y=336,},},[K2]=1900,[K1]=K4,x=29,y=336,},[K2]=1897,[K1]=K8,x=10,y=336,},[K[143]]={f=K3,[K2]=1902,[K1]=K12,x=17,y=337,},[K[144]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1905,[K1]=K12,x=24,y=338,},[2]={f=K3,[K2]=1906,[K1]=K14,x=34,y=338,},[3]={f=K3,[K2]=1907,[K1]=K14,x=44,y=338,},[4]={f=K3,[K2]=1908,[K1]=K30,x=54,y=338,},},[K2]=1904,[K1]=K4,x=62,y=338,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1910,[K1]=K13,x=64,y=338,},},[K2]=1909,[K1]=K4,x=62,y=338,},[K2]=1903,[K1]=K8,x=15,y=338,},[K[145]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1913,[K1]=K12,x=20,y=339,},[2]={f=K3,[K2]=1914,[K1]=K30,x=30,y=339,},},[K2]=1912,[K1]=K4,x=38,y=339,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=1918,[K1]=K12,x=50,y=339,},[2]={f=K3,[K2]=1919,[K1]=K13,x=60,y=339,},},[K2]=1917,[K1]=K4,x=68,y=339,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1921,[K1]=K13,x=71,y=339,},[2]={f=K3,[K2]=1922,[K1]=K13,x=80,y=339,},},[K2]=1920,[K1]=K4,x=68,y=339,},[K2]=1916,[K1]=K8,x=41,y=339,},[2]={f=K3,[K2]=1923,[K1]=K12,x=90,y=339,},[3]={f=K3,[K2]=1924,[K1]=K13,x=98,y=339,},},[K2]=1915,[K1]=K4,x=38,y=339,},[K2]=1911,[K1]=K8,x=11,y=339,},len={args={f=K3,[K4]={[1]={f=K3,[K2]=1927,[K1]=K12,x=18,y=340,},[2]={f=K3,[K2]=1928,[K1]=K14,x=28,y=340,},[3]={f=K3,[K2]=1929,[K1]=K14,x=38,y=340,},[4]={f=K3,[K2]=1930,[K1]=K30,x=48,y=340,},},[K2]=1926,[K1]=K4,x=56,y=340,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1932,[K1]=K13,x=58,y=340,},[2]={f=K3,[K2]=1933,[K1]=K13,x=67,y=340,},},[K2]=1931,[K1]=K4,x=56,y=340,},[K2]=1925,[K1]=K8,x=9,y=340,},[K[146]]={args={f=K3,[K4]={[1]={f=K3,[K2]=1936,[K1]=K12,x=21,y=341,},[2]={f=K3,[K2]=1937,[K1]=K14,x=29,y=341,},[3]={f=K3,[K2]=1938,[K1]=K14,x=39,y=341,},},[K2]=1935,[K1]=K4,x=46,y=341,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1940,[K1]=K13,x=48,y=341,},},[K2]=1939,[K1]=K4,x=46,y=341,},[K2]=1934,[K1]=K8,x=12,y=341,},},[K36]={},[K2]=1896,[K1]=K44,x=1,y=335,},f=K3,[K2]=1941,[K1]=K27,x=1,y=335,},},[K[147]]={[K23]=K22,[K26]={[K23]=K22,f=K3,kind=K24,tk=K[147],x=8,xend=13,y=449,yend=449,},[K25]=true,[K32]=true,t={args={f=K3,[K15]=true,[K4]={[1]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2312,[K1]="any",x=30,y=422,},},[K2]=2311,[K1]=K4,x=37,y=422,},f=K3,[K7]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2314,[K1]="any",x=39,y=422,},},[K2]=2313,[K1]=K4,x=37,y=422,},[K2]=2310,[K1]=K8,x=21,y=422,},[2]={f=K3,[K18]={def={args={f=K3,[K4]={[1]={f=K3,[K2]=1972,[K1]="any",x=39,y=368,},},[K2]=1971,[K1]=K4,x=43,y=368,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1974,[K1]="any",x=45,y=368,},},[K2]=1973,[K1]=K4,x=43,y=368,},[K2]=1970,[K1]=K8,x=30,y=368,},f=K3,[K2]=1975,[K1]=K27,x=30,y=368,},[K17]={[1]="XpcallMsghFunction",},[K2]=2315,[K1]=K16,x=48,y=422,},[3]={f=K3,[K2]=2316,[K1]="any",x=68,y=422,},},[K2]=2309,[K1]=K4,x=75,y=422,},f=K3,[K7]=false,[K6]=2,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=2318,[K1]=K30,x=77,y=422,},[2]={f=K3,[K2]=2319,[K1]="any",x=86,y=422,},},[K2]=2317,[K1]=K4,x=75,y=422,},[K41]=K[147],[K2]=2308,[K1]=K8,x=12,y=422,},},}
 T1.def=T2
-T2[K39]={[K[2]]={},[K[3]]={},[K49]={},[K[4]]={},[K[5]]={[1]={},[2]={},[3]={},[4]={},},read={[1]={},[2]={},[3]={},[4]={},},seek={},[K[6]]={},[K50]={},}
-T2[K45]={[K[2]]={f=K3,x=4,y=146,},[K[3]]={f=K3,x=4,y=150,},[K49]={f=K3,x=4,y=154,},[K[4]]={f=K3,x=4,y=155,},[K[5]]={f=K3,x=4,y=157,},read={f=K3,x=4,y=163,},seek={f=K3,x=4,y=169,},[K[6]]={f=K3,x=4,y=170,},[K50]={f=K3,x=4,y=172,},}
-T2[K38]={[1]=K[2],[2]=K[3],[3]=K49,[4]=K[4],[5]=K[5],[6]="read",[7]="seek",[8]=K[6],[9]=K50,}
-T2[K37]={[K[2]]=T3,[K[3]]=T4,[K49]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1015,[K1]=K16,x=20,y=154,},},[K2]=1014,[K1]=K4,x=25,y=154,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1017,[K1]=K30,x=27,y=154,},[2]={f=K3,[K2]=1018,[K1]=K12,x=36,y=154,},[3]={f=K3,[K2]=1019,[K1]=K13,x=44,y=154,},},[K2]=1016,[K1]=K4,x=25,y=154,},[K2]=1013,[K1]=K9,x=11,y=154,},[K[4]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1022,[K1]=K16,x=20,y=155,},},[K2]=1021,[K1]=K4,x=25,y=155,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1024,[K1]=K30,x=27,y=155,},[2]={f=K3,[K2]=1025,[K1]=K12,x=36,y=155,},[3]={f=K3,[K2]=1026,[K1]=K13,x=44,y=155,},},[K2]=1023,[K1]=K4,x=25,y=155,},[K2]=1020,[K1]=K9,x=11,y=155,},[K[5]]={f=K3,[K2]=1044,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1029,[K1]=K16,x=20,y=157,},},[K2]=1028,[K1]=K4,x=25,y=157,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1032,[K1]=K4,x=38,y=157,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1034,[K1]=K12,x=41,y=157,},},[K2]=1033,[K1]=K4,x=38,y=157,},[K2]=1031,[K1]=K9,x=28,y=157,},},[K2]=1030,[K1]=K4,x=25,y=157,},[K2]=1027,[K1]=K9,x=11,y=157,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1037,[K1]=K16,x=20,y=158,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[7],},[K2]=1038,[K1]=K16,x=26,y=158,},},[K2]=1036,[K1]=K4,x=44,y=158,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1041,[K1]=K4,x=57,y=158,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1043,[K1]=K14,x=60,y=158,},},[K2]=1042,[K1]=K4,x=57,y=158,},[K2]=1040,[K1]=K9,x=47,y=158,},},[K2]=1039,[K1]=K4,x=44,y=158,},[K2]=1035,[K1]=K9,x=11,y=158,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1047,[K1]=K16,x=20,y=159,},[2]={f=K3,[K2]=1048,[K1]=K28,[K19]={[1]={f=K3,[K2]=1049,[K1]=K14,x=27,y=159,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[8],},[K2]=1050,[K1]=K16,x=36,y=159,},},x=27,y=159,},},[K2]=1046,[K1]=K4,x=55,y=159,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1053,[K1]=K4,x=68,y=159,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1055,[K1]=K12,x=71,y=159,},},[K2]=1054,[K1]=K4,x=68,y=159,},[K2]=1052,[K1]=K9,x=58,y=159,},},[K2]=1051,[K1]=K4,x=55,y=159,},[K2]=1045,[K1]=K9,x=11,y=159,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1058,[K1]=K16,x=20,y=160,},[2]={f=K3,[K2]=1059,[K1]=K28,[K19]={[1]={f=K3,[K2]=1060,[K1]=K14,x=27,y=160,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[9],},[K2]=1061,[K1]=K16,x=36,y=160,},},x=27,y=160,},},[K2]=1057,[K1]=K4,x=49,y=160,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1064,[K1]=K4,x=62,y=160,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1066,[K1]=K28,[K19]={[1]={f=K3,[K2]=1067,[K1]=K12,x=66,y=160,},[2]={f=K3,[K2]=1068,[K1]=K14,x=75,y=160,},},x=66,y=160,},},[K2]=1065,[K1]=K4,x=62,y=160,},[K2]=1063,[K1]=K9,x=52,y=160,},},[K2]=1062,[K1]=K4,x=49,y=160,},[K2]=1056,[K1]=K9,x=11,y=160,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1071,[K1]=K16,x=20,y=161,},[2]={f=K3,[K2]=1072,[K1]=K28,[K19]={[1]={f=K3,[K2]=1073,[K1]=K14,x=27,y=161,},[2]={f=K3,[K2]=1074,[K1]=K12,x=36,y=161,},},x=27,y=161,},},[K2]=1070,[K1]=K4,x=47,y=161,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1077,[K1]=K4,x=60,y=161,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1079,[K1]=K12,x=63,y=161,},},[K2]=1078,[K1]=K4,x=60,y=161,},[K2]=1076,[K1]=K9,x=50,y=161,},},[K2]=1075,[K1]=K4,x=47,y=161,},[K2]=1069,[K1]=K9,x=11,y=161,},},x=4,y=158,},read={f=K3,[K2]=1091,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1082,[K1]=K16,x=19,y=163,},},[K2]=1081,[K1]=K4,x=24,y=163,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1084,[K1]=K12,x=26,y=163,},},[K2]=1083,[K1]=K4,x=24,y=163,},[K2]=1080,[K1]=K9,x=10,y=163,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1087,[K1]=K16,x=19,y=164,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[7],},[K2]=1088,[K1]=K16,x=25,y=164,},},[K2]=1086,[K1]=K4,x=43,y=164,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1090,[K1]=K14,x=45,y=164,},},[K2]=1089,[K1]=K4,x=43,y=164,},[K2]=1085,[K1]=K9,x=10,y=164,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1094,[K1]=K16,x=19,y=165,},[2]={f=K3,[K2]=1095,[K1]=K28,[K19]={[1]={f=K3,[K2]=1096,[K1]=K14,x=26,y=165,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[8],},[K2]=1097,[K1]=K16,x=35,y=165,},},x=26,y=165,},},[K2]=1093,[K1]=K4,x=54,y=165,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1099,[K1]=K12,x=56,y=165,},},[K2]=1098,[K1]=K4,x=54,y=165,},[K2]=1092,[K1]=K9,x=10,y=165,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1102,[K1]=K16,x=19,y=166,},[2]={f=K3,[K2]=1103,[K1]=K28,[K19]={[1]={f=K3,[K2]=1104,[K1]=K14,x=26,y=166,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[9],},[K2]=1105,[K1]=K16,x=35,y=166,},},x=26,y=166,},},[K2]=1101,[K1]=K4,x=48,y=166,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1107,[K1]=K28,[K19]={[1]={f=K3,[K2]=1108,[K1]=K12,x=52,y=166,},[2]={f=K3,[K2]=1109,[K1]=K14,x=61,y=166,},},x=52,y=166,},},[K2]=1106,[K1]=K4,x=48,y=166,},[K2]=1100,[K1]=K9,x=10,y=166,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1112,[K1]=K16,x=19,y=167,},[2]={f=K3,[K2]=1113,[K1]=K28,[K19]={[1]={f=K3,[K2]=1114,[K1]=K14,x=26,y=167,},[2]={f=K3,[K2]=1115,[K1]=K12,x=35,y=167,},},x=26,y=167,},},[K2]=1111,[K1]=K4,x=46,y=167,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1117,[K1]=K12,x=49,y=167,},},[K2]=1116,[K1]=K4,x=46,y=167,},[K2]=1110,[K1]=K9,x=10,y=167,},},x=4,y=164,},seek={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1120,[K1]=K16,x=19,y=169,},[2]={f=K3,[K18]=T3,[K17]={[1]=K[2],},[K2]=1121,[K1]=K16,x=27,y=169,},[3]={f=K3,[K2]=1122,[K1]=K13,x=41,y=169,},},[K2]=1119,[K1]=K4,x=49,y=169,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1124,[K1]=K13,x=51,y=169,},[2]={f=K3,[K2]=1125,[K1]=K12,x=60,y=169,},[3]={f=K3,[K2]=1126,[K1]=K13,x=68,y=169,},},[K2]=1123,[K1]=K4,x=49,y=169,},[K2]=1118,[K1]=K9,x=10,y=169,},[K[6]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1129,[K1]=K16,x=22,y=170,},[2]={f=K3,[K18]=T4,[K17]={[1]=K[3],},[K2]=1130,[K1]=K16,x=28,y=170,},[3]={f=K3,[K2]=1131,[K1]=K13,x=43,y=170,},},[K2]=1128,[K1]=K4,x=51,y=170,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1133,[K1]=K30,x=53,y=170,},[2]={f=K3,[K2]=1134,[K1]=K12,x=62,y=170,},[3]={f=K3,[K2]=1135,[K1]=K13,x=70,y=170,},},[K2]=1132,[K1]=K4,x=51,y=170,},[K2]=1127,[K1]=K9,x=13,y=170,},[K50]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1138,[K1]=K16,x=20,y=172,},[2]={f=K3,[K2]=1139,[K1]=K28,[K19]={[1]={f=K3,[K2]=1140,[K1]=K12,x=27,y=172,},[2]={f=K3,[K2]=1141,[K1]=K14,x=36,y=172,},},x=27,y=172,},},[K2]=1137,[K1]=K4,x=47,y=172,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1143,[K1]=K16,x=49,y=172,},[2]={f=K3,[K2]=1144,[K1]=K12,x=55,y=172,},[3]={f=K3,[K2]=1145,[K1]=K13,x=63,y=172,},},[K2]=1142,[K1]=K4,x=47,y=172,},[K2]=1136,[K1]=K9,x=11,y=172,},}
-T2[K[10]]={}
-T2[K36]={[K[11]]={},["__is"]={},}
-T2["meta_field_locations"]={[K[11]]={f=K3,x=15,y=174,},["__is"]={f=K3,x=10,y=144,},}
-T2["meta_field_order"]={[1]=K[11],[2]="__is",}
-T2["meta_fields"]={[K[11]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1148,[K1]=K16,x=33,y=174,},},[K2]=1147,[K1]=K4,x=1,y=175,},f=K3,[K8]=true,[K10]=false,[K7]=1,rets={f=K3,[K4]={},[K2]=1149,[K1]=K4,x=37,y=174,},[K2]=1146,[K1]=K9,x=24,y=174,},["__is"]={args={f=K3,[K4]={[1]={["display_type"]=T2,f=K3,[K2]=1154,[K1]="self",x=10,y=144,},},[K2]=1155,[K1]=K4,x=10,y=144,},f=K3,[K8]=true,["macroexp"]={args={[1]={["argtype"]={["display_type"]=T2,f=K3,[K2]=1150,[K1]="self",x=10,y=144,},f=K3,kind="argument",tk="self",x=10,xend=11,y=144,yend=144,},f=K3,kind="argument_list",tk="io",x=10,xend=11,y=144,yend=144,},exp={e1={e1={f=K3,kind="variable",tk="io",x=10,xend=11,y=144,yend=144,},e2={f=K3,kind=K24,tk="type",x=13,xend=16,y=144,yend=144,},f=K3,kind="op",op={["arity"]=2,op=".",prec=100,x=12,y=144,},["receiver"]={f=K3,[K18]=T8,[K17]={[1]="io",},[K47]=T8,[K2]=2400,[K1]=K16,x=10,y=144,},x=12,y=144,},e2={[1]=T11,f=K3,kind="expression_list",tk="(",x=17,xend=22,y=144,yend=144,},f=K3,kind="op",op={["arity"]=2,op="@funcall",prec=100,x=17,y=144,},x=17,y=144,},f=K3,[K8]=true,kind="macroexp",[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1151,[K1]=K30,x=10,y=144,},},[K2]=1152,[K1]=K4,x=10,y=144,},tk="io",x=10,xend=22,y=144,yend=144,},[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1156,[K1]=K30,x=10,y=144,},},[K2]=1157,[K1]=K4,x=10,y=144,},[K2]=1153,[K1]=K9,x=10,y=144,},}
-T3.def={[K31]=K[2],[K46]={cur=true,["end"]=true,set=true,},f=K3,[K2]=1007,[K1]="enum",[K43]={},x=4,y=146,}
-T4.def={[K31]=K[3],[K46]={full=true,line=true,no=true,},f=K3,[K2]=1011,[K1]="enum",[K43]={},x=4,y=150,}
-T5.def={[K31]=K[7],[K46]={["*n"]=true,n=true,},f=K3,[K2]=568,[K1]="enum",[K43]={},x=1,y=18,}
-T6.def={[K31]=K[8],[K46]={["*L"]=true,["*a"]=true,["*l"]=true,L=true,a=true,l=true,},f=K3,[K2]=564,[K1]="enum",[K43]={},x=1,y=14,}
-T7.def={[K31]=K[9],[K46]={["*L"]=true,["*a"]=true,["*l"]=true,["*n"]=true,L=true,a=true,l=true,n=true,},f=K3,[K2]=572,[K1]="enum",[K43]={},x=1,y=22,}
-T8.def={[K31]="io",f=K3,[K39]={[K[12]]={},[K[13]]={},[K49]={},[K[4]]={},[K[14]]={},[K[5]]={[1]={},[2]={},[3]={},[4]={},},open={},[K[15]]={},[K[16]]={},read={[1]={},[2]={},[3]={},[4]={},},[K[17]]={},[K[18]]={},[K[19]]={},[K[20]]={},type={},[K50]={},},[K45]={[K[12]]={f=K3,x=4,y=109,},[K[13]]={f=K3,x=4,y=102,},[K49]={f=K3,x=4,y=114,},[K[4]]={f=K3,x=4,y=116,},[K[14]]={f=K3,x=4,y=115,},[K[5]]={f=K3,x=4,y=118,},open={f=K3,x=4,y=124,},[K[15]]={f=K3,x=4,y=125,},[K[16]]={f=K3,x=4,y=126,},read={f=K3,x=4,y=128,},[K[17]]={f=K3,x=4,y=134,},[K[18]]={f=K3,x=4,y=135,},[K[19]]={f=K3,x=4,y=136,},[K[20]]={f=K3,x=4,y=137,},type={f=K3,x=4,y=138,},[K50]={f=K3,x=4,y=139,},},[K38]={[1]=K[13],[2]=K[12],[3]=K49,[4]=K[14],[5]=K[4],[6]=K[5],[7]="open",[8]=K[15],[9]=K[16],[10]="read",[11]=K[17],[12]=K[18],[13]=K[19],[14]=K[20],[15]="type",[16]=K50,},[K37]={[K[12]]=T9,[K[13]]=T10,[K49]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=860,[K1]=K16,x=22,y=114,},},[K2]=859,[K1]=K4,x=4,y=115,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=861,[K1]=K4,x=26,y=114,},[K2]=858,[K1]=K9,x=11,y=114,},[K[4]]={args={f=K3,[K4]={},[K2]=870,[K1]=K4,x=4,y=118,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={},[K2]=871,[K1]=K4,x=20,y=116,},[K2]=869,[K1]=K9,x=11,y=116,},[K[14]]={args={f=K3,[K4]={[1]={f=K3,[K2]=864,[K1]=K28,[K19]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=865,[K1]=K16,x=22,y=115,},[2]={f=K3,[K2]=866,[K1]=K12,x=29,y=115,},},x=22,y=115,},},[K2]=863,[K1]=K4,x=36,y=115,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=868,[K1]=K16,x=38,y=115,},},[K2]=867,[K1]=K4,x=36,y=115,},[K2]=862,[K1]=K9,x=11,y=115,},[K[5]]={f=K3,[K2]=889,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=874,[K1]=K12,x=22,y=118,},},[K2]=873,[K1]=K4,x=29,y=118,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=877,[K1]=K4,x=42,y=118,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=879,[K1]=K12,x=45,y=118,},},[K2]=878,[K1]=K4,x=42,y=118,},[K2]=876,[K1]=K9,x=32,y=118,},},[K2]=875,[K1]=K4,x=29,y=118,},[K2]=872,[K1]=K9,x=11,y=118,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=882,[K1]=K12,x=22,y=119,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[7],},[K2]=883,[K1]=K16,x=30,y=119,},},[K2]=881,[K1]=K4,x=48,y=119,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=886,[K1]=K4,x=61,y=119,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=888,[K1]=K14,x=64,y=119,},},[K2]=887,[K1]=K4,x=61,y=119,},[K2]=885,[K1]=K9,x=51,y=119,},},[K2]=884,[K1]=K4,x=48,y=119,},[K2]=880,[K1]=K9,x=11,y=119,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=892,[K1]=K12,x=22,y=120,},[2]={f=K3,[K2]=893,[K1]=K28,[K19]={[1]={f=K3,[K2]=894,[K1]=K14,x=31,y=120,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[8],},[K2]=895,[K1]=K16,x=40,y=120,},},x=31,y=120,},},[K2]=891,[K1]=K4,x=59,y=120,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=898,[K1]=K4,x=72,y=120,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=900,[K1]=K12,x=75,y=120,},},[K2]=899,[K1]=K4,x=72,y=120,},[K2]=897,[K1]=K9,x=62,y=120,},},[K2]=896,[K1]=K4,x=59,y=120,},[K2]=890,[K1]=K9,x=11,y=120,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=903,[K1]=K12,x=22,y=121,},[2]={f=K3,[K2]=904,[K1]=K28,[K19]={[1]={f=K3,[K2]=905,[K1]=K14,x=31,y=121,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[9],},[K2]=906,[K1]=K16,x=40,y=121,},},x=31,y=121,},},[K2]=902,[K1]=K4,x=53,y=121,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=909,[K1]=K4,x=66,y=121,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=911,[K1]=K28,[K19]={[1]={f=K3,[K2]=912,[K1]=K12,x=70,y=121,},[2]={f=K3,[K2]=913,[K1]=K14,x=79,y=121,},},x=70,y=121,},},[K2]=910,[K1]=K4,x=66,y=121,},[K2]=908,[K1]=K9,x=56,y=121,},},[K2]=907,[K1]=K4,x=53,y=121,},[K2]=901,[K1]=K9,x=11,y=121,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=916,[K1]=K12,x=22,y=122,},[2]={f=K3,[K2]=917,[K1]=K28,[K19]={[1]={f=K3,[K2]=918,[K1]=K14,x=31,y=122,},[2]={f=K3,[K2]=919,[K1]=K12,x=40,y=122,},},x=31,y=122,},},[K2]=915,[K1]=K4,x=51,y=122,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=922,[K1]=K4,x=64,y=122,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=924,[K1]=K12,x=67,y=122,},},[K2]=923,[K1]=K4,x=64,y=122,},[K2]=921,[K1]=K9,x=54,y=122,},},[K2]=920,[K1]=K4,x=51,y=122,},[K2]=914,[K1]=K9,x=11,y=122,},},x=4,y=119,},open={args={f=K3,[K4]={[1]={f=K3,[K2]=927,[K1]=K12,x=19,y=124,},[2]={f=K3,[K18]=T10,[K17]={[1]=K[13],},[K2]=928,[K1]=K16,x=29,y=124,},},[K2]=926,[K1]=K4,x=38,y=124,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=930,[K1]=K16,x=40,y=124,},[2]={f=K3,[K2]=931,[K1]=K12,x=46,y=124,},[3]={f=K3,[K2]=932,[K1]=K13,x=54,y=124,},},[K2]=929,[K1]=K4,x=38,y=124,},[K2]=925,[K1]=K9,x=10,y=124,},[K[15]]={args={f=K3,[K4]={[1]={f=K3,[K2]=935,[K1]=K28,[K19]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=936,[K1]=K16,x=23,y=125,},[2]={f=K3,[K2]=937,[K1]=K12,x=30,y=125,},},x=23,y=125,},},[K2]=934,[K1]=K4,x=37,y=125,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=939,[K1]=K16,x=39,y=125,},},[K2]=938,[K1]=K4,x=37,y=125,},[K2]=933,[K1]=K9,x=12,y=125,},[K[16]]={args={f=K3,[K4]={[1]={f=K3,[K2]=942,[K1]=K12,x=20,y=126,},[2]={f=K3,[K18]=T10,[K17]={[1]=K[13],},[K2]=943,[K1]=K16,x=30,y=126,},},[K2]=941,[K1]=K4,x=39,y=126,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=945,[K1]=K16,x=41,y=126,},[2]={f=K3,[K2]=946,[K1]=K12,x=47,y=126,},},[K2]=944,[K1]=K4,x=39,y=126,},[K2]=940,[K1]=K9,x=11,y=126,},read={f=K3,[K2]=956,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={},[K2]=948,[K1]=K4,x=20,y=128,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=950,[K1]=K12,x=22,y=128,},},[K2]=949,[K1]=K4,x=20,y=128,},[K2]=947,[K1]=K9,x=10,y=128,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T5,[K17]={[1]=K[7],},[K2]=953,[K1]=K16,x=19,y=129,},},[K2]=952,[K1]=K4,x=37,y=129,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=955,[K1]=K14,x=39,y=129,},},[K2]=954,[K1]=K4,x=37,y=129,},[K2]=951,[K1]=K9,x=10,y=129,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=959,[K1]=K28,[K19]={[1]={f=K3,[K2]=960,[K1]=K14,x=20,y=130,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[8],},[K2]=961,[K1]=K16,x=29,y=130,},},x=20,y=130,},},[K2]=958,[K1]=K4,x=48,y=130,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=963,[K1]=K12,x=50,y=130,},},[K2]=962,[K1]=K4,x=48,y=130,},[K2]=957,[K1]=K9,x=10,y=130,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=966,[K1]=K28,[K19]={[1]={f=K3,[K2]=967,[K1]=K14,x=20,y=131,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[9],},[K2]=968,[K1]=K16,x=29,y=131,},},x=20,y=131,},},[K2]=965,[K1]=K4,x=42,y=131,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=970,[K1]=K28,[K19]={[1]={f=K3,[K2]=971,[K1]=K12,x=46,y=131,},[2]={f=K3,[K2]=972,[K1]=K14,x=55,y=131,},},x=46,y=131,},},[K2]=969,[K1]=K4,x=42,y=131,},[K2]=964,[K1]=K9,x=10,y=131,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=975,[K1]=K28,[K19]={[1]={f=K3,[K2]=976,[K1]=K14,x=20,y=132,},[2]={f=K3,[K2]=977,[K1]=K12,x=29,y=132,},},x=20,y=132,},},[K2]=974,[K1]=K4,x=40,y=132,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=979,[K1]=K12,x=43,y=132,},},[K2]=978,[K1]=K4,x=40,y=132,},[K2]=973,[K1]=K9,x=10,y=132,},},x=4,y=129,},[K[17]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=980,[K1]=K16,x=12,y=134,},[K[18]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=981,[K1]=K16,x=11,y=135,},[K[19]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=982,[K1]=K16,x=12,y=136,},[K[20]]={args={f=K3,[K4]={},[K2]=984,[K1]=K4,x=23,y=137,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=986,[K1]=K16,x=25,y=137,},},[K2]=985,[K1]=K4,x=23,y=137,},[K2]=983,[K1]=K9,x=13,y=137,},type={args={f=K3,[K4]={[1]={f=K3,[K2]=989,[K1]="any",x=19,y=138,},},[K2]=988,[K1]=K4,x=23,y=138,},f=K3,[K8]=false,[K10]=false,[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T9,[K17]={[1]=K[12],},[K2]=991,[K1]=K16,x=25,y=138,},},[K2]=990,[K1]=K4,x=23,y=138,},[K2]=987,[K1]=K9,x=10,y=138,},[K50]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=994,[K1]=K28,[K19]={[1]={f=K3,[K2]=995,[K1]=K12,x=21,y=139,},[2]={f=K3,[K2]=996,[K1]=K14,x=30,y=139,},},x=21,y=139,},},[K2]=993,[K1]=K4,x=41,y=139,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K47]=T2,[K2]=998,[K1]=K16,x=43,y=139,},[2]={f=K3,[K2]=999,[K1]=K12,x=49,y=139,},[3]={f=K3,[K2]=1000,[K1]=K13,x=57,y=139,},},[K2]=997,[K1]=K4,x=41,y=139,},[K2]=992,[K1]=K9,x=11,y=139,},},[K36]={},[K2]=849,[K1]=K44,x=1,y=101,}
-T9.def={[K31]=K[12],[K46]={["closed file"]=true,file=true,},f=K3,[K2]=856,[K1]="enum",[K43]={},x=4,y=109,}
-T10.def={[K31]=K[13],[K46]={["*a"]=true,["*a+"]=true,["*a+b"]=true,["*ab"]=true,["*r"]=true,["*r+"]=true,["*r+b"]=true,["*rb"]=true,["*w"]=true,["*w+"]=true,["*w+b"]=true,["*wb"]=true,a=true,["a+"]=true,["a+b"]=true,ab=true,r=true,["r+"]=true,["r+b"]=true,rb=true,w=true,["w+"]=true,["w+b"]=true,wb=true,},f=K3,[K2]=852,[K1]="enum",[K43]={},x=4,y=102,}
-T11["expected"]={f=K3,["inferred_at"]=T11,[K2]=2402,[K1]="any",x=18,y=144,}
-T12.def={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=581,[K1]="any",x=29,y=27,},},[K2]=580,[K1]=K4,x=36,y=27,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=583,[K1]="any",x=38,y=27,},},[K2]=582,[K1]=K4,x=36,y=27,},[K2]=579,[K1]=K9,x=20,y=27,}
-T13.def={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=671,[K1]="any",x=32,y=65,},},[K2]=670,[K1]=K4,x=39,y=65,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=673,[K1]="any",x=40,y=65,},},[K2]=672,[K1]=K4,x=39,y=65,},[K2]=669,[K1]=K9,x=23,y=65,}
-T14.def={[K31]=K[33],f=K3,[K39]={[K[51]]={},[K[52]]={},[K[53]]={},func={},[K[54]]={},[K[55]]={},[K[56]]={},[K[57]]={},name={},[K[58]]={},[K[59]]={},[K[60]]={[1]={[1]={text="-- TODO: what should compat be for these? (5.4+)",x=26,y=55,},},},nups={},[K[61]]={},[K[62]]={},what={},},[K45]={[K[51]]={f=K3,x=7,y=54,},[K[52]]={f=K3,x=7,y=48,},[K[53]]={f=K3,x=7,y=55,},func={f=K3,x=7,y=53,},[K[54]]={f=K3,x=7,y=49,},[K[55]]={f=K3,x=7,y=52,},[K[56]]={f=K3,x=7,y=46,},[K[57]]={f=K3,x=7,y=45,},name={f=K3,x=7,y=41,},[K[58]]={f=K3,x=7,y=42,},[K[59]]={f=K3,x=7,y=51,},[K[60]]={f=K3,x=7,y=56,},nups={f=K3,x=7,y=50,},[K[61]]={f=K3,x=7,y=44,},[K[62]]={f=K3,x=7,y=43,},what={f=K3,x=7,y=47,},},[K38]={[1]="name",[2]=K[58],[3]=K[62],[4]=K[61],[5]=K[57],[6]=K[56],[7]="what",[8]=K[52],[9]=K[54],[10]="nups",[11]=K[59],[12]=K[55],[13]="func",[14]=K[51],[15]=K[53],[16]=K[60],},[K37]={[K[51]]={f=K3,keys={f=K3,[K2]=650,[K1]=K13,x=21,y=54,},[K2]=649,[K1]="map",[K33]={f=K3,[K2]=651,[K1]=K30,x=29,y=54,},x=20,xend=36,y=54,yend=54,},[K[52]]={f=K3,[K2]=643,[K1]=K13,x=20,y=48,},[K[53]]={f=K3,[K2]=652,[K1]=K13,x=18,y=55,},func={f=K3,[K2]=648,[K1]="any",x=13,y=53,},[K[54]]={f=K3,[K2]=644,[K1]=K30,x=19,y=49,},[K[55]]={f=K3,[K2]=647,[K1]=K30,x=17,y=52,},[K[56]]={f=K3,[K2]=641,[K1]=K13,x=24,y=46,},[K[57]]={f=K3,[K2]=640,[K1]=K13,x=20,y=45,},name={f=K3,[K2]=636,[K1]=K12,x=13,y=41,},[K[58]]={f=K3,[K2]=637,[K1]=K12,x=17,y=42,},[K[59]]={f=K3,[K2]=646,[K1]=K13,x=16,y=51,},[K[60]]={f=K3,[K2]=653,[K1]=K13,x=18,y=56,},nups={f=K3,[K2]=645,[K1]=K13,x=13,y=50,},[K[61]]={f=K3,[K2]=639,[K1]=K12,x=18,y=44,},[K[62]]={f=K3,[K2]=638,[K1]=K12,x=15,y=43,},what={f=K3,[K2]=642,[K1]=K12,x=13,y=47,},},[K36]={},[K2]=635,[K1]=K44,x=4,y=40,}
-T15.def={[K31]=K[34],[K46]={call=true,["count"]=true,line=true,["return"]=true,["tail call"]=true,},f=K3,[K2]=657,[K1]="enum",[K43]={},x=4,y=59,}
-T16.def={args={f=K3,[K4]={[1]={f=K3,[K18]=T15,[K17]={[1]=K[34],},[K2]=663,[K1]=K16,x=33,y=63,},[2]={f=K3,[K2]=664,[K1]=K13,x=44,y=63,},},[K2]=662,[K1]=K4,x=4,y=65,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={},[K2]=665,[K1]=K4,x=51,y=63,},[K2]=661,[K1]=K9,x=24,y=63,}
-T17.def={f=K6,t={[K31]=K[63],f=K6,[K39]={Mode={},[K[64]]={},[K[65]]={},[K[66]]={},[K[67]]={},[K[68]]={},[K[69]]={},[K[11]]={},[K[70]]={},[K[71]]={},["__eq"]={},["__gc"]={},[K[72]]={},[K[73]]={},["__le"]={},[K[74]]={},["__lt"]={},[K[75]]={},[K[76]]={},[K[77]]={},[K[78]]={},[K[79]]={[1]={[1]={text="--[[FIXME: function | table | anything with an __index metamethod]]",x=17,y=29,},},},[K[80]]={},[K[81]]={},[K[82]]={},[K[83]]={},[K[84]]={},[K[85]]={},[K[86]]={},},[K45]={Mode={f=K6,x=4,y=19,},[K[64]]={f=K6,x=4,y=35,},[K[65]]={f=K6,x=4,y=42,},[K[66]]={f=K6,x=4,y=51,},[K[67]]={f=K6,x=4,y=43,},[K[68]]={f=K6,x=4,y=44,},[K[69]]={f=K6,x=4,y=23,},[K[11]]={f=K6,x=4,y=33,},[K[70]]={f=K6,x=4,y=47,},[K[71]]={f=K6,x=4,y=38,},["__eq"]={f=K6,x=4,y=53,},["__gc"]={f=K6,x=4,y=32,},[K[72]]={f=K6,x=4,y=39,},[K[73]]={f=K6,x=4,y=29,},["__le"]={f=K6,x=4,y=55,},[K[74]]={f=K6,x=4,y=49,},["__lt"]={f=K6,x=4,y=54,},[K[75]]={f=K6,x=4,y=40,},[K[76]]={f=K6,x=4,y=24,},[K[77]]={f=K6,x=4,y=37,},[K[78]]={f=K6,x=4,y=25,},[K[79]]={f=K6,x=4,y=30,},[K[80]]={f=K6,x=4,y=27,},[K[81]]={f=K6,x=4,y=41,},[K[82]]={f=K6,x=4,y=45,},[K[83]]={f=K6,x=4,y=46,},[K[84]]={f=K6,x=4,y=36,},[K[85]]={f=K6,x=4,y=26,},[K[86]]={f=K6,x=4,y=50,},},[K38]={[1]="Mode",[2]=K[69],[3]=K[76],[4]=K[78],[5]=K[85],[6]=K[80],[7]=K[73],[8]=K[79],[9]="__gc",[10]=K[11],[11]=K[64],[12]=K[84],[13]=K[77],[14]=K[71],[15]=K[72],[16]=K[75],[17]=K[81],[18]=K[65],[19]=K[67],[20]=K[68],[21]=K[82],[22]=K[83],[23]=K[70],[24]=K[74],[25]=K[86],[26]=K[66],[27]="__eq",[28]="__lt",[29]="__le",},[K37]={Mode=T18,[K[64]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=272,[K1]=K5,[K5]="A@3",x=29,y=35,},[2]={f=K6,[K2]=273,[K1]=K5,[K5]="B@3",x=32,y=35,},},[K2]=274,[K1]=K4,x=34,y=35,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=275,[K1]=K5,[K5]="C@3",x=36,y=35,},},[K2]=276,[K1]=K4,x=34,y=35,},[K2]=277,[K1]=K9,x=11,y=35,},[K20]={[1]={f=K6,[K11]="A@3",[K2]=269,[K1]=K11,x=20,y=35,},[2]={f=K6,[K11]="B@3",[K2]=270,[K1]=K11,x=23,y=35,},[3]={f=K6,[K11]="C@3",[K2]=271,[K1]=K11,x=26,y=35,},},[K2]=278,[K1]=K21,x=4,y=36,},[K[65]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=384,[K1]=K5,[K5]="A@10",x=30,y=42,},[2]={f=K6,[K2]=385,[K1]=K5,[K5]="B@10",x=33,y=42,},},[K2]=386,[K1]=K4,x=35,y=42,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=387,[K1]=K5,[K5]="C@10",x=37,y=42,},},[K2]=388,[K1]=K4,x=35,y=42,},[K2]=389,[K1]=K9,x=12,y=42,},[K20]={[1]={f=K6,[K11]="A@10",[K2]=381,[K1]=K11,x=21,y=42,},[2]={f=K6,[K11]="B@10",[K2]=382,[K1]=K11,x=24,y=42,},[3]={f=K6,[K11]="C@10",[K2]=383,[K1]=K11,x=27,y=42,},},[K2]=390,[K1]=K21,x=4,y=43,},[K[66]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=488,[K1]=K5,[K5]="T",x=24,y=51,},},[K2]=206,[K1]=K4,x=26,y=51,},f=K6,[K8]=false,[K7]=1,rets={f=K6,[K4]={[1]={f=K6,[K2]=491,[K1]=K5,[K5]="A@18",x=28,y=51,},},[K2]=492,[K1]=K4,x=26,y=51,},[K2]=493,[K1]=K9,x=12,y=51,},[K20]={[1]={f=K6,[K11]="A@18",[K2]=490,[K1]=K11,x=21,y=51,},},[K2]=494,[K1]=K21,x=4,y=53,},[K[67]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=400,[K1]=K5,[K5]="A@11",x=29,y=43,},[2]={f=K6,[K2]=401,[K1]=K5,[K5]="B@11",x=32,y=43,},},[K2]=402,[K1]=K4,x=34,y=43,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=403,[K1]=K5,[K5]="C@11",x=36,y=43,},},[K2]=404,[K1]=K4,x=34,y=43,},[K2]=405,[K1]=K9,x=11,y=43,},[K20]={[1]={f=K6,[K11]="A@11",[K2]=397,[K1]=K11,x=20,y=43,},[2]={f=K6,[K11]="B@11",[K2]=398,[K1]=K11,x=23,y=43,},[3]={f=K6,[K11]="C@11",[K2]=399,[K1]=K11,x=26,y=43,},},[K2]=406,[K1]=K21,x=4,y=44,},[K[68]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=416,[K1]=K5,[K5]="A@12",x=30,y=44,},[2]={f=K6,[K2]=417,[K1]=K5,[K5]="B@12",x=33,y=44,},},[K2]=418,[K1]=K4,x=35,y=44,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=419,[K1]=K5,[K5]="C@12",x=37,y=44,},},[K2]=420,[K1]=K4,x=35,y=44,},[K2]=421,[K1]=K9,x=12,y=44,},[K20]={[1]={f=K6,[K11]="A@12",[K2]=413,[K1]=K11,x=21,y=44,},[2]={f=K6,[K11]="B@12",[K2]=414,[K1]=K11,x=24,y=44,},[3]={f=K6,[K11]="C@12",[K2]=415,[K1]=K11,x=27,y=44,},},[K2]=422,[K1]=K21,x=4,y=45,},[K[69]]={args={f=K6,[K15]=true,[K4]={[1]={f=K6,[K2]=245,[K1]=K5,[K5]="T",x=21,y=23,},[2]={f=K6,[K2]=28,[K1]="any",x=24,y=23,},},[K2]=26,[K1]=K4,x=31,y=23,},f=K6,[K8]=false,[K10]=false,[K7]=1,rets={f=K6,[K15]=true,[K4]={[1]={f=K6,[K2]=30,[K1]="any",x=33,y=23,},},[K2]=29,[K1]=K4,x=31,y=23,},[K2]=25,[K1]=K9,x=12,y=23,},[K[11]]={args={f=K6,[K4]={[1]={f=K6,[K2]=262,[K1]=K5,[K5]="T",x=22,y=33,},},[K2]=57,[K1]=K4,x=4,y=35,},f=K6,[K8]=false,[K10]=false,[K7]=1,rets={f=K6,[K4]={},[K2]=59,[K1]=K4,x=23,y=33,},[K2]=56,[K1]=K9,x=13,y=33,},[K[70]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=464,[K1]=K5,[K5]="A@15",x=32,y=47,},[2]={f=K6,[K2]=465,[K1]=K5,[K5]="B@15",x=35,y=47,},},[K2]=466,[K1]=K4,x=37,y=47,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=467,[K1]=K5,[K5]="C@15",x=39,y=47,},},[K2]=468,[K1]=K4,x=37,y=47,},[K2]=469,[K1]=K9,x=14,y=47,},[K20]={[1]={f=K6,[K11]="A@15",[K2]=461,[K1]=K11,x=23,y=47,},[2]={f=K6,[K11]="B@15",[K2]=462,[K1]=K11,x=26,y=47,},[3]={f=K6,[K11]="C@15",[K2]=463,[K1]=K11,x=29,y=47,},},[K2]=470,[K1]=K21,x=4,y=49,},[K[71]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=320,[K1]=K5,[K5]="A@6",x=29,y=38,},[2]={f=K6,[K2]=321,[K1]=K5,[K5]="B@6",x=32,y=38,},},[K2]=322,[K1]=K4,x=34,y=38,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=323,[K1]=K5,[K5]="C@6",x=36,y=38,},},[K2]=324,[K1]=K4,x=34,y=38,},[K2]=325,[K1]=K9,x=11,y=38,},[K20]={[1]={f=K6,[K11]="A@6",[K2]=317,[K1]=K11,x=20,y=38,},[2]={f=K6,[K11]="B@6",[K2]=318,[K1]=K11,x=23,y=38,},[3]={f=K6,[K11]="C@6",[K2]=319,[K1]=K11,x=26,y=38,},},[K2]=326,[K1]=K21,x=4,y=39,},["__eq"]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=501,[K1]=K5,[K5]="A@19",x=25,y=53,},[2]={f=K6,[K2]=502,[K1]=K5,[K5]="B@19",x=28,y=53,},},[K2]=503,[K1]=K4,x=30,y=53,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=218,[K1]=K30,x=32,y=53,},},[K2]=217,[K1]=K4,x=30,y=53,},[K2]=504,[K1]=K9,x=10,y=53,},[K20]={[1]={f=K6,[K11]="A@19",[K2]=499,[K1]=K11,x=19,y=53,},[2]={f=K6,[K11]="B@19",[K2]=500,[K1]=K11,x=22,y=53,},},[K2]=505,[K1]=K21,x=4,y=54,},["__gc"]={args={f=K6,[K4]={[1]={f=K6,[K2]=261,[K1]=K5,[K5]="T",x=19,y=32,},},[K2]=53,[K1]=K4,x=4,y=33,},f=K6,[K8]=false,[K10]=false,[K7]=1,rets={f=K6,[K4]={},[K2]=55,[K1]=K4,x=20,y=32,},[K2]=52,[K1]=K9,x=10,y=32,},[K[72]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=336,[K1]=K5,[K5]="A@7",x=30,y=39,},[2]={f=K6,[K2]=337,[K1]=K5,[K5]="B@7",x=33,y=39,},},[K2]=338,[K1]=K4,x=35,y=39,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=339,[K1]=K5,[K5]="C@7",x=37,y=39,},},[K2]=340,[K1]=K4,x=35,y=39,},[K2]=341,[K1]=K9,x=12,y=39,},[K20]={[1]={f=K6,[K11]="A@7",[K2]=333,[K1]=K11,x=21,y=39,},[2]={f=K6,[K11]="B@7",[K2]=334,[K1]=K11,x=24,y=39,},[3]={f=K6,[K11]="C@7",[K2]=335,[K1]=K11,x=27,y=39,},},[K2]=342,[K1]=K21,x=4,y=40,},[K[73]]={f=K6,[K2]=50,[K1]="any",x=13,y=29,},["__le"]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=523,[K1]=K5,[K5]="A@21",x=25,y=55,},[2]={f=K6,[K2]=524,[K1]=K5,[K5]="B@21",x=28,y=55,},},[K2]=525,[K1]=K4,x=30,y=55,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=236,[K1]=K30,x=32,y=55,},},[K2]=235,[K1]=K4,x=30,y=55,},[K2]=526,[K1]=K9,x=10,y=55,},[K20]={[1]={f=K6,[K11]="A@21",[K2]=521,[K1]=K11,x=19,y=55,},[2]={f=K6,[K11]="B@21",[K2]=522,[K1]=K11,x=22,y=55,},},[K2]=527,[K1]=K21,x=1,y=56,},[K[74]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=472,[K1]=K5,[K5]="T",x=23,y=49,},},[K2]=192,[K1]=K4,x=25,y=49,},f=K6,[K8]=false,[K7]=1,rets={f=K6,[K4]={[1]={f=K6,[K2]=475,[K1]=K5,[K5]="A@16",x=27,y=49,},},[K2]=476,[K1]=K4,x=25,y=49,},[K2]=477,[K1]=K9,x=11,y=49,},[K20]={[1]={f=K6,[K11]="A@16",[K2]=474,[K1]=K11,x=20,y=49,},},[K2]=478,[K1]=K21,x=4,y=50,},["__lt"]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=512,[K1]=K5,[K5]="A@20",x=25,y=54,},[2]={f=K6,[K2]=513,[K1]=K5,[K5]="B@20",x=28,y=54,},},[K2]=514,[K1]=K4,x=30,y=54,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=227,[K1]=K30,x=32,y=54,},},[K2]=226,[K1]=K4,x=30,y=54,},[K2]=515,[K1]=K9,x=10,y=54,},[K20]={[1]={f=K6,[K11]="A@20",[K2]=510,[K1]=K11,x=19,y=54,},[2]={f=K6,[K11]="B@20",[K2]=511,[K1]=K11,x=22,y=54,},},[K2]=516,[K1]=K21,x=4,y=55,},[K[75]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=352,[K1]=K5,[K5]="A@8",x=29,y=40,},[2]={f=K6,[K2]=353,[K1]=K5,[K5]="B@8",x=32,y=40,},},[K2]=354,[K1]=K4,x=34,y=40,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=355,[K1]=K5,[K5]="C@8",x=36,y=40,},},[K2]=356,[K1]=K4,x=34,y=40,},[K2]=357,[K1]=K9,x=11,y=40,},[K20]={[1]={f=K6,[K11]="A@8",[K2]=349,[K1]=K11,x=20,y=40,},[2]={f=K6,[K11]="B@8",[K2]=350,[K1]=K11,x=23,y=40,},[3]={f=K6,[K11]="C@8",[K2]=351,[K1]=K11,x=26,y=40,},},[K2]=358,[K1]=K21,x=4,y=41,},[K[76]]={f=K6,[K18]=T18,[K17]={[1]="Mode",},[K2]=31,[K1]=K16,x=12,y=24,},[K[77]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=304,[K1]=K5,[K5]="A@5",x=29,y=37,},[2]={f=K6,[K2]=305,[K1]=K5,[K5]="B@5",x=32,y=37,},},[K2]=306,[K1]=K4,x=34,y=37,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=307,[K1]=K5,[K5]="C@5",x=36,y=37,},},[K2]=308,[K1]=K4,x=34,y=37,},[K2]=309,[K1]=K9,x=11,y=37,},[K20]={[1]={f=K6,[K11]="A@5",[K2]=301,[K1]=K11,x=20,y=37,},[2]={f=K6,[K11]="B@5",[K2]=302,[K1]=K11,x=23,y=37,},[3]={f=K6,[K11]="C@5",[K2]=303,[K1]=K11,x=26,y=37,},},[K2]=310,[K1]=K21,x=4,y=38,},[K[78]]={f=K6,[K2]=32,[K1]=K12,x=12,y=25,},[K[79]]={f=K6,[K2]=51,[K1]="any",x=16,y=30,},[K[80]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=249,[K1]=K5,[K5]="T",x=28,y=27,},},[K2]=41,[K1]=K4,x=30,y=27,},f=K6,[K8]=false,[K7]=1,rets={f=K6,[K4]={[1]={args={f=K6,[K4]={},[K2]=45,[K1]=K4,x=42,y=27,},f=K6,[K8]=false,[K7]=0,rets={f=K6,[K4]={[1]={f=K6,[K2]=254,[K1]=K5,[K5]="K@2",x=45,y=27,},[2]={f=K6,[K2]=255,[K1]=K5,[K5]="V@2",x=48,y=27,},},[K2]=256,[K1]=K4,x=42,y=27,},[K2]=257,[K1]=K9,x=32,y=27,},},[K2]=258,[K1]=K4,x=30,y=27,},[K2]=259,[K1]=K9,x=13,y=27,},[K20]={[1]={f=K6,[K11]="K@2",[K2]=252,[K1]=K11,x=22,y=27,},[2]={f=K6,[K11]="V@2",[K2]=253,[K1]=K11,x=25,y=27,},},[K2]=260,[K1]=K21,x=4,y=29,},[K[81]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=368,[K1]=K5,[K5]="A@9",x=29,y=41,},[2]={f=K6,[K2]=369,[K1]=K5,[K5]="B@9",x=32,y=41,},},[K2]=370,[K1]=K4,x=34,y=41,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=371,[K1]=K5,[K5]="C@9",x=36,y=41,},},[K2]=372,[K1]=K4,x=34,y=41,},[K2]=373,[K1]=K9,x=11,y=41,},[K20]={[1]={f=K6,[K11]="A@9",[K2]=365,[K1]=K11,x=20,y=41,},[2]={f=K6,[K11]="B@9",[K2]=366,[K1]=K11,x=23,y=41,},[3]={f=K6,[K11]="C@9",[K2]=367,[K1]=K11,x=26,y=41,},},[K2]=374,[K1]=K21,x=4,y=42,},[K[82]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=432,[K1]=K5,[K5]="A@13",x=29,y=45,},[2]={f=K6,[K2]=433,[K1]=K5,[K5]="B@13",x=32,y=45,},},[K2]=434,[K1]=K4,x=34,y=45,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=435,[K1]=K5,[K5]="C@13",x=36,y=45,},},[K2]=436,[K1]=K4,x=34,y=45,},[K2]=437,[K1]=K9,x=11,y=45,},[K20]={[1]={f=K6,[K11]="A@13",[K2]=429,[K1]=K11,x=20,y=45,},[2]={f=K6,[K11]="B@13",[K2]=430,[K1]=K11,x=23,y=45,},[3]={f=K6,[K11]="C@13",[K2]=431,[K1]=K11,x=26,y=45,},},[K2]=438,[K1]=K21,x=4,y=46,},[K[83]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=448,[K1]=K5,[K5]="A@14",x=29,y=46,},[2]={f=K6,[K2]=449,[K1]=K5,[K5]="B@14",x=32,y=46,},},[K2]=450,[K1]=K4,x=34,y=46,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=451,[K1]=K5,[K5]="C@14",x=36,y=46,},},[K2]=452,[K1]=K4,x=34,y=46,},[K2]=453,[K1]=K9,x=11,y=46,},[K20]={[1]={f=K6,[K11]="A@14",[K2]=445,[K1]=K11,x=20,y=46,},[2]={f=K6,[K11]="B@14",[K2]=446,[K1]=K11,x=23,y=46,},[3]={f=K6,[K11]="C@14",[K2]=447,[K1]=K11,x=26,y=46,},},[K2]=454,[K1]=K21,x=4,y=47,},[K[84]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=288,[K1]=K5,[K5]="A@4",x=29,y=36,},[2]={f=K6,[K2]=289,[K1]=K5,[K5]="B@4",x=32,y=36,},},[K2]=290,[K1]=K4,x=34,y=36,},f=K6,[K8]=false,[K7]=2,rets={f=K6,[K4]={[1]={f=K6,[K2]=291,[K1]=K5,[K5]="C@4",x=36,y=36,},},[K2]=292,[K1]=K4,x=34,y=36,},[K2]=293,[K1]=K9,x=11,y=36,},[K20]={[1]={f=K6,[K11]="A@4",[K2]=285,[K1]=K11,x=20,y=36,},[2]={f=K6,[K11]="B@4",[K2]=286,[K1]=K11,x=23,y=36,},[3]={f=K6,[K11]="C@4",[K2]=287,[K1]=K11,x=26,y=36,},},[K2]=294,[K1]=K21,x=4,y=37,},[K[85]]={args={f=K6,[K4]={[1]={f=K6,[K2]=246,[K1]=K5,[K5]="T",x=25,y=26,},},[K2]=34,[K1]=K4,x=27,y=26,},f=K6,[K8]=false,[K10]=false,[K7]=1,rets={f=K6,[K4]={[1]={f=K6,[K2]=37,[K1]=K12,x=29,y=26,},},[K2]=36,[K1]=K4,x=27,y=26,},[K2]=33,[K1]=K9,x=16,y=26,},[K[86]]={f=K6,[K29]=true,t={args={f=K6,[K4]={[1]={f=K6,[K2]=480,[K1]=K5,[K5]="T",x=23,y=50,},},[K2]=199,[K1]=K4,x=25,y=50,},f=K6,[K8]=false,[K7]=1,rets={f=K6,[K4]={[1]={f=K6,[K2]=483,[K1]=K5,[K5]="A@17",x=27,y=50,},},[K2]=484,[K1]=K4,x=25,y=50,},[K2]=485,[K1]=K9,x=11,y=50,},[K20]={[1]={f=K6,[K11]="A@17",[K2]=482,[K1]=K11,x=20,y=50,},},[K2]=486,[K1]=K21,x=4,y=51,},},[K36]={},[K2]=20,[K1]=K44,x=1,y=18,},[K20]={[1]={f=K6,[K11]="T",[K2]=19,[K1]=K11,x=25,y=18,},},[K2]=238,[K1]=K21,x=1,y=18,}
-T18.def={[K31]="Mode",[K46]={k=true,kv=true,v=true,},f=K6,[K2]=23,[K1]="enum",[K43]={},x=4,y=19,}
-T19.def={[K31]=K[88],f=K6,[K39]={},[K38]={},[K37]={},[K[10]]={},[K[1]]=true,["is_userdata"]=true,[K36]={},[K2]=15,[K1]=K[22],x=1,y=14,}
-T20.def={args={f=K3,[K4]={},[K2]=1960,[K1]=K4,x=34,y=362,},f=K3,[K8]=false,[K10]=false,[K7]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1962,[K1]=K12,x=36,y=362,},},[K2]=1961,[K1]=K4,x=34,y=362,},[K2]=1959,[K1]=K9,x=24,y=362,}
-T21.def={[K31]=K[90],[K46]={b=true,bt=true,t=true,},f=K3,[K2]=1966,[K1]="enum",[K43]={},x=4,y=364,}
+T2[K39]={[K[2]]={},[K[3]]={},[K48]={},[K[4]]={},[K[5]]={[1]={},[2]={},[3]={},[4]={},},read={[1]={},[2]={},[3]={},[4]={},},seek={},[K[6]]={},[K[7]]={},}
+T2[K38]={[1]=K[2],[2]=K[3],[3]=K48,[4]=K[4],[5]=K[5],[6]="read",[7]="seek",[8]=K[6],[9]=K[7],}
+T2[K37]={[K[2]]=T3,[K[3]]=T4,[K48]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1015,[K1]=K16,x=20,y=154,},},[K2]=1014,[K1]=K4,x=25,y=154,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1017,[K1]=K30,x=27,y=154,},[2]={f=K3,[K2]=1018,[K1]=K12,x=36,y=154,},[3]={f=K3,[K2]=1019,[K1]=K13,x=44,y=154,},},[K2]=1016,[K1]=K4,x=25,y=154,},[K2]=1013,[K1]=K8,x=11,y=154,},[K[4]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1022,[K1]=K16,x=20,y=155,},},[K2]=1021,[K1]=K4,x=25,y=155,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1024,[K1]=K30,x=27,y=155,},[2]={f=K3,[K2]=1025,[K1]=K12,x=36,y=155,},[3]={f=K3,[K2]=1026,[K1]=K13,x=44,y=155,},},[K2]=1023,[K1]=K4,x=25,y=155,},[K2]=1020,[K1]=K8,x=11,y=155,},[K[5]]={f=K3,[K2]=1044,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1029,[K1]=K16,x=20,y=157,},},[K2]=1028,[K1]=K4,x=25,y=157,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1032,[K1]=K4,x=38,y=157,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1034,[K1]=K12,x=41,y=157,},},[K2]=1033,[K1]=K4,x=38,y=157,},[K2]=1031,[K1]=K8,x=28,y=157,},},[K2]=1030,[K1]=K4,x=25,y=157,},[K2]=1027,[K1]=K8,x=11,y=157,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1037,[K1]=K16,x=20,y=158,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[8],},[K2]=1038,[K1]=K16,x=26,y=158,},},[K2]=1036,[K1]=K4,x=44,y=158,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1041,[K1]=K4,x=57,y=158,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1043,[K1]=K14,x=60,y=158,},},[K2]=1042,[K1]=K4,x=57,y=158,},[K2]=1040,[K1]=K8,x=47,y=158,},},[K2]=1039,[K1]=K4,x=44,y=158,},[K2]=1035,[K1]=K8,x=11,y=158,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1047,[K1]=K16,x=20,y=159,},[2]={f=K3,[K2]=1048,[K1]=K28,[K19]={[1]={f=K3,[K2]=1049,[K1]=K14,x=27,y=159,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[9],},[K2]=1050,[K1]=K16,x=36,y=159,},},x=27,y=159,},},[K2]=1046,[K1]=K4,x=55,y=159,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1053,[K1]=K4,x=68,y=159,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1055,[K1]=K12,x=71,y=159,},},[K2]=1054,[K1]=K4,x=68,y=159,},[K2]=1052,[K1]=K8,x=58,y=159,},},[K2]=1051,[K1]=K4,x=55,y=159,},[K2]=1045,[K1]=K8,x=11,y=159,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1058,[K1]=K16,x=20,y=160,},[2]={f=K3,[K2]=1059,[K1]=K28,[K19]={[1]={f=K3,[K2]=1060,[K1]=K14,x=27,y=160,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[10],},[K2]=1061,[K1]=K16,x=36,y=160,},},x=27,y=160,},},[K2]=1057,[K1]=K4,x=49,y=160,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1064,[K1]=K4,x=62,y=160,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1066,[K1]=K28,[K19]={[1]={f=K3,[K2]=1067,[K1]=K12,x=66,y=160,},[2]={f=K3,[K2]=1068,[K1]=K14,x=75,y=160,},},x=66,y=160,},},[K2]=1065,[K1]=K4,x=62,y=160,},[K2]=1063,[K1]=K8,x=52,y=160,},},[K2]=1062,[K1]=K4,x=49,y=160,},[K2]=1056,[K1]=K8,x=11,y=160,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1071,[K1]=K16,x=20,y=161,},[2]={f=K3,[K2]=1072,[K1]=K28,[K19]={[1]={f=K3,[K2]=1073,[K1]=K14,x=27,y=161,},[2]={f=K3,[K2]=1074,[K1]=K12,x=36,y=161,},},x=27,y=161,},},[K2]=1070,[K1]=K4,x=47,y=161,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=1077,[K1]=K4,x=60,y=161,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1079,[K1]=K12,x=63,y=161,},},[K2]=1078,[K1]=K4,x=60,y=161,},[K2]=1076,[K1]=K8,x=50,y=161,},},[K2]=1075,[K1]=K4,x=47,y=161,},[K2]=1069,[K1]=K8,x=11,y=161,},},x=4,y=159,},read={f=K3,[K2]=1091,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1082,[K1]=K16,x=19,y=163,},},[K2]=1081,[K1]=K4,x=24,y=163,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1084,[K1]=K12,x=26,y=163,},},[K2]=1083,[K1]=K4,x=24,y=163,},[K2]=1080,[K1]=K8,x=10,y=163,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1087,[K1]=K16,x=19,y=164,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[8],},[K2]=1088,[K1]=K16,x=25,y=164,},},[K2]=1086,[K1]=K4,x=43,y=164,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1090,[K1]=K14,x=45,y=164,},},[K2]=1089,[K1]=K4,x=43,y=164,},[K2]=1085,[K1]=K8,x=10,y=164,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1094,[K1]=K16,x=19,y=165,},[2]={f=K3,[K2]=1095,[K1]=K28,[K19]={[1]={f=K3,[K2]=1096,[K1]=K14,x=26,y=165,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[9],},[K2]=1097,[K1]=K16,x=35,y=165,},},x=26,y=165,},},[K2]=1093,[K1]=K4,x=54,y=165,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1099,[K1]=K12,x=56,y=165,},},[K2]=1098,[K1]=K4,x=54,y=165,},[K2]=1092,[K1]=K8,x=10,y=165,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1102,[K1]=K16,x=19,y=166,},[2]={f=K3,[K2]=1103,[K1]=K28,[K19]={[1]={f=K3,[K2]=1104,[K1]=K14,x=26,y=166,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[10],},[K2]=1105,[K1]=K16,x=35,y=166,},},x=26,y=166,},},[K2]=1101,[K1]=K4,x=48,y=166,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1107,[K1]=K28,[K19]={[1]={f=K3,[K2]=1108,[K1]=K12,x=52,y=166,},[2]={f=K3,[K2]=1109,[K1]=K14,x=61,y=166,},},x=52,y=166,},},[K2]=1106,[K1]=K4,x=48,y=166,},[K2]=1100,[K1]=K8,x=10,y=166,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1112,[K1]=K16,x=19,y=167,},[2]={f=K3,[K2]=1113,[K1]=K28,[K19]={[1]={f=K3,[K2]=1114,[K1]=K14,x=26,y=167,},[2]={f=K3,[K2]=1115,[K1]=K12,x=35,y=167,},},x=26,y=167,},},[K2]=1111,[K1]=K4,x=46,y=167,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=1117,[K1]=K12,x=49,y=167,},},[K2]=1116,[K1]=K4,x=46,y=167,},[K2]=1110,[K1]=K8,x=10,y=167,},},x=4,y=165,},seek={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1120,[K1]=K16,x=19,y=169,},[2]={f=K3,[K18]=T3,[K17]={[1]=K[2],},[K2]=1121,[K1]=K16,x=27,y=169,},[3]={f=K3,[K2]=1122,[K1]=K13,x=41,y=169,},},[K2]=1119,[K1]=K4,x=49,y=169,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1124,[K1]=K13,x=51,y=169,},[2]={f=K3,[K2]=1125,[K1]=K12,x=60,y=169,},[3]={f=K3,[K2]=1126,[K1]=K13,x=68,y=169,},},[K2]=1123,[K1]=K4,x=49,y=169,},[K2]=1118,[K1]=K8,x=10,y=169,},[K[6]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1129,[K1]=K16,x=22,y=170,},[2]={f=K3,[K18]=T4,[K17]={[1]=K[3],},[K2]=1130,[K1]=K16,x=28,y=170,},[3]={f=K3,[K2]=1131,[K1]=K13,x=43,y=170,},},[K2]=1128,[K1]=K4,x=51,y=170,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1133,[K1]=K30,x=53,y=170,},[2]={f=K3,[K2]=1134,[K1]=K12,x=62,y=170,},[3]={f=K3,[K2]=1135,[K1]=K13,x=70,y=170,},},[K2]=1132,[K1]=K4,x=51,y=170,},[K2]=1127,[K1]=K8,x=13,y=170,},[K[7]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1138,[K1]=K16,x=20,y=172,},[2]={f=K3,[K2]=1139,[K1]=K28,[K19]={[1]={f=K3,[K2]=1140,[K1]=K12,x=27,y=172,},[2]={f=K3,[K2]=1141,[K1]=K14,x=36,y=172,},},x=27,y=172,},},[K2]=1137,[K1]=K4,x=47,y=172,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1143,[K1]=K16,x=49,y=172,},[2]={f=K3,[K2]=1144,[K1]=K12,x=55,y=172,},[3]={f=K3,[K2]=1145,[K1]=K13,x=63,y=172,},},[K2]=1142,[K1]=K4,x=47,y=172,},[K2]=1136,[K1]=K8,x=11,y=172,},}
+T2[K[11]]={}
+T2[K36]={[K[12]]={},["__is"]={},}
+T2["meta_field_order"]={[1]=K[12],[2]="__is",}
+T2["meta_fields"]={[K[12]]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K2]=1148,[K1]=K16,x=33,y=174,},},[K2]=1147,[K1]=K4,x=1,y=175,},f=K3,[K7]=true,[K10]=false,[K6]=1,rets={f=K3,[K4]={},[K2]=1149,[K1]=K4,x=37,y=174,},[K2]=1146,[K1]=K8,x=24,y=174,},["__is"]={args={f=K3,[K4]={[1]={["display_type"]=T2,f=K3,[K2]=1154,[K1]="self",x=10,y=144,},},[K2]=1155,[K1]=K4,x=10,y=144,},f=K3,[K7]=true,["macroexp"]={args={[1]={["argtype"]={["display_type"]=T2,f=K3,[K2]=1150,[K1]="self",x=10,y=144,},f=K3,kind="argument",tk="self",x=10,xend=11,y=144,yend=144,},f=K3,kind="argument_list",tk="io",x=10,xend=11,y=144,yend=144,},exp={e1={e1={f=K3,kind="variable",tk="io",x=10,xend=11,y=144,yend=144,},e2={f=K3,kind=K24,tk="type",x=13,xend=16,y=144,yend=144,},f=K3,kind="op",op={["arity"]=2,op=".",prec=100,x=12,y=144,},["receiver"]={f=K3,[K18]=T8,[K17]={[1]="io",},[K46]=T8,[K2]=2398,[K1]=K16,x=10,y=144,},x=12,y=144,},e2={[1]=T11,f=K3,kind="expression_list",tk="(",x=17,xend=22,y=144,yend=144,},f=K3,kind="op",op={["arity"]=2,op="@funcall",prec=100,x=17,y=144,},x=17,y=144,},f=K3,[K7]=true,kind="macroexp",[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1151,[K1]=K30,x=10,y=144,},},[K2]=1152,[K1]=K4,x=10,y=144,},tk="io",x=10,xend=22,y=144,yend=144,},[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1156,[K1]=K30,x=10,y=144,},},[K2]=1157,[K1]=K4,x=10,y=144,},[K2]=1153,[K1]=K8,x=10,y=144,},}
+T3.def={[K31]=K[2],[K45]={cur=true,["end"]=true,set=true,},f=K3,[K2]=1007,[K1]="enum",[K43]={},x=4,y=146,}
+T4.def={[K31]=K[3],[K45]={full=true,line=true,no=true,},f=K3,[K2]=1011,[K1]="enum",[K43]={},x=4,y=150,}
+T5.def={[K31]=K[8],[K45]={["*n"]=true,n=true,},f=K3,[K2]=568,[K1]="enum",[K43]={},x=1,y=18,}
+T6.def={[K31]=K[9],[K45]={["*L"]=true,["*a"]=true,["*l"]=true,L=true,a=true,l=true,},f=K3,[K2]=564,[K1]="enum",[K43]={},x=1,y=14,}
+T7.def={[K31]=K[10],[K45]={["*L"]=true,["*a"]=true,["*l"]=true,["*n"]=true,L=true,a=true,l=true,n=true,},f=K3,[K2]=572,[K1]="enum",[K43]={},x=1,y=22,}
+T8.def={[K31]="io",f=K3,[K39]={[K[13]]={},[K[14]]={},[K48]={},[K[4]]={},[K[15]]={},[K[5]]={[1]={},[2]={},[3]={},[4]={},},open={},[K[16]]={},[K[17]]={},read={[1]={},[2]={},[3]={},[4]={},},[K[18]]={},[K[19]]={},[K[20]]={},[K[21]]={},type={},[K[7]]={},},[K38]={[1]=K[14],[2]=K[13],[3]=K48,[4]=K[15],[5]=K[4],[6]=K[5],[7]="open",[8]=K[16],[9]=K[17],[10]="read",[11]=K[18],[12]=K[19],[13]=K[20],[14]=K[21],[15]="type",[16]=K[7],},[K37]={[K[13]]=T9,[K[14]]=T10,[K48]={args={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=860,[K1]=K16,x=22,y=114,},},[K2]=859,[K1]=K4,x=4,y=115,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=861,[K1]=K4,x=26,y=114,},[K2]=858,[K1]=K8,x=11,y=114,},[K[4]]={args={f=K3,[K4]={},[K2]=870,[K1]=K4,x=4,y=118,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={},[K2]=871,[K1]=K4,x=20,y=116,},[K2]=869,[K1]=K8,x=11,y=116,},[K[15]]={args={f=K3,[K4]={[1]={f=K3,[K2]=864,[K1]=K28,[K19]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=865,[K1]=K16,x=22,y=115,},[2]={f=K3,[K2]=866,[K1]=K12,x=29,y=115,},},x=22,y=115,},},[K2]=863,[K1]=K4,x=36,y=115,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=868,[K1]=K16,x=38,y=115,},},[K2]=867,[K1]=K4,x=36,y=115,},[K2]=862,[K1]=K8,x=11,y=115,},[K[5]]={f=K3,[K2]=889,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={[1]={f=K3,[K2]=874,[K1]=K12,x=22,y=118,},},[K2]=873,[K1]=K4,x=29,y=118,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=877,[K1]=K4,x=42,y=118,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=879,[K1]=K12,x=45,y=118,},},[K2]=878,[K1]=K4,x=42,y=118,},[K2]=876,[K1]=K8,x=32,y=118,},},[K2]=875,[K1]=K4,x=29,y=118,},[K2]=872,[K1]=K8,x=11,y=118,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=882,[K1]=K12,x=22,y=119,},[2]={f=K3,[K18]=T5,[K17]={[1]=K[8],},[K2]=883,[K1]=K16,x=30,y=119,},},[K2]=881,[K1]=K4,x=48,y=119,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=886,[K1]=K4,x=61,y=119,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=888,[K1]=K14,x=64,y=119,},},[K2]=887,[K1]=K4,x=61,y=119,},[K2]=885,[K1]=K8,x=51,y=119,},},[K2]=884,[K1]=K4,x=48,y=119,},[K2]=880,[K1]=K8,x=11,y=119,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=892,[K1]=K12,x=22,y=120,},[2]={f=K3,[K2]=893,[K1]=K28,[K19]={[1]={f=K3,[K2]=894,[K1]=K14,x=31,y=120,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[9],},[K2]=895,[K1]=K16,x=40,y=120,},},x=31,y=120,},},[K2]=891,[K1]=K4,x=59,y=120,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=898,[K1]=K4,x=72,y=120,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=900,[K1]=K12,x=75,y=120,},},[K2]=899,[K1]=K4,x=72,y=120,},[K2]=897,[K1]=K8,x=62,y=120,},},[K2]=896,[K1]=K4,x=59,y=120,},[K2]=890,[K1]=K8,x=11,y=120,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=903,[K1]=K12,x=22,y=121,},[2]={f=K3,[K2]=904,[K1]=K28,[K19]={[1]={f=K3,[K2]=905,[K1]=K14,x=31,y=121,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[10],},[K2]=906,[K1]=K16,x=40,y=121,},},x=31,y=121,},},[K2]=902,[K1]=K4,x=53,y=121,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=909,[K1]=K4,x=66,y=121,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=911,[K1]=K28,[K19]={[1]={f=K3,[K2]=912,[K1]=K12,x=70,y=121,},[2]={f=K3,[K2]=913,[K1]=K14,x=79,y=121,},},x=70,y=121,},},[K2]=910,[K1]=K4,x=66,y=121,},[K2]=908,[K1]=K8,x=56,y=121,},},[K2]=907,[K1]=K4,x=53,y=121,},[K2]=901,[K1]=K8,x=11,y=121,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=916,[K1]=K12,x=22,y=122,},[2]={f=K3,[K2]=917,[K1]=K28,[K19]={[1]={f=K3,[K2]=918,[K1]=K14,x=31,y=122,},[2]={f=K3,[K2]=919,[K1]=K12,x=40,y=122,},},x=31,y=122,},},[K2]=915,[K1]=K4,x=51,y=122,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={args={f=K3,[K4]={},[K2]=922,[K1]=K4,x=64,y=122,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=924,[K1]=K12,x=67,y=122,},},[K2]=923,[K1]=K4,x=64,y=122,},[K2]=921,[K1]=K8,x=54,y=122,},},[K2]=920,[K1]=K4,x=51,y=122,},[K2]=914,[K1]=K8,x=11,y=122,},},x=4,y=120,},open={args={f=K3,[K4]={[1]={f=K3,[K2]=927,[K1]=K12,x=19,y=124,},[2]={f=K3,[K18]=T10,[K17]={[1]=K[14],},[K2]=928,[K1]=K16,x=29,y=124,},},[K2]=926,[K1]=K4,x=38,y=124,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=930,[K1]=K16,x=40,y=124,},[2]={f=K3,[K2]=931,[K1]=K12,x=46,y=124,},[3]={f=K3,[K2]=932,[K1]=K13,x=54,y=124,},},[K2]=929,[K1]=K4,x=38,y=124,},[K2]=925,[K1]=K8,x=10,y=124,},[K[16]]={args={f=K3,[K4]={[1]={f=K3,[K2]=935,[K1]=K28,[K19]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=936,[K1]=K16,x=23,y=125,},[2]={f=K3,[K2]=937,[K1]=K12,x=30,y=125,},},x=23,y=125,},},[K2]=934,[K1]=K4,x=37,y=125,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=939,[K1]=K16,x=39,y=125,},},[K2]=938,[K1]=K4,x=37,y=125,},[K2]=933,[K1]=K8,x=12,y=125,},[K[17]]={args={f=K3,[K4]={[1]={f=K3,[K2]=942,[K1]=K12,x=20,y=126,},[2]={f=K3,[K18]=T10,[K17]={[1]=K[14],},[K2]=943,[K1]=K16,x=30,y=126,},},[K2]=941,[K1]=K4,x=39,y=126,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=945,[K1]=K16,x=41,y=126,},[2]={f=K3,[K2]=946,[K1]=K12,x=47,y=126,},},[K2]=944,[K1]=K4,x=39,y=126,},[K2]=940,[K1]=K8,x=11,y=126,},read={f=K3,[K2]=956,[K1]="poly",[K19]={[1]={args={f=K3,[K4]={},[K2]=948,[K1]=K4,x=20,y=128,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=950,[K1]=K12,x=22,y=128,},},[K2]=949,[K1]=K4,x=20,y=128,},[K2]=947,[K1]=K8,x=10,y=128,},[2]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K18]=T5,[K17]={[1]=K[8],},[K2]=953,[K1]=K16,x=19,y=129,},},[K2]=952,[K1]=K4,x=37,y=129,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=955,[K1]=K14,x=39,y=129,},},[K2]=954,[K1]=K4,x=37,y=129,},[K2]=951,[K1]=K8,x=10,y=129,},[3]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=959,[K1]=K28,[K19]={[1]={f=K3,[K2]=960,[K1]=K14,x=20,y=130,},[2]={f=K3,[K18]=T6,[K17]={[1]=K[9],},[K2]=961,[K1]=K16,x=29,y=130,},},x=20,y=130,},},[K2]=958,[K1]=K4,x=48,y=130,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=963,[K1]=K12,x=50,y=130,},},[K2]=962,[K1]=K4,x=48,y=130,},[K2]=957,[K1]=K8,x=10,y=130,},[4]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=966,[K1]=K28,[K19]={[1]={f=K3,[K2]=967,[K1]=K14,x=20,y=131,},[2]={f=K3,[K18]=T7,[K17]={[1]=K[10],},[K2]=968,[K1]=K16,x=29,y=131,},},x=20,y=131,},},[K2]=965,[K1]=K4,x=42,y=131,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=970,[K1]=K28,[K19]={[1]={f=K3,[K2]=971,[K1]=K12,x=46,y=131,},[2]={f=K3,[K2]=972,[K1]=K14,x=55,y=131,},},x=46,y=131,},},[K2]=969,[K1]=K4,x=42,y=131,},[K2]=964,[K1]=K8,x=10,y=131,},[5]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=975,[K1]=K28,[K19]={[1]={f=K3,[K2]=976,[K1]=K14,x=20,y=132,},[2]={f=K3,[K2]=977,[K1]=K12,x=29,y=132,},},x=20,y=132,},},[K2]=974,[K1]=K4,x=40,y=132,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=979,[K1]=K12,x=43,y=132,},},[K2]=978,[K1]=K4,x=40,y=132,},[K2]=973,[K1]=K8,x=10,y=132,},},x=4,y=130,},[K[18]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=980,[K1]=K16,x=12,y=134,},[K[19]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=981,[K1]=K16,x=11,y=135,},[K[20]]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=982,[K1]=K16,x=12,y=136,},[K[21]]={args={f=K3,[K4]={},[K2]=984,[K1]=K4,x=23,y=137,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=986,[K1]=K16,x=25,y=137,},},[K2]=985,[K1]=K4,x=23,y=137,},[K2]=983,[K1]=K8,x=13,y=137,},type={args={f=K3,[K4]={[1]={f=K3,[K2]=989,[K1]="any",x=19,y=138,},},[K2]=988,[K1]=K4,x=23,y=138,},f=K3,[K7]=false,[K10]=false,[K6]=1,rets={f=K3,[K4]={[1]={f=K3,[K18]=T9,[K17]={[1]=K[13],},[K2]=991,[K1]=K16,x=25,y=138,},},[K2]=990,[K1]=K4,x=23,y=138,},[K2]=987,[K1]=K8,x=10,y=138,},[K[7]]={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=994,[K1]=K28,[K19]={[1]={f=K3,[K2]=995,[K1]=K12,x=21,y=139,},[2]={f=K3,[K2]=996,[K1]=K14,x=30,y=139,},},x=21,y=139,},},[K2]=993,[K1]=K4,x=41,y=139,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K18]=T1,[K17]={[1]="FILE",},[K46]=T2,[K2]=998,[K1]=K16,x=43,y=139,},[2]={f=K3,[K2]=999,[K1]=K12,x=49,y=139,},[3]={f=K3,[K2]=1000,[K1]=K13,x=57,y=139,},},[K2]=997,[K1]=K4,x=41,y=139,},[K2]=992,[K1]=K8,x=11,y=139,},},[K36]={},[K2]=849,[K1]=K44,x=1,y=101,}
+T9.def={[K31]=K[13],[K45]={["closed file"]=true,file=true,},f=K3,[K2]=856,[K1]="enum",[K43]={},x=4,y=109,}
+T10.def={[K31]=K[14],[K45]={["*a"]=true,["*a+"]=true,["*a+b"]=true,["*ab"]=true,["*r"]=true,["*r+"]=true,["*r+b"]=true,["*rb"]=true,["*w"]=true,["*w+"]=true,["*w+b"]=true,["*wb"]=true,a=true,["a+"]=true,["a+b"]=true,ab=true,r=true,["r+"]=true,["r+b"]=true,rb=true,w=true,["w+"]=true,["w+b"]=true,wb=true,},f=K3,[K2]=852,[K1]="enum",[K43]={},x=4,y=102,}
+T11["expected"]={f=K3,["inferred_at"]=T11,[K2]=2400,[K1]="any",x=18,y=144,}
+T12.def={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=581,[K1]="any",x=29,y=27,},},[K2]=580,[K1]=K4,x=36,y=27,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=583,[K1]="any",x=38,y=27,},},[K2]=582,[K1]=K4,x=36,y=27,},[K2]=579,[K1]=K8,x=20,y=27,}
+T13.def={args={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=671,[K1]="any",x=32,y=65,},},[K2]=670,[K1]=K4,x=39,y=65,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K15]=true,[K4]={[1]={f=K3,[K2]=673,[K1]="any",x=40,y=65,},},[K2]=672,[K1]=K4,x=39,y=65,},[K2]=669,[K1]=K8,x=23,y=65,}
+T14.def={[K31]=K[34],f=K3,[K39]={[K[52]]={},[K[53]]={},[K[54]]={},func={},[K[55]]={},[K[56]]={},[K[57]]={},[K[58]]={},name={},[K[59]]={},[K[60]]={},[K[61]]={[1]={[1]={text="-- TODO: what should compat be for these? (5.4+)",x=26,y=55,},},},nups={},[K[62]]={},[K[63]]={},what={},},[K38]={[1]="name",[2]=K[59],[3]=K[63],[4]=K[62],[5]=K[58],[6]=K[57],[7]="what",[8]=K[53],[9]=K[55],[10]="nups",[11]=K[60],[12]=K[56],[13]="func",[14]=K[52],[15]=K[54],[16]=K[61],},[K37]={[K[52]]={f=K3,keys={f=K3,[K2]=650,[K1]=K13,x=21,y=54,},[K2]=649,[K1]="map",[K33]={f=K3,[K2]=651,[K1]=K30,x=29,y=54,},x=20,xend=36,y=54,yend=54,},[K[53]]={f=K3,[K2]=643,[K1]=K13,x=20,y=48,},[K[54]]={f=K3,[K2]=652,[K1]=K13,x=18,y=55,},func={f=K3,[K2]=648,[K1]="any",x=13,y=53,},[K[55]]={f=K3,[K2]=644,[K1]=K30,x=19,y=49,},[K[56]]={f=K3,[K2]=647,[K1]=K30,x=17,y=52,},[K[57]]={f=K3,[K2]=641,[K1]=K13,x=24,y=46,},[K[58]]={f=K3,[K2]=640,[K1]=K13,x=20,y=45,},name={f=K3,[K2]=636,[K1]=K12,x=13,y=41,},[K[59]]={f=K3,[K2]=637,[K1]=K12,x=17,y=42,},[K[60]]={f=K3,[K2]=646,[K1]=K13,x=16,y=51,},[K[61]]={f=K3,[K2]=653,[K1]=K13,x=18,y=56,},nups={f=K3,[K2]=645,[K1]=K13,x=13,y=50,},[K[62]]={f=K3,[K2]=639,[K1]=K12,x=18,y=44,},[K[63]]={f=K3,[K2]=638,[K1]=K12,x=15,y=43,},what={f=K3,[K2]=642,[K1]=K12,x=13,y=47,},},[K36]={},[K2]=635,[K1]=K44,x=4,y=40,}
+T15.def={[K31]=K[35],[K45]={call=true,["count"]=true,line=true,["return"]=true,["tail call"]=true,},f=K3,[K2]=657,[K1]="enum",[K43]={},x=4,y=59,}
+T16.def={args={f=K3,[K4]={[1]={f=K3,[K18]=T15,[K17]={[1]=K[35],},[K2]=663,[K1]=K16,x=33,y=63,},[2]={f=K3,[K2]=664,[K1]=K13,x=44,y=63,},},[K2]=662,[K1]=K4,x=4,y=65,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={},[K2]=665,[K1]=K4,x=51,y=63,},[K2]=661,[K1]=K8,x=24,y=63,}
+T17.def={f=K9,t={[K31]=K[64],f=K9,[K39]={Mode={},[K[65]]={},[K[66]]={},[K[67]]={},[K[68]]={},[K[69]]={},[K[70]]={},[K[12]]={},[K[71]]={},[K[72]]={},["__eq"]={},["__gc"]={},[K[73]]={},[K[74]]={},["__le"]={},[K[75]]={},["__lt"]={},[K[76]]={},[K[77]]={},[K[78]]={},[K[79]]={},[K[80]]={[1]={[1]={text="--[[FIXME: function | table | anything with an __index metamethod]]",x=17,y=29,},},},[K[81]]={},[K[82]]={},[K[83]]={},[K[84]]={},[K[85]]={},[K[86]]={},[K[87]]={},},[K38]={[1]="Mode",[2]=K[70],[3]=K[77],[4]=K[79],[5]=K[86],[6]=K[81],[7]=K[74],[8]=K[80],[9]="__gc",[10]=K[12],[11]=K[65],[12]=K[85],[13]=K[78],[14]=K[72],[15]=K[73],[16]=K[76],[17]=K[82],[18]=K[66],[19]=K[68],[20]=K[69],[21]=K[83],[22]=K[84],[23]=K[71],[24]=K[75],[25]=K[87],[26]=K[67],[27]="__eq",[28]="__lt",[29]="__le",},[K37]={Mode=T18,[K[65]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=272,[K1]=K5,[K5]="A@3",x=29,y=35,},[2]={f=K9,[K2]=273,[K1]=K5,[K5]="B@3",x=32,y=35,},},[K2]=274,[K1]=K4,x=34,y=35,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=275,[K1]=K5,[K5]="C@3",x=36,y=35,},},[K2]=276,[K1]=K4,x=34,y=35,},[K2]=277,[K1]=K8,x=11,y=35,},[K20]={[1]={f=K9,[K11]="A@3",[K2]=269,[K1]=K11,x=20,y=35,},[2]={f=K9,[K11]="B@3",[K2]=270,[K1]=K11,x=23,y=35,},[3]={f=K9,[K11]="C@3",[K2]=271,[K1]=K11,x=26,y=35,},},[K2]=278,[K1]=K21,x=4,y=36,},[K[66]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=384,[K1]=K5,[K5]="A@10",x=30,y=42,},[2]={f=K9,[K2]=385,[K1]=K5,[K5]="B@10",x=33,y=42,},},[K2]=386,[K1]=K4,x=35,y=42,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=387,[K1]=K5,[K5]="C@10",x=37,y=42,},},[K2]=388,[K1]=K4,x=35,y=42,},[K2]=389,[K1]=K8,x=12,y=42,},[K20]={[1]={f=K9,[K11]="A@10",[K2]=381,[K1]=K11,x=21,y=42,},[2]={f=K9,[K11]="B@10",[K2]=382,[K1]=K11,x=24,y=42,},[3]={f=K9,[K11]="C@10",[K2]=383,[K1]=K11,x=27,y=42,},},[K2]=390,[K1]=K21,x=4,y=43,},[K[67]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=488,[K1]=K5,[K5]="T",x=24,y=51,},},[K2]=206,[K1]=K4,x=26,y=51,},f=K9,[K7]=false,[K6]=1,rets={f=K9,[K4]={[1]={f=K9,[K2]=491,[K1]=K5,[K5]="A@18",x=28,y=51,},},[K2]=492,[K1]=K4,x=26,y=51,},[K2]=493,[K1]=K8,x=12,y=51,},[K20]={[1]={f=K9,[K11]="A@18",[K2]=490,[K1]=K11,x=21,y=51,},},[K2]=494,[K1]=K21,x=4,y=53,},[K[68]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=400,[K1]=K5,[K5]="A@11",x=29,y=43,},[2]={f=K9,[K2]=401,[K1]=K5,[K5]="B@11",x=32,y=43,},},[K2]=402,[K1]=K4,x=34,y=43,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=403,[K1]=K5,[K5]="C@11",x=36,y=43,},},[K2]=404,[K1]=K4,x=34,y=43,},[K2]=405,[K1]=K8,x=11,y=43,},[K20]={[1]={f=K9,[K11]="A@11",[K2]=397,[K1]=K11,x=20,y=43,},[2]={f=K9,[K11]="B@11",[K2]=398,[K1]=K11,x=23,y=43,},[3]={f=K9,[K11]="C@11",[K2]=399,[K1]=K11,x=26,y=43,},},[K2]=406,[K1]=K21,x=4,y=44,},[K[69]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=416,[K1]=K5,[K5]="A@12",x=30,y=44,},[2]={f=K9,[K2]=417,[K1]=K5,[K5]="B@12",x=33,y=44,},},[K2]=418,[K1]=K4,x=35,y=44,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=419,[K1]=K5,[K5]="C@12",x=37,y=44,},},[K2]=420,[K1]=K4,x=35,y=44,},[K2]=421,[K1]=K8,x=12,y=44,},[K20]={[1]={f=K9,[K11]="A@12",[K2]=413,[K1]=K11,x=21,y=44,},[2]={f=K9,[K11]="B@12",[K2]=414,[K1]=K11,x=24,y=44,},[3]={f=K9,[K11]="C@12",[K2]=415,[K1]=K11,x=27,y=44,},},[K2]=422,[K1]=K21,x=4,y=45,},[K[70]]={args={f=K9,[K15]=true,[K4]={[1]={f=K9,[K2]=245,[K1]=K5,[K5]="T",x=21,y=23,},[2]={f=K9,[K2]=28,[K1]="any",x=24,y=23,},},[K2]=26,[K1]=K4,x=31,y=23,},f=K9,[K7]=false,[K10]=false,[K6]=1,rets={f=K9,[K15]=true,[K4]={[1]={f=K9,[K2]=30,[K1]="any",x=33,y=23,},},[K2]=29,[K1]=K4,x=31,y=23,},[K2]=25,[K1]=K8,x=12,y=23,},[K[12]]={args={f=K9,[K4]={[1]={f=K9,[K2]=262,[K1]=K5,[K5]="T",x=22,y=33,},},[K2]=57,[K1]=K4,x=4,y=35,},f=K9,[K7]=false,[K10]=false,[K6]=1,rets={f=K9,[K4]={},[K2]=59,[K1]=K4,x=23,y=33,},[K2]=56,[K1]=K8,x=13,y=33,},[K[71]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=464,[K1]=K5,[K5]="A@15",x=32,y=47,},[2]={f=K9,[K2]=465,[K1]=K5,[K5]="B@15",x=35,y=47,},},[K2]=466,[K1]=K4,x=37,y=47,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=467,[K1]=K5,[K5]="C@15",x=39,y=47,},},[K2]=468,[K1]=K4,x=37,y=47,},[K2]=469,[K1]=K8,x=14,y=47,},[K20]={[1]={f=K9,[K11]="A@15",[K2]=461,[K1]=K11,x=23,y=47,},[2]={f=K9,[K11]="B@15",[K2]=462,[K1]=K11,x=26,y=47,},[3]={f=K9,[K11]="C@15",[K2]=463,[K1]=K11,x=29,y=47,},},[K2]=470,[K1]=K21,x=4,y=49,},[K[72]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=320,[K1]=K5,[K5]="A@6",x=29,y=38,},[2]={f=K9,[K2]=321,[K1]=K5,[K5]="B@6",x=32,y=38,},},[K2]=322,[K1]=K4,x=34,y=38,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=323,[K1]=K5,[K5]="C@6",x=36,y=38,},},[K2]=324,[K1]=K4,x=34,y=38,},[K2]=325,[K1]=K8,x=11,y=38,},[K20]={[1]={f=K9,[K11]="A@6",[K2]=317,[K1]=K11,x=20,y=38,},[2]={f=K9,[K11]="B@6",[K2]=318,[K1]=K11,x=23,y=38,},[3]={f=K9,[K11]="C@6",[K2]=319,[K1]=K11,x=26,y=38,},},[K2]=326,[K1]=K21,x=4,y=39,},["__eq"]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=501,[K1]=K5,[K5]="A@19",x=25,y=53,},[2]={f=K9,[K2]=502,[K1]=K5,[K5]="B@19",x=28,y=53,},},[K2]=503,[K1]=K4,x=30,y=53,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=218,[K1]=K30,x=32,y=53,},},[K2]=217,[K1]=K4,x=30,y=53,},[K2]=504,[K1]=K8,x=10,y=53,},[K20]={[1]={f=K9,[K11]="A@19",[K2]=499,[K1]=K11,x=19,y=53,},[2]={f=K9,[K11]="B@19",[K2]=500,[K1]=K11,x=22,y=53,},},[K2]=505,[K1]=K21,x=4,y=54,},["__gc"]={args={f=K9,[K4]={[1]={f=K9,[K2]=261,[K1]=K5,[K5]="T",x=19,y=32,},},[K2]=53,[K1]=K4,x=4,y=33,},f=K9,[K7]=false,[K10]=false,[K6]=1,rets={f=K9,[K4]={},[K2]=55,[K1]=K4,x=20,y=32,},[K2]=52,[K1]=K8,x=10,y=32,},[K[73]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=336,[K1]=K5,[K5]="A@7",x=30,y=39,},[2]={f=K9,[K2]=337,[K1]=K5,[K5]="B@7",x=33,y=39,},},[K2]=338,[K1]=K4,x=35,y=39,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=339,[K1]=K5,[K5]="C@7",x=37,y=39,},},[K2]=340,[K1]=K4,x=35,y=39,},[K2]=341,[K1]=K8,x=12,y=39,},[K20]={[1]={f=K9,[K11]="A@7",[K2]=333,[K1]=K11,x=21,y=39,},[2]={f=K9,[K11]="B@7",[K2]=334,[K1]=K11,x=24,y=39,},[3]={f=K9,[K11]="C@7",[K2]=335,[K1]=K11,x=27,y=39,},},[K2]=342,[K1]=K21,x=4,y=40,},[K[74]]={f=K9,[K2]=50,[K1]="any",x=13,y=29,},["__le"]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=523,[K1]=K5,[K5]="A@21",x=25,y=55,},[2]={f=K9,[K2]=524,[K1]=K5,[K5]="B@21",x=28,y=55,},},[K2]=525,[K1]=K4,x=30,y=55,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=236,[K1]=K30,x=32,y=55,},},[K2]=235,[K1]=K4,x=30,y=55,},[K2]=526,[K1]=K8,x=10,y=55,},[K20]={[1]={f=K9,[K11]="A@21",[K2]=521,[K1]=K11,x=19,y=55,},[2]={f=K9,[K11]="B@21",[K2]=522,[K1]=K11,x=22,y=55,},},[K2]=527,[K1]=K21,x=1,y=56,},[K[75]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=472,[K1]=K5,[K5]="T",x=23,y=49,},},[K2]=192,[K1]=K4,x=25,y=49,},f=K9,[K7]=false,[K6]=1,rets={f=K9,[K4]={[1]={f=K9,[K2]=475,[K1]=K5,[K5]="A@16",x=27,y=49,},},[K2]=476,[K1]=K4,x=25,y=49,},[K2]=477,[K1]=K8,x=11,y=49,},[K20]={[1]={f=K9,[K11]="A@16",[K2]=474,[K1]=K11,x=20,y=49,},},[K2]=478,[K1]=K21,x=4,y=50,},["__lt"]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=512,[K1]=K5,[K5]="A@20",x=25,y=54,},[2]={f=K9,[K2]=513,[K1]=K5,[K5]="B@20",x=28,y=54,},},[K2]=514,[K1]=K4,x=30,y=54,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=227,[K1]=K30,x=32,y=54,},},[K2]=226,[K1]=K4,x=30,y=54,},[K2]=515,[K1]=K8,x=10,y=54,},[K20]={[1]={f=K9,[K11]="A@20",[K2]=510,[K1]=K11,x=19,y=54,},[2]={f=K9,[K11]="B@20",[K2]=511,[K1]=K11,x=22,y=54,},},[K2]=516,[K1]=K21,x=4,y=55,},[K[76]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=352,[K1]=K5,[K5]="A@8",x=29,y=40,},[2]={f=K9,[K2]=353,[K1]=K5,[K5]="B@8",x=32,y=40,},},[K2]=354,[K1]=K4,x=34,y=40,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=355,[K1]=K5,[K5]="C@8",x=36,y=40,},},[K2]=356,[K1]=K4,x=34,y=40,},[K2]=357,[K1]=K8,x=11,y=40,},[K20]={[1]={f=K9,[K11]="A@8",[K2]=349,[K1]=K11,x=20,y=40,},[2]={f=K9,[K11]="B@8",[K2]=350,[K1]=K11,x=23,y=40,},[3]={f=K9,[K11]="C@8",[K2]=351,[K1]=K11,x=26,y=40,},},[K2]=358,[K1]=K21,x=4,y=41,},[K[77]]={f=K9,[K18]=T18,[K17]={[1]="Mode",},[K2]=31,[K1]=K16,x=12,y=24,},[K[78]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=304,[K1]=K5,[K5]="A@5",x=29,y=37,},[2]={f=K9,[K2]=305,[K1]=K5,[K5]="B@5",x=32,y=37,},},[K2]=306,[K1]=K4,x=34,y=37,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=307,[K1]=K5,[K5]="C@5",x=36,y=37,},},[K2]=308,[K1]=K4,x=34,y=37,},[K2]=309,[K1]=K8,x=11,y=37,},[K20]={[1]={f=K9,[K11]="A@5",[K2]=301,[K1]=K11,x=20,y=37,},[2]={f=K9,[K11]="B@5",[K2]=302,[K1]=K11,x=23,y=37,},[3]={f=K9,[K11]="C@5",[K2]=303,[K1]=K11,x=26,y=37,},},[K2]=310,[K1]=K21,x=4,y=38,},[K[79]]={f=K9,[K2]=32,[K1]=K12,x=12,y=25,},[K[80]]={f=K9,[K2]=51,[K1]="any",x=16,y=30,},[K[81]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=249,[K1]=K5,[K5]="T",x=28,y=27,},},[K2]=41,[K1]=K4,x=30,y=27,},f=K9,[K7]=false,[K6]=1,rets={f=K9,[K4]={[1]={args={f=K9,[K4]={},[K2]=45,[K1]=K4,x=42,y=27,},f=K9,[K7]=false,[K6]=0,rets={f=K9,[K4]={[1]={f=K9,[K2]=254,[K1]=K5,[K5]="K@2",x=45,y=27,},[2]={f=K9,[K2]=255,[K1]=K5,[K5]="V@2",x=48,y=27,},},[K2]=256,[K1]=K4,x=42,y=27,},[K2]=257,[K1]=K8,x=32,y=27,},},[K2]=258,[K1]=K4,x=30,y=27,},[K2]=259,[K1]=K8,x=13,y=27,},[K20]={[1]={f=K9,[K11]="K@2",[K2]=252,[K1]=K11,x=22,y=27,},[2]={f=K9,[K11]="V@2",[K2]=253,[K1]=K11,x=25,y=27,},},[K2]=260,[K1]=K21,x=4,y=29,},[K[82]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=368,[K1]=K5,[K5]="A@9",x=29,y=41,},[2]={f=K9,[K2]=369,[K1]=K5,[K5]="B@9",x=32,y=41,},},[K2]=370,[K1]=K4,x=34,y=41,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=371,[K1]=K5,[K5]="C@9",x=36,y=41,},},[K2]=372,[K1]=K4,x=34,y=41,},[K2]=373,[K1]=K8,x=11,y=41,},[K20]={[1]={f=K9,[K11]="A@9",[K2]=365,[K1]=K11,x=20,y=41,},[2]={f=K9,[K11]="B@9",[K2]=366,[K1]=K11,x=23,y=41,},[3]={f=K9,[K11]="C@9",[K2]=367,[K1]=K11,x=26,y=41,},},[K2]=374,[K1]=K21,x=4,y=42,},[K[83]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=432,[K1]=K5,[K5]="A@13",x=29,y=45,},[2]={f=K9,[K2]=433,[K1]=K5,[K5]="B@13",x=32,y=45,},},[K2]=434,[K1]=K4,x=34,y=45,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=435,[K1]=K5,[K5]="C@13",x=36,y=45,},},[K2]=436,[K1]=K4,x=34,y=45,},[K2]=437,[K1]=K8,x=11,y=45,},[K20]={[1]={f=K9,[K11]="A@13",[K2]=429,[K1]=K11,x=20,y=45,},[2]={f=K9,[K11]="B@13",[K2]=430,[K1]=K11,x=23,y=45,},[3]={f=K9,[K11]="C@13",[K2]=431,[K1]=K11,x=26,y=45,},},[K2]=438,[K1]=K21,x=4,y=46,},[K[84]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=448,[K1]=K5,[K5]="A@14",x=29,y=46,},[2]={f=K9,[K2]=449,[K1]=K5,[K5]="B@14",x=32,y=46,},},[K2]=450,[K1]=K4,x=34,y=46,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=451,[K1]=K5,[K5]="C@14",x=36,y=46,},},[K2]=452,[K1]=K4,x=34,y=46,},[K2]=453,[K1]=K8,x=11,y=46,},[K20]={[1]={f=K9,[K11]="A@14",[K2]=445,[K1]=K11,x=20,y=46,},[2]={f=K9,[K11]="B@14",[K2]=446,[K1]=K11,x=23,y=46,},[3]={f=K9,[K11]="C@14",[K2]=447,[K1]=K11,x=26,y=46,},},[K2]=454,[K1]=K21,x=4,y=47,},[K[85]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=288,[K1]=K5,[K5]="A@4",x=29,y=36,},[2]={f=K9,[K2]=289,[K1]=K5,[K5]="B@4",x=32,y=36,},},[K2]=290,[K1]=K4,x=34,y=36,},f=K9,[K7]=false,[K6]=2,rets={f=K9,[K4]={[1]={f=K9,[K2]=291,[K1]=K5,[K5]="C@4",x=36,y=36,},},[K2]=292,[K1]=K4,x=34,y=36,},[K2]=293,[K1]=K8,x=11,y=36,},[K20]={[1]={f=K9,[K11]="A@4",[K2]=285,[K1]=K11,x=20,y=36,},[2]={f=K9,[K11]="B@4",[K2]=286,[K1]=K11,x=23,y=36,},[3]={f=K9,[K11]="C@4",[K2]=287,[K1]=K11,x=26,y=36,},},[K2]=294,[K1]=K21,x=4,y=37,},[K[86]]={args={f=K9,[K4]={[1]={f=K9,[K2]=246,[K1]=K5,[K5]="T",x=25,y=26,},},[K2]=34,[K1]=K4,x=27,y=26,},f=K9,[K7]=false,[K10]=false,[K6]=1,rets={f=K9,[K4]={[1]={f=K9,[K2]=37,[K1]=K12,x=29,y=26,},},[K2]=36,[K1]=K4,x=27,y=26,},[K2]=33,[K1]=K8,x=16,y=26,},[K[87]]={f=K9,[K29]=true,t={args={f=K9,[K4]={[1]={f=K9,[K2]=480,[K1]=K5,[K5]="T",x=23,y=50,},},[K2]=199,[K1]=K4,x=25,y=50,},f=K9,[K7]=false,[K6]=1,rets={f=K9,[K4]={[1]={f=K9,[K2]=483,[K1]=K5,[K5]="A@17",x=27,y=50,},},[K2]=484,[K1]=K4,x=25,y=50,},[K2]=485,[K1]=K8,x=11,y=50,},[K20]={[1]={f=K9,[K11]="A@17",[K2]=482,[K1]=K11,x=20,y=50,},},[K2]=486,[K1]=K21,x=4,y=51,},},[K36]={},[K2]=20,[K1]=K44,x=1,y=18,},[K20]={[1]={f=K9,[K11]="T",[K2]=19,[K1]=K11,x=25,y=18,},},[K2]=238,[K1]=K21,x=1,y=18,}
+T18.def={[K31]="Mode",[K45]={k=true,kv=true,v=true,},f=K9,[K2]=23,[K1]="enum",[K43]={},x=4,y=19,}
+T19.def={[K31]=K[88],f=K9,[K39]={},[K38]={},[K37]={},[K[11]]={},[K[1]]=true,["is_userdata"]=true,[K36]={},[K2]=15,[K1]=K[23],x=1,y=14,}
+T20.def={args={f=K3,[K4]={},[K2]=1960,[K1]=K4,x=34,y=362,},f=K3,[K7]=false,[K10]=false,[K6]=0,rets={f=K3,[K4]={[1]={f=K3,[K2]=1962,[K1]=K12,x=36,y=362,},},[K2]=1961,[K1]=K4,x=34,y=362,},[K2]=1959,[K1]=K8,x=24,y=362,}
+T21.def={[K31]=K[90],[K45]={b=true,bt=true,t=true,},f=K3,[K2]=1966,[K1]="enum",[K43]={},x=4,y=364,}
 T22.def={f=K3,[K2]=1164,[K1]=K28,[K19]={[1]={f=K3,[K2]=1165,[K1]=K14,x=19,y=178,},[2]={f=K3,[K2]=1166,[K1]=K13,x=28,y=178,},},x=19,y=178,}
 T23[K18]=T22
 T23[K17]={[1]=K[91],}
-T24.def={[K31]=K[103],[K46]={["!*t"]=true,["*t"]=true,},f=K3,[K2]=1413,[K1]="enum",[K43]={},x=4,y=247,}
-T25.def={[K31]=K[104],f=K3,[K39]={day={},hour={},[K[113]]={},min={},[K[114]]={},sec={},wday={},yday={},year={},},[K45]={day={f=K3,x=7,y=238,},hour={f=K3,x=7,y=239,},[K[113]]={f=K3,x=7,y=244,},min={f=K3,x=7,y=240,},[K[114]]={f=K3,x=7,y=237,},sec={f=K3,x=7,y=241,},wday={f=K3,x=7,y=242,},yday={f=K3,x=7,y=243,},year={f=K3,x=7,y=236,},},[K38]={[1]="year",[2]=K[114],[3]="day",[4]="hour",[5]="min",[6]="sec",[7]="wday",[8]="yday",[9]=K[113],},[K37]={day={f=K3,[K2]=1403,[K1]=K13,x=12,y=238,},hour={f=K3,[K2]=1404,[K1]=K13,x=13,y=239,},[K[113]]={f=K3,[K2]=1409,[K1]=K30,x=14,y=244,},min={f=K3,[K2]=1405,[K1]=K13,x=12,y=240,},[K[114]]={f=K3,[K2]=1402,[K1]=K13,x=14,y=237,},sec={f=K3,[K2]=1406,[K1]=K13,x=12,y=241,},wday={f=K3,[K2]=1407,[K1]=K13,x=13,y=242,},yday={f=K3,[K2]=1408,[K1]=K13,x=13,y=243,},year={f=K3,[K2]=1401,[K1]=K13,x=13,y=236,},},[K36]={},[K2]=1400,[K1]=K44,x=4,y=235,}
-T26.def={f=K3,t={[K31]=K[138],[K34]=T27,f=K3,[K39]={n={},},[K45]={n={f=K3,x=7,y=312,},},[K38]={[1]="n",},[K37]={n={f=K3,[K2]=1741,[K1]=K13,x=10,y=312,},},[K[10]]={[1]={[K34]=T27,f=K3,[K2]=1739,[K1]=K35,x=10,xend=12,y=310,yend=310,},},[K[1]]=true,[K36]={},[K2]=1738,[K1]=K44,x=4,y=309,},[K20]={[1]={f=K3,[K11]="A",[K2]=1737,[K1]=K11,x=21,y=309,},},[K2]=1742,[K1]=K21,x=4,y=309,}
-T28.def={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2443,[K1]=K5,[K5]="A",x=36,y=307,},[2]={f=K3,[K2]=2444,[K1]=K5,[K5]="A",x=39,y=307,},},[K2]=1728,[K1]=K4,x=41,y=307,},f=K3,[K8]=false,[K10]=false,[K7]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1732,[K1]=K30,x=43,y=307,},},[K2]=1731,[K1]=K4,x=41,y=307,},[K2]=1727,[K1]=K9,x=24,y=307,},[K20]={[1]={f=K3,[K11]="A",[K2]=1726,[K1]=K11,x=33,y=307,},},[K2]=1733,[K1]=K21,x=4,y=309,}
+T24.def={[K31]=K[103],[K45]={["!*t"]=true,["*t"]=true,},f=K3,[K2]=1413,[K1]="enum",[K43]={},x=4,y=247,}
+T25.def={[K31]=K[104],f=K3,[K39]={day={},hour={},[K[113]]={},min={},[K[114]]={},sec={},wday={},yday={},year={},},[K38]={[1]="year",[2]=K[114],[3]="day",[4]="hour",[5]="min",[6]="sec",[7]="wday",[8]="yday",[9]=K[113],},[K37]={day={f=K3,[K2]=1403,[K1]=K13,x=12,y=238,},hour={f=K3,[K2]=1404,[K1]=K13,x=13,y=239,},[K[113]]={f=K3,[K2]=1409,[K1]=K30,x=14,y=244,},min={f=K3,[K2]=1405,[K1]=K13,x=12,y=240,},[K[114]]={f=K3,[K2]=1402,[K1]=K13,x=14,y=237,},sec={f=K3,[K2]=1406,[K1]=K13,x=12,y=241,},wday={f=K3,[K2]=1407,[K1]=K13,x=13,y=242,},yday={f=K3,[K2]=1408,[K1]=K13,x=13,y=243,},year={f=K3,[K2]=1401,[K1]=K13,x=13,y=236,},},[K36]={},[K2]=1400,[K1]=K44,x=4,y=235,}
+T26.def={f=K3,t={[K31]=K[137],[K34]=T27,f=K3,[K39]={n={},},[K38]={[1]="n",},[K37]={n={f=K3,[K2]=1741,[K1]=K13,x=10,y=312,},},[K[11]]={[1]={[K34]=T27,f=K3,[K2]=1739,[K1]=K35,x=10,xend=12,y=310,yend=310,},},[K[1]]=true,[K36]={},[K2]=1738,[K1]=K44,x=4,y=309,},[K20]={[1]={f=K3,[K11]="A",[K2]=1737,[K1]=K11,x=21,y=309,},},[K2]=1742,[K1]=K21,x=4,y=309,}
+T28.def={f=K3,t={args={f=K3,[K4]={[1]={f=K3,[K2]=2441,[K1]=K5,[K5]="A",x=36,y=307,},[2]={f=K3,[K2]=2442,[K1]=K5,[K5]="A",x=39,y=307,},},[K2]=1728,[K1]=K4,x=41,y=307,},f=K3,[K7]=false,[K10]=false,[K6]=2,rets={f=K3,[K4]={[1]={f=K3,[K2]=1732,[K1]=K30,x=43,y=307,},},[K2]=1731,[K1]=K4,x=41,y=307,},[K2]=1727,[K1]=K8,x=24,y=307,},[K20]={[1]={f=K3,[K11]="A",[K2]=1726,[K1]=K11,x=33,y=307,},},[K2]=1733,[K1]=K21,x=4,y=309,}
 
-return { globals = T0, typeid_ctr = 2926, typevar_ctr = 53}
+return { globals = T0, typeid_ctr = 2923, typevar_ctr = 53}
 
 
 end
 
 -- module teal.reader from teal/reader.lua
 package.preload["teal.reader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local errors = require("teal.errors")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local errors = require("teal.errors")
 
 
 local lexer = require("teal.lexer")
@@ -15003,21 +14487,6 @@ local reader = {}
 local BLOCK_INDEXES = block.BLOCK_INDEXES
 
 reader.BLOCK_INDEXES = BLOCK_INDEXES
-
-
-
-
-
-
-
-
-
-
-
-local module_macro_cache = {}
-local module_macro_missing = {}
-local module_macro_loading = {}
-local read_program_depth = 0
 
 local function lang_heuristic(filename, input)
    if filename then
@@ -15089,54 +14558,6 @@ function reader.node_is_funcall(node)
    return node.kind == "op_funcall" or node.kind == "macro_invocation"
 end
 
-local function starts_with(str, prefix)
-   return str:sub(1, #prefix) == prefix
-end
-
-local function macro_target_key(node)
-   if not node then
-      return nil, false
-   end
-   if node.kind == "paren" then
-      return macro_target_key(node[BLOCK_INDEXES.PAREN.EXP])
-   end
-   if node.kind == "identifier" then
-      return node.tk, false
-   end
-   if node.kind == "op_dot" then
-      local lhs, has_colon = macro_target_key(node[BLOCK_INDEXES.OP.E1])
-      local rhs = node[BLOCK_INDEXES.OP.E2]
-      if lhs and rhs and rhs.kind == "identifier" then
-         return lhs .. "." .. rhs.tk, has_colon
-      end
-      return nil, has_colon
-   end
-   if node.kind == "op_colon" then
-      return nil, true
-   end
-   return nil, false
-end
-
-local function path_block_to_string(node)
-   if not node then
-      return nil
-   end
-   if node.kind == "identifier" then
-      return node.tk
-   elseif node.kind == "op_dot" then
-      local lhs = path_block_to_string(node[BLOCK_INDEXES.OP.E1])
-      local rhs = node[BLOCK_INDEXES.OP.E2]
-      if lhs and rhs and rhs.kind == "identifier" then
-         return lhs .. "." .. rhs.tk
-      end
-   end
-   return nil
-end
-
-
-
-
-
 
 
 
@@ -15175,11 +14596,6 @@ local read_record_function
 local read_enum_body
 local read_record_body
 local read_type_body_fns
-local type_body_kinds = {
-   ["interface"] = "interface",
-   ["record"] = "record",
-   ["enum"] = "enum",
-}
 
 local function fail(ps, i, msg)
    if not ps.tokens[i] then
@@ -15242,70 +14658,9 @@ local function new_block(ps, i, kind)
    }, node_mt)
 end
 
+
 local function new_type(ps, i, typename)
    return new_block(ps, i, typename)
-end
-
-local function split_dotted_path(path)
-   local out = {}
-   for part in path:gmatch("[^%.]+") do
-      table.insert(out, part)
-   end
-   return out
-end
-
-local function build_path_block_from_parts(f, y, x, parts)
-   local function mk_ident(name)
-      return setmetatable({
-         f = f,
-         y = y,
-         x = x,
-         tk = name,
-         kind = "identifier",
-      }, node_mt)
-   end
-
-   local owner = mk_ident(parts[1])
-   for j = 2, #parts do
-      local dot = setmetatable({
-         f = f,
-         y = y,
-         x = x,
-         tk = ".",
-         kind = "op_dot",
-      }, node_mt)
-      dot[BLOCK_INDEXES.OP.E1] = owner
-      dot[BLOCK_INDEXES.OP.E2] = mk_ident(parts[j])
-      owner = dot
-   end
-   return owner
-end
-
-local function clone_block_deep(b)
-   if not b then
-      return nil
-   end
-   local copy = {
-      kind = b.kind,
-      f = b.f,
-      y = b.y,
-      x = b.x,
-      tk = b.tk,
-      yend = b.yend,
-      xend = b.xend,
-      is_longstring = b.is_longstring,
-   }
-   local child_indexes = {}
-   for k, child in pairs(b) do
-      if math.type(k) == "integer" and child then
-         table.insert(child_indexes, k)
-      end
-   end
-   table.sort(child_indexes)
-   for _, idx in ipairs(child_indexes) do
-      copy[idx] = clone_block_deep(b[idx])
-   end
-   return setmetatable(copy, node_mt)
 end
 
 local function make_comment_block(ps, c)
@@ -15371,123 +14726,6 @@ local function verify_kind(ps, i, kind, node_kind)
    return fail(ps, i, "syntax error, expected " .. kind)
 end
 
-local function build_macro_sig(args, errs, filename, macro_name)
-   local sig = { kinds = {}, vararg = "" }
-   if not args then
-      return sig
-   end
-
-   local idx = 1
-   for _, ab in ipairs(args) do
-      local annot = ab and ab[BLOCK_INDEXES.ARGUMENT.TYPE]
-      local ok = false
-      local mode
-      if annot and annot.kind == "nominal_type" and
-         annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and
-         annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
-
-         local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
-         if tname == "Statement" then
-            ok = true
-            mode = "stmt"
-         elseif tname == "Expression" then
-            ok = true
-            mode = "expr"
-         end
-      end
-      if not ok then
-         table.insert(errs, {
-            filename = filename,
-            y = (annot and annot.y) or ab.y,
-            x = (annot and annot.x) or ab.x,
-            msg = "macro '" .. macro_name .. "' argument type must be 'Statement' or 'Expression'",
-         })
-      else
-         if ab.tk == "..." then
-            sig.vararg = mode or "expr"
-         else
-            sig.kinds[idx] = mode or "expr"
-            idx = idx + 1
-         end
-      end
-   end
-
-   return sig
-end
-
-local function extract_macro_owner_from_newtype(nt)
-   if not nt or nt.kind ~= "newtype" then
-      return nil
-   end
-   local typedecl = nt[BLOCK_INDEXES.NEWTYPE.TYPEDECL]
-   if not typedecl or typedecl.kind ~= "typedecl" then
-      return nil
-   end
-   local typ = typedecl[BLOCK_INDEXES.TYPEDECL.TYPE]
-   if typ and typ.kind == "generic_type" then
-      typ = typ[BLOCK_INDEXES.GENERIC_TYPE.BASE]
-   end
-   if typ and ((typ.kind) == "record" or (typ.kind) == "interface") then
-      return typ
-   end
-   return nil
-end
-
-local function collect_macro_owner_paths_in_scope(container, prefix, out)
-   if not container then
-      return
-   end
-   for _, child in ipairs(container) do
-      if child and (child.kind == "local_type" or child.kind == "global_type") then
-         local var
-         local val
-         if child.kind == "local_type" then
-            var = child[BLOCK_INDEXES.LOCAL_TYPE.VAR]
-            val = child[BLOCK_INDEXES.LOCAL_TYPE.VALUE]
-         else
-            var = child[BLOCK_INDEXES.GLOBAL_TYPE.VAR]
-            val = child[BLOCK_INDEXES.GLOBAL_TYPE.VALUE]
-         end
-         if var and (var.kind == "identifier" or var.kind == "type_identifier") and val then
-            local owner = extract_macro_owner_from_newtype(val)
-            if owner then
-               local path = prefix == "" and var.tk or (prefix .. "." .. var.tk)
-               out[path] = true
-               collect_macro_owner_paths_in_scope(owner[BLOCK_INDEXES.RECORD.FIELDS], path, out)
-            end
-         end
-      end
-   end
-end
-
-local function collect_macro_owner_paths(node)
-   local out = {}
-   collect_macro_owner_paths_in_scope(node, "", out)
-   return out
-end
-
-local function validate_attached_macro_owners(node, errs, filename)
-   local owners = collect_macro_owner_paths(node)
-   for _, child in ipairs(node) do
-      if child and
-         child.kind == "local_macro" and
-         child[BLOCK_INDEXES.LOCAL_MACRO.OWNER] and
-         not child[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS] then
-
-         local owner_key = path_block_to_string(child[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
-         if owner_key and not owners[owner_key] then
-            local owner = child[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
-            table.insert(errs, {
-               filename = filename,
-               y = owner.y,
-               x = owner.x,
-               msg = "macro owner '" .. owner_key .. "' must be a record or interface",
-            })
-         end
-      end
-   end
-end
-
 
 
 local function skip(ps, i, skip_fn)
@@ -15499,10 +14737,6 @@ local function skip(ps, i, skip_fn)
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
       macro_sigs = ps.macro_sigs,
-      require_aliases = ps.require_aliases,
-      imported_macro_decls = ps.imported_macro_decls,
-      imported_macro_keys = ps.imported_macro_keys,
-      macro_aliases = ps.macro_aliases,
    }
    return skip_fn(err_ps, i)
 end
@@ -15511,209 +14745,6 @@ local function failskip(ps, i, msg, skip_fn, starti)
    local skip_i = skip(ps, starti or i, skip_fn)
    fail(ps, i, msg)
    return skip_i
-end
-
-local function search_tl_module(module_name)
-   local path = os.getenv("TL_PATH") or package.path
-   local slash_name = module_name:gsub("%.", "/")
-   for entry in path:gmatch("[^;]+") do
-      if not entry:match("%?[/\\]init%.lua$") then
-         local filename = entry:gsub("?", slash_name)
-         local tl_filename = filename:gsub("%.lua$", ".tl")
-         local fd = io.open(tl_filename, "rb")
-         if not fd then
-            tl_filename = filename:gsub("%.lua$", "/init.tl")
-            fd = io.open(tl_filename, "rb")
-         end
-         if fd then
-            local code = fd:read("*a")
-            fd:close()
-            if code then
-               return tl_filename, code
-            end
-         end
-      end
-   end
-   return nil
-end
-
-local function top_level_return_path(node)
-   local out
-   for _, stmt in ipairs(node) do
-      if stmt and stmt.kind == "return" then
-         local exps = stmt[BLOCK_INDEXES.RETURN.EXPS]
-         if exps and exps[1] then
-            local path = path_block_to_string(exps[1])
-            if path then
-               out = path
-            end
-         end
-      end
-   end
-   return out
-end
-
-local function collect_module_macro_exports(node, errs, filename)
-   local exports = {}
-   local owners = collect_macro_owner_paths(node)
-   local return_path = top_level_return_path(node)
-
-   for _, stmt in ipairs(node) do
-      if stmt and
-         stmt.kind == "local_macro" and
-         stmt[BLOCK_INDEXES.LOCAL_MACRO.OWNER] and
-         not stmt[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS] then
-
-         local owner = stmt[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
-         local owner_key = path_block_to_string(owner)
-         local name = stmt[BLOCK_INDEXES.LOCAL_MACRO.NAME]
-         if owner_key and name and name.kind == "identifier" then
-            if not owners[owner_key] then
-               table.insert(errs, {
-                  filename = filename,
-                  y = owner.y,
-                  x = owner.x,
-                  msg = "macro owner '" .. owner_key .. "' must be a record or interface",
-               })
-            elseif return_path and (owner_key == return_path or starts_with(owner_key, return_path .. ".")) then
-               local suffix_owner = owner_key == return_path and "" or owner_key:sub(#return_path + 2)
-               local exported_key = suffix_owner == "" and name.tk or (suffix_owner .. "." .. name.tk)
-               local sig = build_macro_sig(stmt[BLOCK_INDEXES.LOCAL_MACRO.ARGS], errs, filename, exported_key)
-               table.insert(exports, {
-                  key = exported_key,
-                  sig = sig,
-                  decl = stmt,
-               })
-            end
-         end
-      end
-   end
-
-   return exports
-end
-
-local function load_module_macro_info(ps, module_name)
-   if module_macro_missing[module_name] then
-      return nil
-   end
-   local cached = module_macro_cache[module_name]
-   if cached ~= nil then
-      return cached
-   end
-
-   if module_macro_loading[module_name] then
-      return nil
-   end
-   module_macro_loading[module_name] = true
-
-   local found, code = search_tl_module(module_name)
-   if not found or not code then
-      module_macro_missing[module_name] = true
-      module_macro_loading[module_name] = nil
-      return nil
-   end
-
-   local lang = lang_heuristic(found, code)
-   local mod_node, mod_errs = reader.read(code, found, lang, true, true)
-   for _, e in ipairs(mod_errs) do
-      table.insert(ps.errs, e)
-   end
-
-   local info = {
-      exports = collect_module_macro_exports(mod_node, ps.errs, found),
-   }
-
-   module_macro_cache[module_name] = info
-   module_macro_loading[module_name] = nil
-   return info
-end
-
-local function local_require_alias(stmt)
-   if not stmt then
-      return nil
-   end
-
-   local var
-   local exp
-
-   if stmt.kind == "local_declaration" then
-      local vars = stmt[BLOCK_INDEXES.LOCAL_DECLARATION.VARS]
-      local exps = stmt[BLOCK_INDEXES.LOCAL_DECLARATION.EXPS]
-      if not vars or not exps or #vars ~= 1 or #exps ~= 1 then
-         return nil
-      end
-      var = vars[1]
-      exp = exps[1]
-   elseif stmt.kind == "local_type" then
-      var = stmt[BLOCK_INDEXES.LOCAL_TYPE.VAR]
-      exp = stmt[BLOCK_INDEXES.LOCAL_TYPE.VALUE]
-   else
-      return nil
-   end
-
-   if not var or var.kind ~= "identifier" then
-      return nil
-   end
-
-   local module_name = reader.node_is_require_call(exp)
-   if not module_name then
-      return nil
-   end
-   return var.tk, module_name
-end
-
-local function ensure_required_alias_macros(ps, alias)
-   local module_name = ps.require_aliases[alias]
-   if not module_name then
-      return
-   end
-   local loaded_key = "@loaded:" .. alias
-   if ps.imported_macro_keys[loaded_key] then
-      return
-   end
-   ps.imported_macro_keys[loaded_key] = true
-
-   local info = load_module_macro_info(ps, module_name)
-   if not info then
-      return
-   end
-
-   for _, exp in ipairs(info.exports) do
-      local imported_key = alias .. "." .. exp.key
-      if not ps.imported_macro_keys[imported_key] then
-         ps.imported_macro_keys[imported_key] = true
-         ps.macro_sigs[imported_key] = exp.sig
-
-         local imported_decl = clone_block_deep(exp.decl)
-         local parts = split_dotted_path(imported_key)
-         local macro_name = parts[#parts]
-         parts[#parts] = nil
-
-         imported_decl[BLOCK_INDEXES.LOCAL_MACRO.NAME] = setmetatable({
-            f = imported_decl.f or ps.filename,
-            y = imported_decl.y or 1,
-            x = imported_decl.x or 1,
-            tk = macro_name,
-            kind = "identifier",
-         }, node_mt)
-
-         if #parts > 0 then
-            imported_decl[BLOCK_INDEXES.LOCAL_MACRO.OWNER] = build_path_block_from_parts(imported_decl.f, imported_decl.y, imported_decl.x, parts)
-         else
-            imported_decl[BLOCK_INDEXES.LOCAL_MACRO.OWNER] = nil
-         end
-
-         imported_decl[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS] = setmetatable({
-            f = imported_decl.f,
-            y = imported_decl.y,
-            x = imported_decl.x,
-            tk = alias,
-            kind = "identifier",
-         }, node_mt)
-
-         table.insert(ps.imported_macro_decls, imported_decl)
-      end
-   end
 end
 
 local function read_type_body(ps, i, istart, node, tn)
@@ -15739,8 +14770,9 @@ local function read_type_body(ps, i, istart, node, tn)
 end
 
 local function skip_type_body(ps, i)
-   local tn = assert(type_body_kinds[ps.tokens[i].tk], ps.tokens[i].tk .. " has no parse body function")
+   local tn = ps.tokens[i].tk
    i = i + 1
+   assert(read_type_body_fns[tn], tn .. " has no parse body function")
    local ii, tt = read_type_body(ps, i, i - 1, {}, tn)
    return ii, not not tt
 end
@@ -15797,10 +14829,6 @@ local function read_table_item(ps, i, n)
             allow_macro_vars = ps.allow_macro_vars,
             in_local_macro = ps.in_local_macro,
             macro_sigs = ps.macro_sigs,
-            require_aliases = ps.require_aliases,
-            imported_macro_decls = ps.imported_macro_decls,
-            imported_macro_keys = ps.imported_macro_keys,
-            macro_aliases = ps.macro_aliases,
          }
          i, node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY] = verify_kind(try_ps, i, "identifier", "string")
          node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk = '"' .. node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk .. '"'
@@ -15918,8 +14946,7 @@ local function read_macro_args_with_sig(ps, i, sig)
             while read_type_body_fns[tk0] and ps2.tokens[curr_i + 1] and ps2.tokens[curr_i + 1].kind == "identifier" do
                local ni
                local lt
-               local tn = assert(type_body_kinds[tk0])
-               ni, lt = read_nested_type(ps2, curr_i, tn)
+               ni, lt = read_nested_type(ps2, curr_i, tk0)
                if not sblk then sblk = new_block(ps2, curr_i, "statements") end
                table.insert(sblk, lt)
                curr_i = ni
@@ -15953,23 +14980,6 @@ local function read_macro_args_with_sig(ps, i, sig)
                local errs2 = {}
                local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
                if #errs2 == 0 and block_ast then
-                  if can_split_on_comma and
-                     block_ast.kind == "statements" and
-                     #block_ast == 1 then
-
-                     local st = block_ast[1]
-                     if st and st.kind == "local_declaration" then
-                        local vlist = st[BLOCK_INDEXES.LOCAL_DECLARATION.VARS]
-                        local decl = st[BLOCK_INDEXES.LOCAL_DECLARATION.DECL]
-                        if vlist and decl then
-                           local typelist = decl[1] or decl[2]
-                           local ntypes = typelist and #typelist or 0
-                           if ntypes > #vlist then
-                              return false
-                           end
-                        end
-                     end
-                  end
                   best_j = jend
                   best_block = block_ast
                   return true
@@ -16069,10 +15079,6 @@ local function read_trying_list(ps, i, list, read_item, ret_lookahead)
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
       macro_sigs = ps.macro_sigs,
-      require_aliases = ps.require_aliases,
-      imported_macro_decls = ps.imported_macro_decls,
-      imported_macro_keys = ps.imported_macro_keys,
-      macro_aliases = ps.macro_aliases,
    }
    local tryi, item = read_item(try_ps, i)
    if not item then
@@ -16206,8 +15212,7 @@ local function read_simple_type_or_nominal(ps, i)
          return fail(ps, i, "syntax error, expected identifier")
       end
       typ = new_nominal(ps, i - 1, nil)
-      local mv = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
-      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = mv
+      typ[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [BLOCK_INDEXES.MACRO_VAR.NAME] = ident, tk = "$" }
    else
       if ps.tokens[i].kind ~= "identifier" then
          return fail(ps, i, "syntax error, expected identifier")
@@ -16251,17 +15256,6 @@ local function read_base_type(ps, i)
    local tk = ps.tokens[i].tk
    if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i].tk == "$") then
       return read_simple_type_or_nominal(ps, i)
-   elseif ps.tokens[i].kind == "string" then
-      local node = new_block(ps, i, "string")
-      local _, is_long = unquote(tk)
-      node.is_longstring = is_long
-      return i + 1, node
-   elseif ps.tokens[i].kind == "number" or ps.tokens[i].kind == "integer" then
-      local node
-      i, node = verify_kind(ps, i, ps.tokens[i].kind)
-      return i, node
-   elseif tk == "true" or tk == "false" then
-      return verify_kind(ps, i, "keyword", "boolean")
    elseif tk == "{" then
       local istart = i
       i = i + 1
@@ -16655,8 +15649,7 @@ do
 
 
    local function failstore(ps, tkop, e1)
-      local paren = { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
-      return paren
+      return { f = ps.filename, y = tkop.y, x = tkop.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
    end
 
    local function P(ps, i)
@@ -16683,8 +15676,7 @@ do
          if not ident then
             return i
          end
-         local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-         e1 = macro_var
+         e1 = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
@@ -16693,8 +15685,7 @@ do
             fail(ps, prev_i, "expected an expression")
             return i
          end
-         local paren = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
-         e1 = paren
+         e1 = { f = ps.filename, y = t1.y, x = t1.x, kind = "paren", [BLOCK_INDEXES.PAREN.EXP] = e1 }
       else
          i, e1 = read_literal(ps, i)
       end
@@ -16723,8 +15714,7 @@ do
                if not ident then
                   return i, failstore(ps, tkop, e1)
                end
-               local macro_key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-               key = macro_key
+               key = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
             else
                if ps.tokens[i].kind ~= "identifier" then
                   local skipped = skip(ps, i, read_type)
@@ -16740,7 +15730,7 @@ do
             end
 
             if op_kind == "op_colon" then
-               if ps.tokens[i].tk ~= "!" and not args_starters[ps.tokens[i].kind] then
+               if not args_starters[ps.tokens[i].kind] then
                   if ps.tokens[i].tk == "=" then
                      fail(ps, i, "syntax error, cannot perform an assignment here (missing 'local' or 'global'?)")
                   else
@@ -16762,36 +15752,20 @@ do
             local next_tk = ps.tokens[i]
             local args = new_block(ps, i, "expression_list")
             local argument
-            local mname
-            local has_colon
-            mname, has_colon = macro_target_key(e1)
-            if has_colon then
-               fail(ps, prev_i, "method-style macro invocation is not supported; use owner.macro!()")
-               return i, failstore(ps, tkop, e1)
-            end
             if next_tk.tk == "(" then
-               local sig = mname and ps.macro_sigs[mname]
-               if (not sig) and mname then
-                  local alias = mname:match("^([^.]+)%.")
-                  if alias then
-                     ensure_required_alias_macros(ps, alias)
-                     sig = ps.macro_sigs[mname]
-                  end
+               local mname
+               if e1 and e1.kind == "identifier" then
+                  mname = e1.tk
                end
+               local sig = mname and ps.macro_sigs[mname]
                if sig then
                   i, args = read_macro_args_with_sig(ps, i, sig)
                else
                   i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
-               if mname then
-                  local alias = mname:match("^([^.]+)%.")
-                  if alias then
-                     ensure_required_alias_macros(ps, alias)
-                  end
-               end
                if next_tk.kind == "string" then
-                  argument = new_block(ps, i, "string")
+                  argument = new_block(ps, i)
                   local _, is_long = unquote(next_tk.tk)
                   argument.is_longstring = is_long
                   i = i + 1
@@ -16817,8 +15791,7 @@ do
                return i, failstore(ps, tkop, e1)
             end
 
-            local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
-            e1 = inv
+            e1 = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
             if tkop.y > prev_tk.y and ps.read_lang ~= "lua" then
@@ -16862,7 +15835,7 @@ do
             local args = new_block(ps, i, "expression_list")
             local argument
             if tkop.kind == "string" then
-               argument = new_block(ps, i, "string")
+               argument = new_block(ps, i)
                local _, is_long = unquote(tkop.tk)
                argument.is_longstring = is_long
                i = i + 1
@@ -17351,8 +16324,7 @@ read_nested_type = function(ps, i, tn)
       if not ident then
          return fail(ps, i, "expected a variable name")
       end
-      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-      v = macro_var
+      v = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
    else
       i, v = verify_kind(ps, i, "identifier", "type_identifier")
       if not v then
@@ -17554,7 +16526,6 @@ read_record_body = function(ps, i, def)
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
       local comment_blocks = collect_comment_blocks(ps, i)
       local tn = ps.tokens[i].tk
-      local tn_kind = type_body_kinds[tn]
       if ps.tokens[i].tk == "userdata" and ps.tokens[i + 1].tk ~= ":" then
          for _, cb in ipairs(comment_blocks) do
             table.insert(def, cb)
@@ -17576,12 +16547,12 @@ read_record_body = function(ps, i, def)
             table.insert(fields, cb)
          end
          table.insert(fields, lt)
-      elseif tn_kind and ps.tokens[i + 1].tk ~= ":" then
+      elseif read_type_body_fns[tn] and ps.tokens[i + 1].tk ~= ":" then
          if def.kind == "interface" and tn == "record" then
             i = failskip(ps, i, "interfaces cannot contain record definitions", skip_type_body)
          else
             local lt
-            i, lt = read_nested_type(ps, i, tn_kind)
+            i, lt = read_nested_type(ps, i, tn)
             if lt then
                for _, cb in ipairs(comment_blocks) do
                   table.insert(fields, cb)
@@ -17684,9 +16655,8 @@ local function read_newtype(ps, i)
    local tn = ps.tokens[i].tk
    local istart = i
 
-   local tn_kind = type_body_kinds[tn]
-   if tn_kind then
-      i, def = read_type_body(ps, i + 1, istart, node, tn_kind)
+   if read_type_body_fns[tn] then
+      i, def = read_type_body(ps, i + 1, istart, node, tn)
    else
       i, def = read_type(ps, i)
    end
@@ -17834,8 +16804,7 @@ read_type_declaration = function(ps, i, node_name)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-      var = macro_var
+      var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
    else
       i, var = verify_kind(ps, i, "identifier")
       if not var then
@@ -17892,8 +16861,7 @@ local function read_type_constructor(ps, i, node_name, tn)
       if not ident then
          return fail(ps, i, "expected a type name")
       end
-      local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-      asgn[BIDX.VAR] = macro_var
+      asgn[BIDX.VAR] = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
    else
       i, asgn[BIDX.VAR] = verify_kind(ps, i, "identifier")
       if not asgn[BIDX.VAR] then
@@ -17925,50 +16893,6 @@ local function read_local_macroexp(ps, i)
    return i, node
 end
 
-local function read_macro_body(ps, i, node)
-   local old_in_macro = ps.in_local_macro
-   local old_allow = ps.allow_macro_vars
-   ps.in_local_macro = true
-   ps.allow_macro_vars = false
-   i, node = read_function_args_rets_body(ps, i, node)
-   ps.in_local_macro = old_in_macro
-   ps.allow_macro_vars = old_allow
-   return i, node
-end
-
-local function register_macro_signature(ps, node, key)
-   if key then
-      ps.macro_sigs[key] = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
-   end
-end
-
-local function read_macro_alias_target(ps, i, node)
-   i = verify_tk(ps, i, "=")
-
-   local target
-   i, target = read_identifier(ps, i)
-   if not target then
-      return i, node
-   end
-
-   while ps.tokens[i].tk == "." do
-      local dot = new_block(ps, i, "op_dot")
-      dot[BLOCK_INDEXES.OP.E1] = target
-      i = i + 1
-      i, dot[BLOCK_INDEXES.OP.E2] = read_identifier(ps, i)
-      if not dot[BLOCK_INDEXES.OP.E2] then
-         return i, node
-      end
-      target = dot
-   end
-
-   i = verify_tk(ps, i, "!")
-   node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = target
-   table.insert(ps.macro_aliases, node)
-   end_at(node, ps.tokens[i - 1])
-   return i, node
-end
-
 local function read_local_macro(ps, i)
    local istart = i
    i = verify_tk(ps, i, "local")
@@ -17976,116 +16900,42 @@ local function read_local_macro(ps, i)
    local node = new_block(ps, istart, "local_macro")
    i, node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = read_identifier(ps, i)
    i = verify_tk(ps, i, "!")
-   if ps.tokens[i].tk == "=" then
-      return read_macro_alias_target(ps, i, node)
-   end
-
-   i, node = read_macro_body(ps, i, node)
-   if node[BLOCK_INDEXES.LOCAL_MACRO.NAME] and node[BLOCK_INDEXES.LOCAL_MACRO.NAME].kind == "identifier" then
-      register_macro_signature(ps, node, node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk)
-   end
-   return i, node
-end
-
-local function read_attached_macro(ps, i)
-   local istart = i
-   i = verify_tk(ps, i, "macro")
-
-   local names = {}
-   local dot_pos = {}
-
-   i, names[1] = read_identifier(ps, i)
-   if not names[1] then
-      return fail(ps, i, "expected macro owner path")
-   end
-
-   while ps.tokens[i] and ps.tokens[i].tk == "." do
-      table.insert(dot_pos, i)
-      i = i + 1
-      local part
-      i, part = read_identifier(ps, i)
-      if not part then
-         return fail(ps, i, "expected macro name")
-      end
-      table.insert(names, part)
-   end
-
-   if #names < 2 then
-      return fail(ps, i, "attached macros must use the form 'macro Record.name!()'")
-   end
-
-   local owner = names[1]
-   for n = 2, #names - 1 do
-      local dot = new_block(ps, dot_pos[n - 1], "op_dot")
-      dot[BLOCK_INDEXES.OP.E1] = owner
-      dot[BLOCK_INDEXES.OP.E2] = names[n]
-      owner = dot
-   end
-
-   local node = new_block(ps, istart, "local_macro")
-   node[BLOCK_INDEXES.LOCAL_MACRO.OWNER] = owner
-   node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = names[#names]
-
-   i = verify_tk(ps, i, "!")
-
-   i, node = read_macro_body(ps, i, node)
-
-   local owner_key = path_block_to_string(node[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
-   local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME] and node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk
-   if owner_key and name then
-      register_macro_signature(ps, node, owner_key .. "." .. name)
-   end
-
-   return i, node
-end
-
-local function resolve_macro_aliases(ps)
-   local pending = ps.macro_aliases
-
-   while #pending > 0 do
-      local unresolved = {}
-      local resolved_any = false
-
-      for _, node in ipairs(pending) do
-         local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
-         local target = node[BLOCK_INDEXES.LOCAL_MACRO.TARGET]
-         local target_key = path_block_to_string(target)
-         local sig = target_key and ps.macro_sigs[target_key]
-
-         if not sig and target_key then
-            local require_alias = target_key:match("^([^.]+)%.")
-            if require_alias then
-               ensure_required_alias_macros(ps, require_alias)
-               sig = ps.macro_sigs[target_key]
+   local old_in_macro = ps.in_local_macro
+   local old_allow = ps.allow_macro_vars
+   ps.in_local_macro = true
+   ps.allow_macro_vars = false
+   i, node = read_function_args_rets_body(ps, i, node)
+   ps.in_local_macro = old_in_macro
+   ps.allow_macro_vars = old_allow
+   local args = node[BLOCK_INDEXES.LOCAL_MACRO.ARGS]
+   if args then
+      local sig = { kinds = {}, vararg = "" }
+      local idx = 1
+      for _, ab in ipairs(args) do
+         local annot = ab and ab[BLOCK_INDEXES.ARGUMENT.TYPE]
+         local ok = false
+         local mode
+         if annot and annot.kind == "nominal_type" and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
+            local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
+            if tname == "Statement" then ok = true; mode = "stmt"
+            elseif tname == "Expression" then ok = true; mode = "expr" end
+         end
+         if not ok then
+            table.insert(ps.errs, { filename = ps.filename, y = (annot and annot.y) or ab.y, x = (annot and annot.x) or ab.x, msg = "macro argument type must be 'Statement' or 'Expression'" })
+         else
+            if ab.tk == "..." then
+               sig.vararg = mode or "expr"
+            else
+               sig.kinds[idx] = mode or "expr"
+               idx = idx + 1
             end
          end
-
-         if name and sig then
-            ps.macro_sigs[name.tk] = sig
-            resolved_any = true
-         else
-            table.insert(unresolved, node)
-         end
       end
-
-      if #unresolved == 0 then
-         return
+      if node[BLOCK_INDEXES.LOCAL_MACRO.NAME] and node[BLOCK_INDEXES.LOCAL_MACRO.NAME].kind == "identifier" then
+         ps.macro_sigs[node[BLOCK_INDEXES.LOCAL_MACRO.NAME].tk] = sig
       end
-      if not resolved_any then
-         for _, node in ipairs(unresolved) do
-            local target = node[BLOCK_INDEXES.LOCAL_MACRO.TARGET]
-            table.insert(ps.errs, {
-               filename = ps.filename,
-               y = target.y,
-               x = target.x,
-               msg = "unknown macro '" .. (path_block_to_string(target) or "") .. "'",
-            })
-         end
-         return
-      end
-
-      pending = unresolved
    end
+   return i, node
 end
 
 local function read_local(ps, i)
@@ -18098,9 +16948,8 @@ local function read_local(ps, i)
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      local ntk_kind = type_body_kinds[ntk]
-      return read_type_constructor(ps, i, "local_type", ntk_kind)
+   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      return read_type_constructor(ps, i, "local_type", ntk)
    end
    return read_variable_declarations(ps, i + 1, "local_declaration")
 end
@@ -18121,9 +16970,8 @@ local function read_global(ps, i)
       return read_function_args_rets_body(ps, i, fn)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      local ntk_kind = type_body_kinds[ntk]
-      return read_type_constructor(ps, i, "global_type", ntk_kind)
+   elseif read_type_body_fns[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+      return read_type_constructor(ps, i, "global_type", ntk)
    elseif ps.tokens[i + 1].kind == "identifier" then
       return read_variable_declarations(ps, i + 1, "global_declaration")
    end
@@ -18147,8 +16995,7 @@ read_record_function = function(ps, i)
          if not ident then
             return fail(ps2, ii, "syntax error, expected identifier")
          end
-         local macro_var = { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
-         return ii, macro_var
+         return ii, { f = ps2.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
       end
       local nii
       local nb
@@ -18267,35 +17114,20 @@ read_statements = function(ps, i, toplevel)
          break
       end
 
-      if tk == "macro" then
-         if not toplevel then
-            i = fail(ps, i, "attached macro declarations are only allowed at top level")
-            item = nil
+      local fn = read_statement_fns[tk]
+      if not fn then
+         local skip_fn = needs_local_or_global[tk]
+         if skip_fn and ps.tokens[i + 1].kind == "identifier" then
+            fn = skip_fn
          else
-            i, item = read_attached_macro(ps, i)
+            fn = read_call_or_assignment
          end
-      else
-         local fn = read_statement_fns[tk]
-         if not fn then
-            local skip_fn = needs_local_or_global[tk]
-            if skip_fn and ps.tokens[i + 1].kind == "identifier" then
-               fn = skip_fn
-            else
-               fn = read_call_or_assignment
-            end
-         end
-
-         i, item = fn(ps, i)
       end
+
+      i, item = fn(ps, i)
 
       if item then
          table.insert(node, item)
-         if toplevel and (item.kind == "local_declaration" or item.kind == "local_type") then
-            local alias, module_name = local_require_alias(item)
-            if alias and module_name then
-               ps.require_aliases[alias] = module_name
-            end
-         end
       elseif i > 1 then
 
          local lasty = ps.tokens[i - 1].y
@@ -18310,13 +17142,6 @@ read_statements = function(ps, i, toplevel)
 end
 
 function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand)
-   if read_program_depth == 0 then
-      module_macro_cache = {}
-      module_macro_missing = {}
-      module_macro_loading = {}
-   end
-   read_program_depth = read_program_depth + 1
-
    errs = errs or {}
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename)
@@ -18331,10 +17156,6 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
       macro_sigs = {},
-      require_aliases = {},
-      imported_macro_decls = {},
-      imported_macro_keys = {},
-      macro_aliases = {},
    }
    local i = 1
    local hashbang
@@ -18346,13 +17167,6 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    if hashbang then
       table.insert(node, 1, new_block(ps, 1, "hashbang"))
    end
-   resolve_macro_aliases(ps)
-
-   for _, decl in ipairs(ps.imported_macro_decls) do
-      table.insert(node, decl)
-   end
-
-   validate_attached_macro_owners(node, errs, filename)
 
    local seen = setmetatable({}, { __mode = "k" })
 
@@ -18362,23 +17176,9 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       if b.kind == "macro_invocation" then
          local m = b[BLOCK_INDEXES.MACRO_INVOCATION.MACRO]
          local args = b[BLOCK_INDEXES.MACRO_INVOCATION.ARGS]
-         local name, has_colon = macro_target_key(m)
-         if has_colon then
-            table.insert(ps.errs, {
-               filename = ps.filename,
-               y = m.y,
-               x = m.x,
-               msg = "method-style macro invocation is not supported; use owner.macro!()",
-            })
-         elseif name then
+         if m and m.kind == "identifier" then
+            local name = m.tk
             local sig = ps.macro_sigs[name]
-            if not sig then
-               local alias = name:match("^([^.]+)%.")
-               if alias then
-                  ensure_required_alias_macros(ps, alias)
-                  sig = ps.macro_sigs[name]
-               end
-            end
             if sig then
                local provided = args and #args or 0
                local required = #sig.kinds
@@ -18406,7 +17206,6 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    end
 
    errors.clear_redundant_errors(errs)
-   read_program_depth = read_program_depth - 1
    return node
 end
 
@@ -18425,7 +17224,6 @@ end
 -- module teal.traversal from teal/traversal.lua
 package.preload["teal.traversal"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table; local type = type
-
 
 
 local tldebug = require("teal.debug")
@@ -18971,8 +17769,7 @@ end
 
 -- module teal.type_errors from teal/type_errors.lua
 package.preload["teal.type_errors"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
-local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type; local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local types = require("teal.types")
@@ -19341,8 +18138,7 @@ end
 
 -- module teal.type_reporter from teal/type_reporter.lua
 package.preload["teal.type_reporter"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local types = require("teal.types")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local types = require("teal.types")
 
 
 
@@ -19367,16 +18163,7 @@ local util = require("teal.util")
 local binary_search = util.binary_search
 local sorted_keys = util.sorted_keys
 
-local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TypeReport = {}, TypeReporter = {} }
-
-
-
-
-
-
-
-
-
+local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = {}, TypeReport = {}, TypeReporter = {} }
 
 
 
@@ -19554,7 +18341,6 @@ function type_reporter.new()
          types = {},
          symbols_by_file = {},
          globals = {},
-         macro_expansions = {},
       }, { __index = TypeReport }),
    }, { __index = TypeReporter })
 
@@ -19664,11 +18450,6 @@ function TypeReporter:get_typenum(t)
          r[k] = self:get_typenum(v)
       end
       ti.fields = r
-      local locations = {}
-      for name, location in pairs(rt.field_locations or {}) do
-         locations[name] = { file = location.f, y = location.y, x = location.x }
-      end
-      ti.field_locations = locations
       if rt.meta_fields then
 
          local m = {}
@@ -19677,11 +18458,6 @@ function TypeReporter:get_typenum(t)
             m[k] = self:get_typenum(v)
          end
          ti.meta_fields = m
-         local meta_locations = {}
-         for name, location in pairs(rt.meta_field_locations or {}) do
-            meta_locations[name] = { file = location.f, y = location.y, x = location.x }
-         end
-         ti.meta_field_locations = meta_locations
       end
    end
 
@@ -19728,8 +18504,6 @@ function TypeReporter:get_collector(filename)
 
    local ft = {}
    self.tr.by_pos[filename] = ft
-   local expansions = {}
-   self.tr.macro_expansions[filename] = expansions
 
    local symbol_list = collector.symbol_list
    local symbol_list_n = 0
@@ -19746,11 +18520,6 @@ function TypeReporter:get_collector(filename)
       end
 
       yt[x] = self:get_typenum(typ)
-   end
-
-   collector.store_macro_expansion = function(y, x, expansion)
-      expansions[y] = expansions[y] or {}
-      expansions[y][x] = expansion
    end
 
    collector.reserve_symbol_list_slot = function(node)
@@ -19922,8 +18691,7 @@ end
 
 -- module teal.types from teal/types.lua
 package.preload["teal.types"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
-local tldebug = require("teal.debug")
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -19936,27 +18704,7 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 
-local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+local types = { GenericType = {}, StringType = {}, IntegerType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
 
 
 
@@ -20584,6 +19332,11 @@ local function show_type_base(t, short, seen)
       table.insert(out, ">")
       table.insert(out, rest)
       return table.concat(out)
+   elseif t.typename == "number" or
+      t.typename == "integer" or
+      t.typename == "boolean" or
+      t.typename == "thread" then
+      return t.typename
    elseif t.typename == "string" then
       if short then
          return "string"
@@ -20591,29 +19344,6 @@ local function show_type_base(t, short, seen)
          return t.typename ..
          (t.literal and string.format(" %q", t.literal) or "")
       end
-   elseif t.typename == "number" then
-      if short then
-         return t.typename
-      else
-         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
-         return t.typename .. lit
-      end
-   elseif t.typename == "integer" then
-      if short then
-         return t.typename
-      else
-         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
-         return t.typename .. lit
-      end
-   elseif t.typename == "boolean" then
-      if short then
-         return t.typename
-      else
-         local lit = t.literal ~= nil and (" " .. tostring(t.literal)) or ""
-         return t.typename .. lit
-      end
-   elseif t.typename == "thread" then
-      return t.typename
    elseif t.typename == "typevar" then
       return show_typevar(t.typevar, "typevar")
    elseif t.typename == "typearg" then
@@ -21104,13 +19834,9 @@ function types.untuple(t)
    return rt
 end
 
-function types.unite(w, typs, flatten_constants, implicit_nil)
+function types.unite(w, typs, flatten_constants)
    if #typs == 1 then
       return typs[1]
-   end
-
-   if implicit_nil == nil then
-      implicit_nil = true
    end
 
    local ts = {}
@@ -21119,9 +19845,7 @@ function types.unite(w, typs, flatten_constants, implicit_nil)
 
    local types_seen = {}
 
-   if implicit_nil then
-      types_seen["nil"] = true
-   end
+   types_seen["nil"] = true
 
    local i = 1
    while typs[i] or stack[1] do
@@ -21138,16 +19862,7 @@ function types.unite(w, typs, flatten_constants, implicit_nil)
             table.insert(stack, s)
          end
       else
-         local is_literal =
-         (t.typename == "string" and t.literal) or
-         (t.typename == "number" and t.literal ~= nil) or
-         (t.typename == "integer" and t.literal ~= nil) or
-         (t.typename == "boolean" and t.literal ~= nil)
-
-         if types.lua_primitives[t.typename] and (flatten_constants or not is_literal) then
-            if flatten_constants and is_literal then
-               t = types.drop_constant_value(t)
-            end
+         if types.lua_primitives[t.typename] and (flatten_constants or (t.typename == "string" and not t.literal)) then
             if not types_seen[t.typename] then
                types_seen[t.typename] = true
                table.insert(ts, t)
@@ -21193,317 +19908,12 @@ function types.drop_constant_value(t)
       local ret = shallow_copy_new_type(t)
       ret.literal = nil
       return ret
-   elseif t.typename == "number" and t.literal ~= nil then
-      local ret = shallow_copy_new_type(t)
-      ret.literal = nil
-      return ret
-   elseif t.typename == "integer" and t.literal ~= nil then
-      local ret = shallow_copy_new_type(t)
-      ret.literal = nil
-      return ret
-   elseif t.typename == "boolean" and t.literal ~= nil then
-      local ret = shallow_copy_new_type(t)
-      ret.literal = nil
-      return ret
    elseif t.needs_compat then
       local ret = shallow_copy_new_type(t)
       ret.needs_compat = nil
       return ret
    end
    return t
-end
-
-function types.drop_constant_values(t, keep_typedecls)
-   local function has_constant(typ, seen, in_typedecl)
-      if seen[typ] then
-         return false
-      end
-      seen[typ] = true
-
-      if typ.typename == "string" and typ.literal then
-         if not (keep_typedecls and in_typedecl) then
-            return true
-         end
-      elseif typ.typename == "number" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            return true
-         end
-      elseif typ.typename == "integer" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            return true
-         end
-      elseif typ.typename == "boolean" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            return true
-         end
-      elseif typ.needs_compat then
-         return true
-      end
-
-      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
-         return false
-      end
-
-      if typ.typename == "generic" then
-         for _, tf in ipairs(typ.typeargs) do
-            if has_constant(tf, seen, in_typedecl) then
-               return true
-            end
-         end
-         return has_constant(typ.t, seen, in_typedecl)
-      elseif typ.typename == "array" then
-         return has_constant(typ.elements, seen, in_typedecl)
-      elseif typ.typename == "typearg" then
-         if typ.constraint then
-            return has_constant(typ.constraint, seen, in_typedecl)
-         end
-      elseif typ.typename == "typevar" then
-         if typ.constraint then
-            return has_constant(typ.constraint, seen, in_typedecl)
-         end
-      elseif typ.typename == "typedecl" then
-         return has_constant(typ.def, seen, true)
-      elseif typ.typename == "nominal" then
-         if typ.typevals then
-            for _, tf in ipairs(typ.typevals) do
-               if has_constant(tf, seen, in_typedecl) then
-                  return true
-               end
-            end
-         end
-      elseif typ.typename == "function" then
-         return has_constant(typ.args, seen, in_typedecl) or has_constant(typ.rets, seen, in_typedecl)
-      elseif typ.fields then
-         local record_in_typedecl = in_typedecl or (keep_typedecls and typ.declname ~= nil)
-         if typ.elements and has_constant(typ.elements, seen, record_in_typedecl) then
-            return true
-         end
-         if typ.interface_list then
-            for _, v in ipairs(typ.interface_list) do
-               if has_constant(v, seen, record_in_typedecl) then
-                  return true
-               end
-            end
-         end
-         for _, k in ipairs(typ.field_order) do
-            if has_constant(typ.fields[k], seen, record_in_typedecl) then
-               return true
-            end
-         end
-         if typ.meta_fields then
-            for _, k in ipairs(typ.meta_field_order) do
-               if has_constant(typ.meta_fields[k], seen, record_in_typedecl) then
-                  return true
-               end
-            end
-         end
-      elseif typ.typename == "map" then
-         return has_constant(typ.keys, seen, in_typedecl) or has_constant(typ.values, seen, in_typedecl)
-      elseif typ.typename == "union" then
-         for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen, in_typedecl) then
-               return true
-            end
-         end
-      elseif typ.typename == "poly" then
-         for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen, in_typedecl) then
-               return true
-            end
-         end
-      elseif typ.typename == "tupletable" then
-         for _, tf in ipairs(typ.types) do
-            if has_constant(tf, seen, in_typedecl) then
-               return true
-            end
-         end
-      elseif typ.typename == "tuple" then
-         for _, tf in ipairs(typ.tuple) do
-            if has_constant(tf, seen, in_typedecl) then
-               return true
-            end
-         end
-      elseif typ.typename == "self" then
-         if typ.display_type ~= nil then
-            return has_constant(typ.display_type, seen, in_typedecl)
-         end
-      end
-
-      return false
-   end
-
-   if not has_constant(t, {}, false) then
-      return t
-   end
-
-   local seen = {}
-
-   local function drop(typ, in_typedecl)
-      if seen[typ] then
-         return seen[typ]
-      end
-
-      if typ.typename == "string" and typ.literal then
-         if not (keep_typedecls and in_typedecl) then
-            local ret = shallow_copy_new_type(typ)
-            ret.literal = nil
-            return ret
-         end
-      elseif typ.typename == "number" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            local ret = shallow_copy_new_type(typ)
-            ret.literal = nil
-            return ret
-         end
-      elseif typ.typename == "integer" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            local ret = shallow_copy_new_type(typ)
-            ret.literal = nil
-            return ret
-         end
-      elseif typ.typename == "boolean" and typ.literal ~= nil then
-         if not (keep_typedecls and in_typedecl) then
-            local ret = shallow_copy_new_type(typ)
-            ret.literal = nil
-            return ret
-         end
-      end
-      if typ.needs_compat then
-         local ret = shallow_copy_new_type(typ)
-         ret.needs_compat = nil
-         return ret
-      end
-
-      if no_nested_types[typ.typename] or (typ.typename == "nominal" and not typ.typevals) then
-         return typ
-      end
-
-      local copy = shallow_copy_new_type(typ)
-      seen[typ] = copy
-
-      if typ.typename == "generic" then
-         assert(copy.typename == "generic")
-         copy.typeargs = {}
-         for i, tf in ipairs(typ.typeargs) do
-            copy.typeargs[i] = drop(tf, in_typedecl)
-         end
-         copy.t = drop(typ.t, in_typedecl)
-      elseif typ.typename == "array" then
-         assert(copy.typename == "array")
-         copy.elements = drop(typ.elements, in_typedecl)
-      elseif typ.typename == "typearg" then
-         assert(copy.typename == "typearg")
-         copy.typearg = typ.typearg
-         if typ.constraint then
-            copy.constraint = drop(typ.constraint, in_typedecl)
-         end
-      elseif typ.typename == "unresolvable_typearg" then
-         assert(copy.typename == "unresolvable_typearg")
-         copy.typearg = typ.typearg
-      elseif typ.typename == "unresolved_emptytable_value" then
-         assert(copy.typename == "unresolved_emptytable_value")
-         copy.emptytable_type = typ.emptytable_type
-      elseif typ.typename == "typevar" then
-         assert(copy.typename == "typevar")
-         copy.typevar = typ.typevar
-         if typ.constraint then
-            copy.constraint = drop(typ.constraint, in_typedecl)
-         end
-      elseif typ.typename == "typedecl" then
-         assert(copy.typename == "typedecl")
-         copy.def = drop(typ.def, true)
-         copy.is_alias = typ.is_alias
-         copy.is_nested_alias = typ.is_nested_alias
-      elseif typ.typename == "nominal" then
-         assert(copy.typename == "nominal")
-         copy.names = typ.names
-         if typ.typevals then
-            copy.typevals = {}
-            for i, tf in ipairs(typ.typevals) do
-               copy.typevals[i] = drop(tf, in_typedecl)
-            end
-         end
-         copy.found = typ.found
-      elseif typ.typename == "function" then
-         assert(copy.typename == "function")
-         copy.macroexp = typ.macroexp
-         copy.min_arity = typ.min_arity
-         copy.is_method = typ.is_method
-         copy.is_record_function = typ.is_record_function
-         copy.args = drop(typ.args, in_typedecl)
-         copy.rets = drop(typ.rets, in_typedecl)
-         copy.special_function_handler = typ.special_function_handler
-      elseif typ.fields then
-         assert(copy.typename == "record" or copy.typename == "interface")
-         copy.declname = typ.declname
-         local record_in_typedecl = in_typedecl or (keep_typedecls and typ.declname ~= nil)
-         if typ.elements then
-            copy.elements = drop(typ.elements, record_in_typedecl)
-         end
-         if typ.interface_list then
-            copy.interface_list = {}
-            for i, v in ipairs(typ.interface_list) do
-               copy.interface_list[i] = drop(v, record_in_typedecl)
-            end
-         end
-         copy.is_userdata = typ.is_userdata
-         copy.fields = {}
-         copy.field_order = {}
-         for i, k in ipairs(typ.field_order) do
-            copy.field_order[i] = k
-            copy.fields[k] = drop(typ.fields[k], record_in_typedecl)
-         end
-         if typ.meta_fields then
-            copy.meta_fields = {}
-            copy.meta_field_order = {}
-            for i, k in ipairs(typ.meta_field_order) do
-               copy.meta_field_order[i] = k
-               copy.meta_fields[k] = drop(typ.meta_fields[k], record_in_typedecl)
-            end
-         end
-      elseif typ.typename == "map" then
-         assert(copy.typename == "map")
-         copy.keys = drop(typ.keys, in_typedecl)
-         copy.values = drop(typ.values, in_typedecl)
-      elseif typ.typename == "union" then
-         local out_types = {}
-         for _, tf in ipairs(typ.types) do
-            table.insert(out_types, drop(tf, in_typedecl))
-         end
-         local u = types.unite(typ, out_types, true, false)
-         seen[typ] = u
-         return u
-      elseif typ.typename == "poly" then
-         assert(copy.typename == "poly")
-         copy.types = {}
-         for i, tf in ipairs(typ.types) do
-            copy.types[i] = drop(tf, in_typedecl)
-         end
-      elseif typ.typename == "tupletable" then
-         assert(copy.typename == "tupletable")
-         copy.inferred_at = typ.inferred_at
-         copy.types = {}
-         for i, tf in ipairs(typ.types) do
-            copy.types[i] = drop(tf, in_typedecl)
-         end
-      elseif typ.typename == "tuple" then
-         assert(copy.typename == "tuple")
-         copy.is_va = typ.is_va
-         copy.tuple = {}
-         for i, tf in ipairs(typ.tuple) do
-            copy.tuple[i] = drop(tf, in_typedecl)
-         end
-      elseif typ.typename == "self" then
-         assert(copy.typename == "self")
-         if typ.display_type ~= nil then
-            copy.display_type = drop(typ.display_type, in_typedecl)
-         end
-      end
-
-      return copy
-   end
-
-   return drop(t, false)
 end
 
 function types.type_at(w, t)
@@ -21607,18 +20017,8 @@ package.preload["teal.util"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local table = _tl_compat and _tl_compat.table or table
 
 
-
 local util = {}
 
-
-math.type = math.type or function(n)
-   if type(n) ~= "number" then return nil end
-   if n % 1 == 0 then
-      return "integer"
-   else
-      return "float"
-   end
-end
 
 function util.binary_search(list, item, cmp)
    local len = #list
@@ -21667,7 +20067,6 @@ end
 -- module teal.variables from teal/variables.lua
 package.preload["teal.variables"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs
-
 
 
 
@@ -21750,4 +20149,4 @@ return variables
 
 end
 
-return require("teal.api.v2")
+return require("teal.init")

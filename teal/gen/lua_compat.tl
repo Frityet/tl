@@ -22,6 +22,9 @@ local traverse_nodes = traversal.traverse_nodes
 local util = require("teal.util")
 local sorted_keys = util.sorted_keys
 
+local types = require("teal.types")
+local type NominalType = types.NominalType
+
 local record lua_compat
 end
 
@@ -70,7 +73,7 @@ local function add_compat_entries(program: Node, used_set: {string: boolean}, ge
       elseif name == "math.maxinteger" then
          load_code(name, "local _tl_math_maxinteger = math.maxinteger or math.pow(2,53)")
       elseif name == "math.mininteger" then
-         load_code(name, "local _tl_math_mininteger = math.mininteger or -math.pow(2,53) - 1")
+         load_code(name, "local _tl_math_mininteger = math.mininteger or -math.pow(2,53)")
       elseif name == "type" then
          load_code(name, "local type = type")
       else
@@ -117,6 +120,25 @@ local bit_operators: {string:string} = {
    [">>"] = "rshift",
    ["<<"] = "lshift",
 }
+
+-- shadow var function
+local function shadow_control_var(node: Node, control_var: string)
+   if #node.body == 0 then
+      return
+   end
+   local stmt = node_at(node, {
+      kind = "local_declaration",
+      vars = node_at(node, {
+         kind = "variable_list",
+         node_at(node, { kind = "variable", is_lvalue = true, tk = control_var }),
+      }),
+      exps = node_at(node, {
+         kind = "expression_list",
+         node_at(node, { kind = "variable", tk = control_var }),
+      }),
+   })
+   table.insert(node.body, 1, stmt)
+end
 
 local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat: GenCompat, gen_target: string)
    local visit = false
@@ -198,9 +220,13 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
       visit_node.cbs["op"] = {
          after = function(_: nil, node: Node, _children: {nil}): nil
             if node.op.op == "is" then
-               if node.e2.casttype.typename == "integer" then
+               local ct = node.e2.casttype
+               while ct is NominalType and ct.resolved do
+                  ct = ct.resolved
+               end
+               if ct.typename == "integer" then
                   needs_compat["math"] = true
-               elseif node.e2.casttype.typename ~= "nil" then
+               elseif ct.typename ~= "nil" then
                   needs_compat["type"] = true
                end
             elseif node.op.op == "." then
@@ -213,7 +239,8 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
                      needs_compat[key] = true
                   end
                end
-            elseif node.op.op == "~" and gen_target == "5.1" then
+            -- unary '~' only; binary '~' is bxor, handled below
+            elseif node.op.op == "~" and node.op.arity == 1 and gen_target == "5.1" then
                if node.op.meta_on_operand then
                   needs_compat["mt"] = true
                   convert_node_to_compat_mt_call(node, unop_to_metamethod[node.op.op], 1, node.e1)
@@ -247,24 +274,15 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
       visit = true
       visit_node.cbs["forin"] = {
          after = function(_: nil, node: Node, _children: {nil}): nil
-            if #node.body == 0 then
-               return
-            end
             if node.forin_modifies_control_var then
-               local control_var = node.vars[1].tk
-               local loc_at = node
-               local stmt = node_at(loc_at, {
-                  kind = "local_declaration",
-                  vars = node_at(loc_at, {
-                     kind = "variable_list",
-                     node_at(loc_at, { kind = "variable", is_lvalue = true, tk = control_var }),
-                  }),
-                  exps = node_at(loc_at, {
-                     kind = "expression_list",
-                     node_at(loc_at, { kind = "variable", tk = control_var }),
-                  }),
-               })
-               table.insert(node.body, 1, stmt)
+               shadow_control_var(node, node.vars[1].tk)
+            end
+         end,
+      }
+      visit_node.cbs["fornum"] = {
+         after = function(_: nil, node: Node, _children: {nil}): nil
+            if node.fornum_modifies_control_var then
+               shadow_control_var(node, node.var.tk)
             end
          end,
       }
@@ -280,6 +298,10 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
 end
 
 function lua_compat.apply(result: Result)
+   if not (result and result.ast) then
+      return
+   end
+
    if result.compat_applied then
       return
    end

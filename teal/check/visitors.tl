@@ -952,6 +952,19 @@ visit_node.cbs = {
    ["statements"] = {
       before = function(self: Context, node: Node)
          self:begin_scope(node)
+         -- a goto may jump to a label at the end of a block (followed only
+         -- by other labels) even across local declarations, because the
+         -- block's locals are already out of scope at that point. This does
+         -- not apply to a repeat body, whose locals remain visible in the
+         -- until condition.
+         if not node.is_repeat then
+            for i = #node, 1, -1 do
+               if node[i].kind ~= "label" then
+                  break
+               end
+               node[i].is_end_of_block = true
+            end
+         end
       end,
       after = function(self: Context, node: Node, _children: {Type}): Type
          -- if at the top level
@@ -1232,10 +1245,12 @@ visit_node.cbs = {
 
          local scope = self.st[#self.st]
          if scope.pending_labels and scope.pending_labels[label_id] then
-            local n_scope_vars = count_scope_vars(self)
-            for _, goto_node in ipairs(scope.pending_labels[label_id]) do
-               if n_scope_vars > goto_node.n_scope_vars then
-                  self.errs:add(goto_node, "goto jumps into scope of a local variable")
+            if not node.is_end_of_block then
+               local n_scope_vars = count_scope_vars(self)
+               for _, goto_node in ipairs(scope.pending_labels[label_id]) do
+                  if n_scope_vars > goto_node.n_scope_vars then
+                     self.errs:add(goto_node, "goto jumps into scope of a local variable")
+                  end
                end
             end
             node.used_label = true
@@ -1370,7 +1385,14 @@ visit_node.cbs = {
                                     or  "number"
          self:add_var(node.var, node.var.tk, a_type(node.var, typename, {}))
       end,
-      after = end_scope_and_none_type,
+      after = function(self: Context, node: Node, _children: {Type}): Type
+         local var = self:find_var(node.var.tk)
+         if var and var.has_been_written_to then
+            node.fornum_modifies_control_var = true
+         end
+         self:end_scope(node)
+         return NONE
+      end,
    },
    ["return"] = {
       before = function(self: Context, node: Node)
@@ -2302,7 +2324,8 @@ visit_node.cbs = {
             local ua_literal = is_literal_value_type(ua)
             local ub_literal = is_literal_value_type(ub)
             if is_lua_table_type(ra) and is_lua_table_type(rb) then
-               self:check_metamethod(node, binop_to_metamethod[node.op.op], ra, rb, ua, ub)
+               -- Lua uses __eq for both '==' and '~='
+               self:check_metamethod(node, "__eq", ra, rb, ua, ub)
             end
 
             if ra is EnumType and rb is StringType then
@@ -2554,7 +2577,7 @@ visit_node.cbs = {
                local generic_pack_table <const> = (table_t.fields["PackTable"] as types.TypeDeclType).def as types.GenericType
                local pack_table <const> = self:apply_generic(node, generic_pack_table, { t })
 
-               self:add_var(node, node.name.tk, pack_table).is_func_arg = true
+               self:add_var(node, node.name.tk, pack_table, "const").is_func_arg = true
                is_named_vararg = true
             end
             t = a_vararg(node, { t })
