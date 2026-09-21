@@ -12,6 +12,7 @@
 local teal = require("teal.init")
 local driver = require("tlcli.driver")
 local configuration = require("tlcli.configuration")
+local lexer = require("teal.lexer")
 local lfs = require("lfs")
 local record JitModule
    off: function()
@@ -457,11 +458,6 @@ local function make_range(lines: {string}, y: integer, x: integer, length: integ
    local start = byte_to_utf16(prefix, #prefix)
    local finish = start + utf16_length(token)
    return { start = { line = y - 1, character = start }, ["end"] = { line = y - 1, character = finish } }
-end
-
-local function full_range(lines: {string}): Range
-   local last = lines[#lines] or ""
-   return { start = { line = 0, character = 0 }, ["end"] = { line = math.max(0, #lines - 1), character = utf16_length(last) } }
 end
 
 local function lsp_position_to_offset(_text: string, lines: {string}, position: Position): integer
@@ -1667,6 +1663,7 @@ local function document_symbols(server: Server, document: Document): AnyArray
    }
    for i, token in ipairs(document.tokens) do
       local kind = declaration_kinds[token.tk]
+      if token.tk == "local" or token.tk == "global" then kind = 13 end
       if kind then
          local following, _ = next_token(document, i)
          if following and following.kind == "identifier" then
@@ -1792,15 +1789,35 @@ local function folding_ranges(server: Server, document: Document): AnyArray
    return result
 end
 
-local function formatting(document: Document): AnyArray
-   local lines = split_lines(document.text)
-   local changed = false
-   for index, line in ipairs(lines) do
-      local trimmed = line:gsub("[ \t]+$", "")
-      if trimmed ~= line then changed = true; lines[index] = trimmed end
+local function formatting(document: Document, wanted?: Range): AnyArray
+   local edits = array()
+   local tokens, errors = lexer.lex(document.text, document.path)
+   -- An unfinished string can extend to EOF. Never guess which whitespace is code.
+   if #errors > 0 then return edits end
+   local protected: {integer: boolean} = {}
+   for _, token in ipairs(tokens) do
+      if token.kind == "string" then
+         local line = token.y
+         for _ in token.tk:gmatch("\n") do
+            protected[line] = true
+            line = line + 1
+         end
+      end
    end
-   if not changed then return array() end
-   return mark_array({ { range = full_range(document.lines), newText = table.concat(lines, "\n") } } as AnyArray)
+   for index, line in ipairs(document.lines) do
+      if not protected[index] then
+         local trimmed = line:gsub("[ \t]+$", "")
+         if trimmed ~= line then
+            local range = make_range(document.lines, index, #trimmed + 1, #line - #trimmed)
+            if not wanted or (range.start.line >= wanted.start.line and range["end"].line <= wanted["end"].line and
+               (range.start.line ~= wanted.start.line or range.start.character >= wanted.start.character) and
+               (range["end"].line ~= wanted["end"].line or range["end"].character <= wanted["end"].character)) then
+               table.insert(edits, { range = range, newText = "" })
+            end
+         end
+      end
+   end
+   return edits
 end
 
 local function code_actions(document: Document): AnyArray
@@ -1967,7 +1984,7 @@ local function server_capabilities(server: Server): AnyObject
    end
    local capabilities: AnyObject = {
       positionEncoding = "utf-16",
-      textDocumentSync = { openClose = true, change = 2, willSave = true, willSaveWaitUntil = true, save = { includeText = true } },
+      textDocumentSync = { openClose = true, change = 2, save = { includeText = true } },
       workspace = { workspaceFolders = { supported = true, changeNotifications = true } },
       executeCommandProvider = { commands = mark_array({ "tl.check", "tl.generate", "tl.restart" } as AnyArray) },
    }
@@ -1985,7 +2002,6 @@ local function server_capabilities(server: Server): AnyObject
    end
    if lsp_enabled(server, "formatting") then
       capabilities.documentFormattingProvider = true; capabilities.documentRangeFormattingProvider = true
-      capabilities.documentOnTypeFormattingProvider = { firstTriggerCharacter = "\n", moreTriggerCharacter = mark_array({ "end" } as AnyArray) }
    end
    if lsp_enabled(server, "folding_ranges") then capabilities.foldingRangeProvider = true end
    if lsp_enabled(server, "selection_ranges") then capabilities.selectionRangeProvider = true end
@@ -2163,8 +2179,14 @@ local function handle_request(server: Server, method: string, params: AnyObject)
          server.root = uri_to_path(root_uri as string)
          load_workspace_config(server)
       end
+      local capabilities = server_capabilities(server)
+      local raw_options = params.initializationOptions
+      if raw_options and raw_options ~= JSON_NULL then
+         local options = raw_options as AnyObject
+         if options.clientHandlesCommands then capabilities.executeCommandProvider = nil end
+      end
       return {
-         capabilities = server_capabilities(server),
+         capabilities = capabilities,
          serverInfo = { name = "Teal", version = teal.version() },
       }
    elseif method == "shutdown" then
@@ -2266,9 +2288,9 @@ local function handle_request(server: Server, method: string, params: AnyObject)
    elseif method == "textDocument/foldingRange" then
       local uri = request_uri(params)
       return folding_ranges(server, document_for(server, uri))
-   elseif method == "textDocument/formatting" or method == "textDocument/rangeFormatting" or method == "textDocument/onTypeFormatting" or method == "textDocument/willSaveWaitUntil" then
+   elseif method == "textDocument/formatting" or method == "textDocument/rangeFormatting" then
       local uri = request_uri(params)
-      return formatting(document_for(server, uri))
+      return formatting(document_for(server, uri), params.range as Range)
    elseif method == "textDocument/selectionRange" then
       local uri = request_uri(params)
       local document = document_for(server, uri)

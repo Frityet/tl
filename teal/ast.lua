@@ -877,8 +877,11 @@ parse_expression = function(state, block)
       if state.in_local_macro then
          fail(state, block, "macro invocations cannot appear inside local macros")
       end
-      node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.MACRO])
-      node.args = parse_expression_list(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.ARGS])
+
+
+
+
+      node.kind = "error_node"
    elseif kind == "macro_quote" then
       if state.in_macro_quote then
          fail(state, block, "cannot nest macro quotes")

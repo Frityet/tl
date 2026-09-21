@@ -452,7 +452,17 @@ local emptytable_relations: {TypeName:CompareTypes} = {
 }
 
 relations.eqtype_relations = {
+   -- nil has higher dispatch priority than typevar. Explicit rules are needed
+   -- so invariant generic arguments can infer nil in either direction.
+   ["nil"] = {
+      ["typevar"] = function(ck: TypeChecker, a: Type, b: TypeVarType): boolean, {Error}
+         return compare_or_infer_typevar(ck, b.typevar, a, nil, ck.same_type)
+      end,
+   },
    ["typevar"] = {
+      ["nil"] = function(ck: TypeChecker, a: TypeVarType, b: Type): boolean, {Error}
+         return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
+      end,
       ["typevar"] = function(ck: TypeChecker, a: TypeVarType, b: TypeVarType): boolean, {Error}
          if a.typevar == b.typevar then
             return true

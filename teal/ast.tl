@@ -877,8 +877,11 @@ parse_expression = function(state: ParseState, block: Block): Node
       if state.in_local_macro then
          fail(state, block, "macro invocations cannot appear inside local macros")
       end
-      node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.MACRO])
-      node.args = parse_expression_list(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.ARGS])
+      -- Successful invocations are expanded by the reader before AST lowering.
+      -- Failed expansions retain their original block and diagnostic. Lower
+      -- them to the normal recovery node so keep_going/type-reporting clients
+      -- can check the rest of the file without traversing an unexpanded macro.
+      node.kind = "error_node"
    elseif kind == "macro_quote" then
       if state.in_macro_quote then
          fail(state, block, "cannot nest macro quotes")
