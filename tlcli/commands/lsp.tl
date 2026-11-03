@@ -509,12 +509,13 @@ local KEYWORDS: {string: boolean} = {
    ["repeat"] = true, ["return"] = true, ["then"] = true, ["true"] = true,
    ["until"] = true, ["while"] = true,
    ["global"] = true, ["record"] = true, ["interface"] = true, ["enum"] = true,
+   ["const"] = true, ["continue"] = true,
    ["type"] = true, ["macro"] = true, ["is"] = true, ["where"] = true,
    ["metamethod"] = true, ["userdata"] = true, ["as"] = true,
 }
 
 local COMPLETION_KEYWORDS = {
-   "and", "as", "break", "do", "else", "elseif", "end", "enum", "false",
+   "and", "as", "break", "const", "continue", "do", "else", "elseif", "end", "enum", "false",
    "for", "function", "global", "if", "in", "interface", "is", "local", "macro",
    "metamethod", "nil", "not", "or", "record", "repeat", "return", "then", "true",
    "type", "until", "userdata", "where", "while",

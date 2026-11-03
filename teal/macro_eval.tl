@@ -9,6 +9,10 @@ local type Error = errors.Error
 local type Where = errors.Where
 local ast = require("teal.ast")
 local type ParserNode = ast.Node
+local type GenTarget = require("teal.gen.targets").GenTarget
+
+-- Macro bodies execute on the compiler host; quoted syntax is serialized data.
+local macro_gen_target: GenTarget = ((_G as {string:any}).jit and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
 
 local record macro_eval
    new_env: function(errs: {Error}): MacroEnv
@@ -63,6 +67,10 @@ local function clone_value(v: Block): Block
       yend = v.yend,
       xend = v.xend,
       is_longstring = v.is_longstring,
+      short_function = v.short_function,
+      lj_const = v.lj_const,
+      safe_navigation = v.safe_navigation,
+      compound = v.compound,
    }
    for idx, child in children(v) do
       out[idx] = clone_value(child)
@@ -343,7 +351,7 @@ local function compile_local_macro(mb: Block, filename: string, read_lang: Block
       return
    end
 
-   local code = lua_generator.generate(mast as ParserNode, "5.1", lua_generator.fast_opts)
+   local code = lua_generator.generate(mast as ParserNode, macro_gen_target, lua_generator.fast_opts)
    local chunk, load_err = load(code .. "\nreturn " .. name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })

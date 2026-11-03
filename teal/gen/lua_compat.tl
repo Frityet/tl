@@ -162,7 +162,7 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
    -- 5.4+: For loop control variables have an extra local declaration to allow modification
 
    -- compat for named varargs
-   if gen_target < "5.5" then
+   if gen_target < "5.5" or gen_target == "luajit" then
       visit = true
       local functionvisit = {
          after = function(_self: nil, node: Node, _children: {nil}): nil
@@ -171,7 +171,7 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
 
                -- named varargs are new in Lua 5.5
 
-               local use_compat_pack = (gen_target == "5.1" or gen_target == "5.3") and gen_compat ~= "off"
+               local use_compat_pack = (gen_target == "5.1" or gen_target == "5.3" or gen_target == "luajit") and gen_compat ~= "off"
 
                local fnname: Node
                if use_compat_pack then
@@ -215,7 +215,7 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
       visit_node.cbs["local_function"] = functionvisit
    end
 
-   if (gen_target == "5.1" or gen_target == "5.3") and gen_compat ~= "off" then
+   if (gen_target == "5.1" or gen_target == "5.3" or gen_target == "luajit") and gen_compat ~= "off" then
       visit = true
       visit_node.cbs["op"] = {
          after = function(_: nil, node: Node, _children: {nil}): nil
@@ -248,7 +248,7 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
                   needs_compat["bit32"] = true
                   convert_node_to_compat_call(node, "bit32", "bnot", node.e1)
                end
-            elseif node.op.op == "//" and gen_target == "5.1" then
+            elseif node.op.op == "//" and (gen_target == "5.1" or gen_target == "luajit") then
                if node.op.meta_on_operand then
                   needs_compat["mt"] = true
                   convert_node_to_compat_mt_call(node, "__idiv", node.op.meta_on_operand, node.e1, node.e2)

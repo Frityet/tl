@@ -492,6 +492,13 @@ do
       end
 
       if node then
+         for i = #self.st, 1, -1 do
+            local previous = self.st[i].vars[name]
+            if previous and previous.declared_at and previous.declared_at.lj_const then
+               self.errs:add(node, "cannot re-declare const variable '" .. name .. "'")
+               break
+            end
+         end
          if name ~= "self" and name ~= "..." and name:sub(1, 1) ~= "@" then
             self:check_if_redeclaration(name, node, t)
          end
@@ -1669,6 +1676,11 @@ function Context:check_metamethod(node, method_name, a, b, orig_a, orig_b, flipp
       return a_type(node, "unknown", {}), nil
    end
 
+   if self.env.opts.gen_target == "luajit" and
+      (method_name == "__bnot" or method_name == "__band" or method_name == "__bor" or
+      method_name == "__bxor" or method_name == "__shl" or method_name == "__shr" or method_name == "__sar") then
+      return nil, nil
+   end
    local ameta = a.fields and a.meta_fields
    local bmeta = b and b.fields and b.meta_fields
 
@@ -1880,7 +1892,7 @@ end
 
 function Context:add_internal_function_variables(node, args, keep_literal)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
+   self:add_var(node.short_function and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -1893,11 +1905,11 @@ function Context:add_internal_function_variables(node, args, keep_literal)
 end
 
 function Context:add_function_definition_for_recursion(node, fnargs, feat_arity, keep_literal)
-   self:add_var(nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
+   self:add_var(node.lj_const and node or nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
       min_arity = feat_arity and node.min_arity or 0,
       args = fnargs,
       rets = self.get_rets(node.rets),
-   })), nil, nil, keep_literal)
+   })), node.lj_const and "const" or nil, nil, keep_literal)
 end
 
 function Context:end_function_scope(node)

@@ -452,8 +452,8 @@ local emptytable_relations = {
 }
 
 relations.eqtype_relations = {
-   -- nil has higher dispatch priority than typevar. Explicit rules are needed
-   -- so invariant generic arguments can infer nil in either direction.
+
+
    ["nil"] = {
       ["typevar"] = function(ck, a, b)
          return compare_or_infer_typevar(ck, b.typevar, a, nil, ck.same_type)

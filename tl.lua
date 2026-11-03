@@ -359,9 +359,25 @@ local lexer = require("teal.lexer")
 
 
 
+
+
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -532,6 +548,7 @@ local precedences = {
       ["~"] = 11,
    },
    [2] = {
+      ["??"] = 1,
       ["or"] = 1,
       ["and"] = 2,
       ["is"] = 3,
@@ -546,6 +563,7 @@ local precedences = {
       ["&"] = 6,
       ["<<"] = 7,
       [">>"] = 7,
+      ["~>>"] = 7,
       [".."] = 8,
       ["+"] = 9,
       ["-"] = 9,
@@ -584,6 +602,8 @@ local op_kinds = {
    op_band = { op = "&", arity = 2 },
    op_shl = { op = "<<", arity = 2 },
    op_shr = { op = ">>", arity = 2 },
+   op_sar = { op = "~>>", arity = 2 },
+   op_coalesce = { op = "??", arity = 2 },
    op_concat = { op = "..", arity = 2 },
    op_add = { op = "+", arity = 2 },
    op_sub = { op = "-", arity = 2 },
@@ -672,7 +692,9 @@ end
 
 local function block_number_value(b)
    if b and (b.kind == "integer" or b.kind == "number") then
-      return tonumber(b.tk)
+      local text = b.tk:gsub("_", "")
+      if text:match("^0[bB][01]+$") then return tonumber(text:sub(3), 2) end
+      return tonumber(text)
    end
    return nil
 end
@@ -694,6 +716,12 @@ local function new_node(state, block, kind)
       tk = block.tk,
       kind = kind or (bkind),
    }, node_mt)
+   if not state.in_macro_quote then
+      node.short_function = block.short_function
+      node.lj_const = block.lj_const
+      node.safe_navigation = block.safe_navigation
+      node.compound = block.compound
+   end
    end_at(node, block)
    return node
 end
@@ -1065,12 +1093,18 @@ parse_expression = function(state, block)
             end
          end
       end
+      node.optional_chain = node.safe_navigation or
+      ((op_info.op == "." or op_info.op == ":" or op_info.op == "@index" or op_info.op == "@funcall") and node.e1.optional_chain)
       return node
    end
 
    local node = new_node(state, block)
 
-   if kind == "string" then
+   if kind == "conditional" then
+      node.e1 = parse_expression(state, block[1]) or new_node(state, block, "error_node")
+      node.e2 = parse_expression(state, block[2]) or new_node(state, block, "error_node")
+      node.e3 = parse_expression(state, block[3]) or new_node(state, block, "error_node")
+   elseif kind == "string" then
       node.conststr = block_string_value(block)
       if block.is_longstring ~= nil then
          node.is_longstring = block.is_longstring
@@ -1082,6 +1116,8 @@ parse_expression = function(state, block)
    elseif kind == "number" or kind == "integer" then
       node.kind = kind
       node.constnum = block_number_value(block)
+      local normalized = block.tk:gsub("_", ""):lower()
+      node.luajit_literal = normalized:sub(-2) == "ll" or normalized:sub(-1) == "i"
    elseif kind == "boolean" then
       node.kind = kind
    elseif kind == "identifier" then
@@ -1128,6 +1164,9 @@ parse_expression = function(state, block)
       node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.FUNCTION.TYPEARGS])
       local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.FUNCTION.ARGS])
       node.args = args
+      if node.short_function then
+         for _, argument in ipairs(args) do argument.short_function = true end
+      end
       node.min_arity = min_arity
       local r = parse_type_list(state, block[reader.BLOCK_INDEXES.FUNCTION.RETS], "rets")
       node.rets = r
@@ -1136,8 +1175,11 @@ parse_expression = function(state, block)
       if state.in_local_macro then
          fail(state, block, "macro invocations cannot appear inside local macros")
       end
-      node.e1 = parse_expression(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.MACRO])
-      node.args = parse_expression_list(state, block[reader.BLOCK_INDEXES.MACRO_INVOCATION.ARGS])
+
+
+
+
+      node.kind = "error_node"
    elseif kind == "macro_quote" then
       if state.in_macro_quote then
          fail(state, block, "cannot nest macro quotes")
@@ -1146,6 +1188,7 @@ parse_expression = function(state, block)
          return new_node(state, block, "literal_table")
       end
       local inner = block[reader.BLOCK_INDEXES.MACRO_QUOTE.BLOCK]
+      state.in_macro_quote = true
       local res = block_to_constructor(state, inner)
       state.in_macro_quote = false
       return res
@@ -1260,6 +1303,12 @@ parse_fns.local_declaration = function(state, block)
    assert(block)
    local node = new_node(state, block)
    node.vars = parse_variable_list(state, block[reader.BLOCK_INDEXES.LOCAL_DECLARATION.VARS], false)
+   if node.lj_const then
+      for _, var in ipairs(node.vars) do
+         var.attribute = "const"
+         var.lj_const = true
+      end
+   end
 
    if node.vars then
       for _, var_node in ipairs(node.vars) do
@@ -1300,6 +1349,14 @@ parse_fns.assignment = function(state, block)
       node.exps = parse_expression_list(state, block[reader.BLOCK_INDEXES.ASSIGNMENT.EXPS])
    end
 
+   if node.compound and node.exps and node.exps[1] then
+      local rhs = node.exps[1]
+      node.exps[1] = setmetatable({
+         kind = "op", f = rhs.f, y = rhs.y, x = rhs.x, yend = rhs.yend, xend = rhs.xend,
+         op = ast.operator(node, 2, node.compound),
+         e1 = node.vars[1], e2 = rhs, compound_value = true,
+      }, node_mt)
+   end
    if node.vars then
       for _, var_node in ipairs(node.vars) do
          if var_node.kind == "variable" then
@@ -1452,6 +1509,10 @@ parse_fns["return"] = function(state, block)
    return node
 end
 
+parse_fns["continue"] = function(state, block)
+   return new_node(state, block)
+end
+
 parse_fns["break"] = function(state, block)
    return new_node(state, block)
 end
@@ -1597,7 +1658,22 @@ function block_to_constructor(state, block)
       table.insert(tbl, it)
    end
 
+   local function add_boolean_field(tbl, owner, keyname, value)
+      if not value then return end
+      local item = new_node(state, owner, "literal_table_item")
+      item.key_parsed = "short"
+      item.key = new_node(state, owner, "identifier")
+      item.key.tk = string.format("%q", keyname)
+      item.value = new_node(state, owner, "boolean")
+      item.value.tk = "true"
+      table.insert(tbl, item)
+   end
+
    local node = new_node(state, block, "literal_table")
+   add_boolean_field(node, block, "short_function", block.short_function)
+   add_boolean_field(node, block, "lj_const", block.lj_const)
+   add_boolean_field(node, block, "safe_navigation", block.safe_navigation)
+   if block.compound then add_string_field(node, block, "compound", block.compound) end
    if not node.yend then
       node.yend = block.yend or block.y
    end
@@ -2670,6 +2746,14 @@ local block = { Block = { ExpectedContext = {} } }
 
 
 
+
+
+
+
+
+
+
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -2984,7 +3068,7 @@ end
 
 -- module teal.check.check from teal/check/check.lua
 package.preload["teal.check.check"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
 local context = require("teal.check.context")
 local Context = context.Context
 
@@ -3024,6 +3108,29 @@ local visit_type = visitors.visit_type
 local check = {}
 
 
+
+local function extension_type_after(fn)
+   return function(self, node, children, t)
+      t = fn and fn(self, node, children, t) or t
+      if self.env.opts.gen_target ~= "luajit" and
+         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
+         (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
+         self.errs:add(node, "this extension requires the luajit generation target")
+      end
+      if node.optional_chain then node.chain_value_type = t end
+      if node.optional_chain and not node.is_lvalue then
+         if t.typename == "tuple" then
+            local tuple = {}
+            for i, member in ipairs(t.tuple) do
+               tuple[i] = types.unite(node, { member, a_type(node, "nil", {}) }, true, false)
+            end
+            return a_type(node, "tuple", { tuple = tuple, is_va = t.is_va })
+         end
+         return types.unite(node, { t, a_type(node, "nil", {}) }, true, false)
+      end
+      return t
+   end
+end
 
 
 
@@ -3095,7 +3202,7 @@ function check.check(ast, env, filename)
 
    local self = Context.new(env, filename)
 
-   local visit_node, visit_type = visit_node, visit_type
+   local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
       visit_node, visit_type = patch_visitors(
       visit_node, internal_compiler_check,
@@ -3643,6 +3750,13 @@ do
       end
 
       if node then
+         for i = #self.st, 1, -1 do
+            local previous = self.st[i].vars[name]
+            if previous and previous.declared_at and previous.declared_at.lj_const then
+               self.errs:add(node, "cannot re-declare const variable '" .. name .. "'")
+               break
+            end
+         end
          if name ~= "self" and name ~= "..." and name:sub(1, 1) ~= "@" then
             self:check_if_redeclaration(name, node, t)
          end
@@ -4820,6 +4934,11 @@ function Context:check_metamethod(node, method_name, a, b, orig_a, orig_b, flipp
       return a_type(node, "unknown", {}), nil
    end
 
+   if self.env.opts.gen_target == "luajit" and
+      (method_name == "__bnot" or method_name == "__band" or method_name == "__bor" or
+      method_name == "__bxor" or method_name == "__shl" or method_name == "__shr" or method_name == "__sar") then
+      return nil, nil
+   end
    local ameta = a.fields and a.meta_fields
    local bmeta = b and b.fields and b.meta_fields
 
@@ -5031,7 +5150,7 @@ end
 
 function Context:add_internal_function_variables(node, args, keep_literal)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
+   self:add_var(node.short_function and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -5044,11 +5163,11 @@ function Context:add_internal_function_variables(node, args, keep_literal)
 end
 
 function Context:add_function_definition_for_recursion(node, fnargs, feat_arity, keep_literal)
-   self:add_var(nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
+   self:add_var(node.lj_const and node or nil, node.name.tk, wrap_generic_if_typeargs(node.typeargs, a_function(node, {
       min_arity = feat_arity and node.min_arity or 0,
       args = fnargs,
       rets = self.get_rets(node.rets),
-   })), nil, nil, keep_literal)
+   })), node.lj_const and "const" or nil, nil, keep_literal)
 end
 
 function Context:end_function_scope(node)
@@ -6146,7 +6265,17 @@ local emptytable_relations = {
 }
 
 relations.eqtype_relations = {
+
+
+   ["nil"] = {
+      ["typevar"] = function(ck, a, b)
+         return compare_or_infer_typevar(ck, b.typevar, a, nil, ck.same_type)
+      end,
+   },
    ["typevar"] = {
+      ["nil"] = function(ck, a, b)
+         return compare_or_infer_typevar(ck, a.typevar, nil, b, ck.same_type)
+      end,
       ["typevar"] = function(ck, a, b)
          if a.typevar == b.typevar then
             return true
@@ -7995,6 +8124,7 @@ local binop_types = {
    ["|"] = integer_binop,
    ["<<"] = integer_binop,
    [">>"] = integer_binop,
+   ["~>>"] = integer_binop,
    ["~"] = integer_binop,
    ["=="] = equality_binop,
    ["~="] = equality_binop,
@@ -8665,6 +8795,33 @@ local function assert_is_a(ctx, w, t1, t2, ectx, name)
    return ok
 end
 
+local function short_block_returns(body)
+   local last = body[#body]
+   if not last then return false end
+   if last.kind == "return" then return true end
+   if last.kind == "do" then return short_block_returns(last.body) end
+   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
+      for _, branch in ipairs(last.if_blocks) do
+         if not short_block_returns(branch.body) then return false end
+      end
+      return true
+   end
+   return false
+end
+
+local function non_nil_type(self, node, t)
+   t = untuple(t)
+   local structural = self:to_structural(t)
+   if structural.typename == "union" then
+      local kept = {}
+      for _, member in ipairs(structural.types) do
+         if not (member.typename == "nil") then table.insert(kept, member) end
+      end
+      if #kept > 0 then return unite(node, kept, true, false) end
+   end
+   return t
+end
+
 local function count_scope_vars(self)
    local n = 0
    for i = 1, #self.st do
@@ -9137,6 +9294,25 @@ visit_node.cbs = {
          local n_got = #got_t
 
          node.block_returns = true
+         local return_var = self:find_var("@return", "check_only")
+         local short = return_var and return_var.declared_at
+         if short and short.infer_returns then
+            local previous = short.inferred_rets
+            if not previous then
+               short.inferred_rets = drop_constant_values(got, false)
+            else
+               local merged = a_type(node, "tuple", { tuple = {} })
+               local n = math.max(#previous.tuple, #got_t)
+               for i = 1, n do
+                  local a = previous.tuple[i] or (previous.is_va and previous.tuple[#previous.tuple]) or a_type(node, "nil", {})
+                  local b = got_t[i] or (got.is_va and got_t[n_got]) or a_type(node, "nil", {})
+                  merged.tuple[i] = unite(node, { a, b }, true, not self.feat_strict_nil)
+               end
+               merged.is_va = previous.is_va or got.is_va
+               short.inferred_rets = merged
+            end
+            return NONE
+         end
          local expected = self:find_var_type("@return")
          if not expected then
 
@@ -9417,6 +9593,13 @@ visit_node.cbs = {
    },
    ["local_function"] = {
       before = function(self, node)
+         if node.lj_const then
+            for _, argument in ipairs(node.args) do
+               if argument.tk == node.name.tk then
+                  self.errs:add(argument, "cannot re-declare const variable '" .. node.name.tk .. "'")
+               end
+            end
+         end
          self:widen_all_unions()
          if self.collector then
             self.collector.reserve_symbol_list_slot(node)
@@ -9444,7 +9627,7 @@ visit_node.cbs = {
             rets = self.get_rets(rets),
          }))
 
-         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.args, node.rets))
+         self:add_var(node, node.name.tk, t, node.lj_const and "const" or nil, nil, function_has_explicit_types(node.args, node.rets))
          return t
       end,
    },
@@ -9482,7 +9665,8 @@ visit_node.cbs = {
          self:widen_all_unions()
          self:begin_scope(node)
          if node.implicit_global_function then
-            local typ = self:find_var_type(node.name.tk)
+            local typ, attribute = self:find_var_type(node.name.tk)
+            if attribute == "const" then self.errs:add(node, "cannot assign to <const> variable") end
             if typ then
                if typ.typename == "function" then
                   node.is_predeclared_local_function = true
@@ -9676,6 +9860,18 @@ visit_node.cbs = {
          self:begin_scope(node)
 
          local expected = node.expected
+         if node.short_function and expected then
+            local resolved = self:resolve_typevars(expected)
+            expected = self:to_structural(resolved or expected)
+         end
+         if node.short_function then
+            node.infer_returns = not (expected and expected.typename == "function")
+            if expected and expected.typename == "function" then
+               node.rets = expected.rets
+            else
+               node.rets = a_vararg(node, { a_type(node, "any", {}) })
+            end
+         end
          if expected and expected.typename == "function" then
             for i, t in ipairs(expected.args.tuple) do
                if node.args[i] then
@@ -9695,6 +9891,17 @@ visit_node.cbs = {
          assert(args.typename == "tuple")
          local rets = children[2]
          assert(rets.typename == "tuple")
+         if node.infer_returns then
+            rets = node.inferred_rets or a_type(node, "tuple", { tuple = {} })
+            if not short_block_returns(node.body) then
+               local nullable = a_type(node, "tuple", { tuple = {} })
+               for i, member in ipairs(rets.tuple) do
+                  nullable.tuple[i] = unite(node, { member, a_type(node, "nil", {}) }, true, not self.feat_strict_nil)
+               end
+               nullable.is_va = rets.is_va
+               rets = nullable
+            end
+         end
 
          self:end_function_scope(node)
 
@@ -9744,13 +9951,33 @@ visit_node.cbs = {
          return untuple(children[1])
       end,
    },
+   ["conditional"] = {
+      before = function(_self, node)
+         node.e1.expected = a_type(node, "boolean_context", {})
+         node.e2.expected = node.expected
+         node.e3.expected = node.expected
+      end,
+      before_e2 = function(self, node)
+         self:begin_implied_scope()
+         self:apply_facts_from(node, node.e1)
+      end,
+      before_e3 = function(self, node)
+         self:end_implied_scope()
+         self:begin_implied_scope()
+         self:apply_facts(node, facts_not(node, self.fdb:get(node.e1)))
+      end,
+      after = function(self, node, children)
+         self:end_implied_scope()
+         return unite(node, { untuple(children[2]), untuple(children[3]) }, true, not self.feat_strict_nil)
+      end,
+   },
    ["op"] = {
       before = function(self, node)
          self:begin_implied_scope()
          if node.expected then
             if node.op.op == "and" then
                node.e2.expected = node.expected
-            elseif node.op.op == "or" then
+            elseif node.op.op == "or" or node.op.op == "??" then
                node.e1.expected = node.expected
                if not (node.e2.kind == "literal_table" and #node.e2 == 0) then
                   node.e2.expected = node.expected
@@ -9763,6 +9990,13 @@ visit_node.cbs = {
       end,
       before_e2 = function(self, node, children)
          local e1type = children[1]
+         if node.optional_chain then
+            if node.e1.optional_chain and node.e1.chain_value_type then
+               e1type = node.e1.chain_value_type
+            end
+            if node.safe_navigation then e1type = non_nil_type(self, node, e1type) end
+            children[1] = e1type
+         end
 
          if node.op.op == "and" then
             self:apply_facts_from(node, node.e1)
@@ -9791,6 +10025,20 @@ visit_node.cbs = {
                   self:is_a(e1type.rets, node.expected)
                end
                local e1args = e1type.args.tuple
+               local has_short_function = false
+               for _, argument in ipairs(node.e2) do
+                  if argument.short_function then has_short_function = true end
+               end
+               if has_short_function then
+
+                  for i, argument in ipairs(node.e2) do
+                     local expected = e1args[i - argdelta]
+                     if expected and argument.kind == "variable" then
+                        local actual = self:find_var_type(argument.tk)
+                        if actual then self:is_a(actual, expected) end
+                     end
+                  end
+               end
                local at = argdelta
                for _, typ in ipairs(e1args) do
                   at = at + 1
@@ -9828,6 +10076,17 @@ visit_node.cbs = {
 
          if ra.typename == "circular_require" or (ra.typename == "typedecl" and ra.def and ra.def.typename == "circular_require") then
             return self.errs:invalid_at(node, "cannot dereference a type from a circular require")
+         end
+
+         if node.compound_value and node.e1.chain_always_nil then return a_type(node, "any", {}) end
+         if node.op.op == "??" then
+            if ra.typename == "nil" then return untuple(gb) end
+            return unite(node, { non_nil_type(self, node, ua), untuple(gb) }, true, not self.feat_strict_nil)
+         end
+
+         if node.optional_chain and (node.e1.chain_always_nil or (node.safe_navigation and ra.typename == "nil")) then
+            node.chain_always_nil = true
+            return node.is_lvalue and a_type(node, "any", {}) or a_type(node, "nil", {})
          end
 
          if node.op.op == "@funcall" then
@@ -10181,6 +10440,10 @@ visit_node.cbs = {
             end
 
             local types_op = binop_types[node.op.op]
+            if self.env.opts.gen_target == "luajit" and types_op == integer_binop and
+               (ra.fields or rb.fields) then
+               return self.errs:invalid_at(node, "bit operator metamethods are not available in the LuaJIT 2.1 backport")
+            end
 
             local tn = types_op[ra.typename] and types_op[ra.typename][rb.typename]
             local t = tn and a_type(node, tn, {})
@@ -10288,7 +10551,7 @@ visit_node.cbs = {
       after = function(self, node, children)
          local t = children[1]
          if not t then
-            if node.expected and node.tk == "self" then
+            if node.expected and (node.tk == "self" or node.short_function) then
                t = node.expected
             else
                t = self.feat_lax and
@@ -11936,7 +12199,7 @@ local function adjust_code(ast, needs_compat, gen_compat, gen_target)
 
 
 
-   if gen_target < "5.5" then
+   if gen_target < "5.5" or gen_target == "luajit" then
       visit = true
       local functionvisit = {
          after = function(_self, node, _children)
@@ -11945,7 +12208,7 @@ local function adjust_code(ast, needs_compat, gen_compat, gen_target)
 
 
 
-               local use_compat_pack = (gen_target == "5.1" or gen_target == "5.3") and gen_compat ~= "off"
+               local use_compat_pack = (gen_target == "5.1" or gen_target == "5.3" or gen_target == "luajit") and gen_compat ~= "off"
 
                local fnname
                if use_compat_pack then
@@ -11989,7 +12252,7 @@ local function adjust_code(ast, needs_compat, gen_compat, gen_target)
       visit_node.cbs["local_function"] = functionvisit
    end
 
-   if (gen_target == "5.1" or gen_target == "5.3") and gen_compat ~= "off" then
+   if (gen_target == "5.1" or gen_target == "5.3" or gen_target == "luajit") and gen_compat ~= "off" then
       visit = true
       visit_node.cbs["op"] = {
          after = function(_, node, _children)
@@ -12022,7 +12285,7 @@ local function adjust_code(ast, needs_compat, gen_compat, gen_target)
                   needs_compat["bit32"] = true
                   convert_node_to_compat_call(node, "bit32", "bnot", node.e1)
                end
-            elseif node.op.op == "//" and gen_target == "5.1" then
+            elseif node.op.op == "//" and (gen_target == "5.1" or gen_target == "luajit") then
                if node.op.meta_on_operand then
                   needs_compat["mt"] = true
                   convert_node_to_compat_mt_call(node, "__idiv", node.op.meta_on_operand, node.e1, node.e2)
@@ -12163,6 +12426,8 @@ local spaced_op = {
       ["&"] = true,
       ["<<"] = true,
       [">>"] = true,
+      ["~>>"] = true,
+      ["??"] = true,
       [".."] = true,
       ["+"] = true,
       ["-"] = true,
@@ -12373,7 +12638,7 @@ function lua_generator.generate(ast, gen_target, opts)
          local out = { y = node.y, h = 0 }
 
          if kind == "local" then
-            table.insert(out, "local ")
+            table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
          end
 
          table.insert(out, "function")
@@ -12434,7 +12699,7 @@ function lua_generator.generate(ast, gen_target, opts)
       ["local_declaration"] = {
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
-            table.insert(out, "local ")
+            table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
             for i, var in ipairs(node.vars) do
                if i > 1 then
                   add_string(out, ", ")
@@ -12489,8 +12754,20 @@ function lua_generator.generate(ast, gen_target, opts)
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
             add_child(out, children[1])
-            table.insert(out, " =")
+            table.insert(out, " " .. (node.compound or "") .. "=")
             add_child(out, children[3], " ")
+            return out
+         end,
+      },
+      ["conditional"] = {
+         after = function(_, node, children)
+            local out = { y = node.y, h = 0, "(" }
+            add_child(out, children[1])
+            table.insert(out, " ? (")
+            add_child(out, children[2])
+            table.insert(out, ") : ")
+            add_child(out, children[3])
+            table.insert(out, ")")
             return out
          end,
       },
@@ -12705,6 +12982,12 @@ function lua_generator.generate(ast, gen_target, opts)
       ["op"] = {
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
+            if node.compound_value then
+               return children[3]
+            end
+            if node.safe_navigation then
+               table.insert(children[1], "?.")
+            end
             if node.op.op == "@funcall" then
                add_child(out, children[1], "", indent)
                table.insert(out, "(")
@@ -12754,7 +13037,7 @@ function lua_generator.generate(ast, gen_target, opts)
                   if space == " " then
                      table.insert(out, " ")
                   end
-                  table.insert(out, node.op.op)
+                  table.insert(out, node.safe_navigation and node.op.op == "." and "" or node.op.op)
                   if children[4] and node.op.prec > tonumber(children[4]) then
                      table.insert(children[3], 1, "(")
                      table.insert(children[3], ")")
@@ -12865,10 +13148,27 @@ function lua_generator.generate(ast, gen_target, opts)
          end,
       },
 
+      ["continue"] = emit_exactly_visitor_cbs,
       ["variable"] = emit_exactly_visitor_cbs,
       ["identifier"] = emit_exactly_visitor_cbs,
-      ["number"] = emit_exactly_visitor_cbs,
-      ["integer"] = emit_exactly_visitor_cbs,
+      ["number"] = {
+         after = function(_, node)
+            local text = node.tk:gsub("_", "")
+            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
+               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            end
+            return { y = node.y, h = 0, text }
+         end,
+      },
+      ["integer"] = {
+         after = function(_, node)
+            local text = node.tk:gsub("_", "")
+            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
+               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            end
+            return { y = node.y, h = 0, text }
+         end,
+      },
       ["nil"] = emit_exactly_visitor_cbs,
       ["boolean"] = emit_exactly_visitor_cbs,
       ["..."] = emit_exactly_visitor_cbs,
@@ -12933,6 +13233,14 @@ function lua_generator.generate(ast, gen_target, opts)
    visit_node.cbs["expression_list"] = visit_node.cbs["variable_list"]
    visit_node.cbs["argument_list"] = visit_node.cbs["variable_list"]
 
+   visit_node.after = function(_, node, _children, out)
+      if gen_target ~= "luajit" and
+         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
+         (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
+         error("this extension requires the luajit generation target")
+      end
+      return out
+   end
    local out = traversal.traverse_nodes(nil, ast, visit_node, visit_type)
 
    local code
@@ -12953,6 +13261,7 @@ end
 package.preload["teal.gen.targets"] = function(...)
 
 local targets = {}
+
 
 
 
@@ -13109,6 +13418,8 @@ do
 
 
 
+
+
    local last_token_kind = {
       ["start"] = nil,
       ["any"] = nil,
@@ -13140,6 +13451,8 @@ do
       ["comment long got ]"] = "$ERR$",
       ["number dec"] = "integer",
       ["number decfloat"] = "number",
+      ["number binary"] = "integer",
+      ["number suffix"] = "number",
       ["number hex"] = "integer",
       ["number hexfloat"] = "number",
       ["number power"] = "number",
@@ -13420,6 +13733,14 @@ do
       end
       state = "any"
 
+      local extension_operators = {
+         ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
+         ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
+         ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
+         ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
+         ["/"] = { "/=" }, ["%"] = { "%=" },
+      }
+
       while i <= len do
          if fwd then
             i = i + 1
@@ -13441,7 +13762,38 @@ do
             fwd = true
          end
 
-         if state == "any" then
+         local extension_op
+         if state == "any" and extension_operators[c] then
+            for _, candidate in ipairs(extension_operators[c]) do
+               if input:sub(i, i + #candidate - 1) == candidate then
+                  extension_op = candidate
+                  break
+               end
+            end
+         end
+         if extension_op then
+            begin_token()
+            end_token("op", extension_op)
+            i = i + #extension_op - 1
+            x = x + #extension_op - 1
+         elseif c == "_" and (state == "got 0" or state:sub(1, 7) == "number ") then
+
+         elseif state ~= "number suffix" and (state == "got 0" or state:sub(1, 7) == "number ") and
+            (c == "L" or c == "l" or c == "U" or c == "u" or c == "i" or c == "I") then
+            state = "number suffix"
+         elseif state == "number suffix" then
+            if not lex_word[c] then
+               end_token_prev("number")
+               fwd = false
+               state = "any"
+            end
+         elseif state == "number binary" then
+            if c ~= "0" and c ~= "1" then
+               end_token_prev("integer")
+               fwd = false
+               state = "any"
+            end
+         elseif state == "any" then
             if c == "`" then
                local c2 = input:sub(i + 1, i + 1)
                local c3 = input:sub(i + 2, i + 2)
@@ -13638,6 +13990,8 @@ do
          elseif state == "got 0" then
             if c == "x" or c == "X" then
                state = "number hex"
+            elseif c == "b" or c == "B" then
+               state = "number binary"
             elseif c == "e" or c == "E" then
                state = "number powersign"
             elseif lex_decimals[c] then
@@ -13830,6 +14184,22 @@ do
          add_comment(input:sub(ti, #input))
       end
 
+      for _, token in ipairs(tokens) do
+         if token.kind == "number" or token.kind == "integer" then
+            local text = token.tk:gsub("_", ""):lower()
+            local integer_suffix = text:sub(-2) == "ll"
+            if text:sub(-3) == "ull" then text = text:sub(1, -4)
+            elseif integer_suffix then text = text:sub(1, -3)
+            elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
+            local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
+            if not value then
+               token.kind = "$ERR$"
+               table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
+            elseif integer_suffix then
+               token.kind = "integer"
+            end
+         end
+      end
       table.insert(tokens, { x = x + 1, y = y, tk = "$EOF$", kind = "$EOF$", comments = comments })
 
       return tokens, errs
@@ -13861,6 +14231,7 @@ end
 package.preload["teal.loader"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 local environment = require("teal.environment")
+local lua_compat = require("teal.gen.lua_compat")
 local lua_generator = require("teal.gen.lua_generator")
 local package_loader = require("teal.package_loader")
 local input = require("teal.input")
@@ -13946,6 +14317,10 @@ local errors = require("teal.errors")
 local ast = require("teal.ast")
 
 
+
+
+local macro_gen_target = ((_G).jit and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
+
 local macro_eval = {}
 
 
@@ -13999,6 +14374,10 @@ local function clone_value(v)
       yend = v.yend,
       xend = v.xend,
       is_longstring = v.is_longstring,
+      short_function = v.short_function,
+      lj_const = v.lj_const,
+      safe_navigation = v.safe_navigation,
+      compound = v.compound,
    }
    for idx, child in children(v) do
       out[idx] = clone_value(child)
@@ -14279,7 +14658,7 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       return
    end
 
-   local code = lua_generator.generate(mast, "5.1", lua_generator.fast_opts)
+   local code = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
    local chunk, load_err = load(code .. "\nreturn " .. name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })
@@ -14963,7 +15342,7 @@ end
 
 -- module teal.reader from teal/reader.lua
 package.preload["teal.reader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
 local errors = require("teal.errors")
 
 
@@ -15154,9 +15533,13 @@ end
 
 
 
+
 local read_type_list
 local read_typeargs_if_any
 local read_expression
+local read_prefix_expression
+local read_short_function
+local read_argument
 local read_expression_and_tk
 local read_statements
 local read_argument_list
@@ -15170,6 +15553,14 @@ local needs_local_or_global
 local read_nested_type
 local read_call_or_assignment
 local read_record_function
+
+local function read_nested_expression(ps, i)
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
+   local next_i, expression, n = read_expression(ps, i)
+   ps.ternary_middle = middle
+   return next_i, expression, n
+end
 
 
 local read_enum_body
@@ -15294,6 +15685,10 @@ local function clone_block_deep(b)
       yend = b.yend,
       xend = b.xend,
       is_longstring = b.is_longstring,
+      short_function = b.short_function,
+      lj_const = b.lj_const,
+      safe_navigation = b.safe_navigation,
+      compound = b.compound,
    }
    local child_indexes = {}
    for k, child in pairs(b) do
@@ -15761,7 +16156,7 @@ local function read_table_value(ps, i)
    end
 
    local e
-   i, e = read_expression(ps, i)
+   i, e = read_nested_expression(ps, i)
    if not e then
       e = new_block(ps, i - 1, "error_block")
    end
@@ -15897,7 +16292,11 @@ end
 
 local function read_table_literal(ps, i)
    local node = new_block(ps, i, "literal_table")
-   return read_bracket_list(ps, i, node, "{", "}", "term", read_table_item)
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
+   i, node = read_bracket_list(ps, i, node, "{", "}", "term", read_table_item)
+   ps.ternary_middle = middle
+   return i, node
 end
 
 local function read_macro_args_with_sig(ps, i, sig)
@@ -16313,24 +16712,21 @@ local function read_base_type(ps, i)
 end
 
 read_type = function(ps, i)
-   if ps.tokens[i].tk == "(" then
-      i = i + 1
-      local t
-      i, t = read_type(ps, i)
-      i = verify_tk(ps, i, ")")
-      return i, t
-   end
-
    local bt
    local istart = i
-   i, bt = read_base_type(ps, i)
+   if ps.tokens[i].tk == "(" then
+      i, bt = read_type(ps, i + 1)
+      i = verify_tk(ps, i, ")")
+   else
+      i, bt = read_base_type(ps, i)
+   end
    if not bt then
       return i
    end
-   if ps.tokens[i].tk == "|" then
+   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" then
       local u = new_type(ps, istart, "union_type")
       u[1] = bt
-      while ps.tokens[i].tk == "|" do
+      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" do
          i = i + 1
          i, bt = read_base_type(ps, i)
          if not bt then
@@ -16357,8 +16753,24 @@ read_type_list = function(ps, i, mode)
 
    local optional_paren = false
    if ps.tokens[i].tk == "(" then
-      optional_paren = true
-      i = i + 1
+
+      local depth = 0
+      local grouped_union = false
+      for j = i, #ps.tokens do
+         local tk = ps.tokens[j].tk
+         if tk == "(" then depth = depth + 1 end
+         if tk == ")" then
+            depth = depth - 1
+            if depth == 0 then
+               grouped_union = mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|"
+               break
+            end
+         end
+      end
+      if not grouped_union then
+         optional_paren = true
+         i = i + 1
+      end
    end
 
    local prev_i = i
@@ -16391,7 +16803,10 @@ local function read_function_args_rets_body(ps, i, node)
    i, node[BLOCK_INDEXES.FUNCTION.ARGS] = read_argument_list(ps, i)
    i, node[BLOCK_INDEXES.FUNCTION.RETS] = read_return_types(ps, i)
 
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
    i, node[BLOCK_INDEXES.FUNCTION.BODY] = read_statements(ps, i)
+   ps.ternary_middle = middle
    end_at(node, ps.tokens[i])
    i = verify_end(ps, i, istart, node)
    return i, node
@@ -16519,7 +16934,9 @@ end
 local function read_literal(ps, i)
    local tk = ps.tokens[i].tk
    local kind = ps.tokens[i].kind
-   if kind == "identifier" then
+   if (kind == "identifier" and ps.tokens[i + 1].tk == "->") or tk == "|" or tk == "||" then
+      return read_short_function(ps, i)
+   elseif kind == "identifier" then
       return verify_kind(ps, i, "identifier")
    elseif kind == "string" then
       local node = new_block(ps, i, "string")
@@ -16556,12 +16973,17 @@ end
 do
    local precedences = {
       [1] = {
+         ["!"] = 11,
          ["not"] = 11,
          ["#"] = 11,
          ["-"] = 11,
          ["~"] = 11,
       },
       [2] = {
+         ["||"] = 1,
+         ["&&"] = 2,
+         ["!="] = 3,
+         ["??"] = 1,
          ["or"] = 1,
          ["and"] = 2,
          ["is"] = 3,
@@ -16576,6 +16998,7 @@ do
          ["&"] = 6,
          ["<<"] = 7,
          [">>"] = 7,
+         ["~>>"] = 7,
          [".."] = 8,
          ["+"] = 9,
          ["-"] = 9,
@@ -16599,12 +17022,17 @@ do
 
    local op_map = {
       [1] = {
+         ["!"] = "op_not",
          ["not"] = "op_not",
          ["#"] = "op_len",
          ["-"] = "op_unm",
          ["~"] = "op_bnot",
       },
       [2] = {
+         ["??"] = "op_coalesce",
+         ["||"] = "op_or",
+         ["&&"] = "op_and",
+         ["!="] = "op_ne",
          ["or"] = "op_or",
          ["and"] = "op_and",
          ["is"] = "op_is",
@@ -16619,6 +17047,7 @@ do
          ["&"] = "op_band",
          ["<<"] = "op_shl",
          [">>"] = "op_shr",
+         ["~>>"] = "op_sar",
          [".."] = "op_concat",
          ["+"] = "op_add",
          ["-"] = "op_sub",
@@ -16644,7 +17073,7 @@ do
    local E
 
    local function after_valid_prefixexp(ps, prevnode, i)
-      return ps.tokens[i - 1].kind == ")" or
+      return prevnode.kind == "paren" or ps.tokens[i - 1].kind == ")" or
       prevnode.kind == "op_funcall" or
       prevnode.kind == "op_index" or
       prevnode.kind == "op_dot" or
@@ -16688,7 +17117,10 @@ do
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
+         local middle = ps.ternary_middle
+         ps.ternary_middle = false
          i, e1 = read_expression_and_tk(ps, i, ")")
+         ps.ternary_middle = middle
          if not e1 then
             fail(ps, prev_i, "expected an expression")
             return i
@@ -16704,7 +17136,21 @@ do
       end
 
       while true do
+         local safe_navigation = ps.tokens[i].tk == "?."
          local tkop = ps.tokens[i]
+         if safe_navigation then
+            i = i + 1
+            tkop = ps.tokens[i]
+            if tkop.kind == "identifier" then
+               tkop = { tk = ".", kind = ".", y = tkop.y, x = tkop.x }
+               i = i - 1
+            elseif tkop.tk ~= "[" and tkop.tk ~= ":" and not args_starters[tkop.kind] then
+               return fail(ps, i, "expected an index or call after '?.'")
+            end
+         end
+         if tkop.tk == ":" and ps.ternary_middle then
+            break
+         end
          if tkop.kind == "," or tkop.kind == ")" then
             break
          end
@@ -16740,7 +17186,7 @@ do
             end
 
             if op_kind == "op_colon" then
-               if ps.tokens[i].tk ~= "!" and not args_starters[ps.tokens[i].kind] then
+               if ps.tokens[i].tk ~= "?." and ps.tokens[i].tk ~= "!" and not args_starters[ps.tokens[i].kind] then
                   if ps.tokens[i].tk == "=" then
                      fail(ps, i, "syntax error, cannot perform an assignment here (missing 'local' or 'global'?)")
                   else
@@ -16781,7 +17227,7 @@ do
                if sig then
                   i, args = read_macro_args_with_sig(ps, i, sig)
                else
-                  i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
+                  i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_nested_expression)
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
                if mname then
@@ -16821,7 +17267,7 @@ do
             e1 = inv
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
-            if tkop.y > prev_tk.y and ps.read_lang ~= "lua" then
+            if tkop.y > prev_tk.y and (ps.read_lang ~= "lua" or not after_valid_prefixexp(ps, e1, i)) then
                table.insert(ps.tokens, i, { y = prev_tk.y, x = prev_tk.x + #prev_tk.tk, tk = ";", kind = ";" })
                break
             end
@@ -16831,7 +17277,7 @@ do
             local prev_i = i
 
             local args = new_block(ps, i, "expression_list")
-            i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
+            i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_nested_expression)
 
             if not after_valid_prefixexp(ps, e1, prev_i) then
                fail(ps, prev_i, "cannot call this expression")
@@ -16898,14 +17344,27 @@ do
          else
             break
          end
+         if safe_navigation then
+            e1.safe_navigation = true
+         end
       end
 
       return i, e1
    end
 
+   read_prefix_expression = function(ps, i)
+      local lhs
+      i, lhs = P(ps, i)
+      local tk = ps.tokens[i].tk
+      if lhs and tk ~= "~=" then
+         i, lhs = E(ps, i, lhs, 0)
+      end
+      return i, lhs
+   end
+
    E = function(ps, i, lhs, min_precedence)
       local lookahead = ps.tokens[i].tk
-      while precedences[2][lookahead] and precedences[2][lookahead] >= min_precedence do
+      while precedences[2][lookahead] and precedences[2][lookahead] >= min_precedence and not (ps.ternary_middle and lookahead == ":") do
          local op_tk = ps.tokens[i]
          local op_kind = op_map[2][op_tk.tk]
          local op_prec = precedences[2][op_tk.tk]
@@ -16918,7 +17377,7 @@ do
          end
          lookahead = ps.tokens[i].tk
          while precedences[2][lookahead] and ((precedences[2][lookahead] > op_prec) or
-            (is_right_assoc[lookahead] and (precedences[2][lookahead] == op_prec))) do
+            (is_right_assoc[lookahead] and (precedences[2][lookahead] == op_prec))) and not (ps.ternary_middle and lookahead == ":") do
             i, rhs = E(ps, i, rhs, precedences[2][lookahead])
             if not rhs then
                fail(ps, i, "expected an expression")
@@ -16938,6 +17397,17 @@ do
       if lhs then
          i, lhs = E(ps, i, lhs, 0)
       end
+      if lhs and ps.tokens[i].tk == "?" then
+         local conditional = new_block(ps, i, "conditional")
+         conditional[1] = lhs
+         local middle = ps.ternary_middle
+         ps.ternary_middle = true
+         i, conditional[2] = read_expression(ps, i + 1)
+         ps.ternary_middle = middle
+         i = verify_tk(ps, i, ":")
+         i, conditional[3] = read_expression(ps, i)
+         lhs = conditional
+      end
       if lhs then
          return i, lhs, 0
       end
@@ -16947,6 +17417,50 @@ do
       end
       return i
    end
+end
+
+read_short_function = function(ps, i)
+   local node = new_block(ps, i, "function")
+   node.short_function = true
+   local args = new_block(ps, i, "argument_list")
+   if ps.tokens[i].tk == "||" then
+      i = i + 1
+   elseif ps.tokens[i].tk == "|" then
+      i = i + 1
+      while ps.tokens[i].tk ~= "|" and ps.tokens[i].kind ~= "$EOF$" do
+         local argument
+         i, argument = read_argument(ps, i)
+         if argument then table.insert(args, argument) end
+         if ps.tokens[i].tk ~= "," then break end
+         i = i + 1
+      end
+      i = verify_tk(ps, i, "|")
+      end_at(args, ps.tokens[i - 1])
+   else
+      table.insert(args, new_block(ps, i, "argument"))
+      i = i + 1
+   end
+   node[BLOCK_INDEXES.FUNCTION.ARGS] = args
+   i = verify_tk(ps, i, "->")
+   if ps.tokens[i].tk == "do" then
+      local middle = ps.ternary_middle
+      ps.ternary_middle = false
+      i, node[BLOCK_INDEXES.FUNCTION.BODY] = read_statements(ps, i + 1)
+      ps.ternary_middle = middle
+      end_at(node, ps.tokens[i])
+      i = verify_tk(ps, i, "end")
+   else
+      local exp
+      i, exp = read_expression(ps, i)
+      local ret = new_block(ps, i - 1, "return")
+      ret[BLOCK_INDEXES.RETURN.EXPS] = new_block(ps, i - 1, "expression_list")
+      ret[BLOCK_INDEXES.RETURN.EXPS][1] = exp
+      local body = new_block(ps, i - 1, "statements")
+      body[1] = ret
+      node[BLOCK_INDEXES.FUNCTION.BODY] = body
+      end_at(node, ps.tokens[i - 1])
+   end
+   return i, node
 end
 
 read_expression_and_tk = function(ps, i, tk)
@@ -17014,7 +17528,7 @@ local function read_variable_name(ps, i)
    return i, node
 end
 
-local function read_argument(ps, i)
+read_argument = function(ps, i)
    local node
    local vararg_name
    if ps.tokens[i].tk == "..." then
@@ -17154,7 +17668,7 @@ local function read_identifier(ps, i)
 end
 
 local function read_local_function(ps, i)
-   i = verify_tk(ps, i, "local")
+   i = verify_tk(ps, i, ps.tokens[i].tk == "const" and "const" or "local")
    i = verify_tk(ps, i, "function")
    local node = new_block(ps, i - 2, "local_function")
    i, node[BLOCK_INDEXES.LOCAL_FUNCTION.NAME] = read_identifier(ps, i)
@@ -17727,7 +18241,7 @@ do
    read_call_or_assignment = function(ps, i)
       local exp
       local istart = i
-      i, exp = read_expression(ps, i)
+      i, exp = read_prefix_expression(ps, i)
       if not exp then
          return i
       end
@@ -17753,12 +18267,26 @@ do
 
       end_at(asgn[BLOCK_INDEXES.ASSIGNMENT.VARS], ps.tokens[i - 1])
 
-      if ps.tokens[i].tk ~= "=" then
+      local compound_ops = {
+         ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
+         ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
+         ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
+      }
+      local assignment_op = ps.tokens[i].tk
+      if compound_ops[assignment_op] then
+         asgn.compound = assignment_op:sub(1, -2)
+         if #asgn[BLOCK_INDEXES.ASSIGNMENT.VARS] ~= 1 then
+            fail(ps, i, "compound assignment requires a single variable")
+         end
+      elseif assignment_op ~= "=" then
          verify_tk(ps, i, "=")
          return i
       end
 
       i, asgn = read_assignment_expression_list(ps, i, asgn)
+      if asgn and asgn.compound and #asgn[BLOCK_INDEXES.ASSIGNMENT.EXPS] ~= 1 then
+         fail(ps, i - 1, "compound assignment requires a single expression")
+      end
       return i, asgn
    end
 end
@@ -18223,6 +18751,22 @@ read_statement_fns = {
    ["if"] = read_if,
    ["for"] = read_for,
    ["goto"] = read_goto,
+   ["const"] = function(ps, i)
+      if ps.tokens[i + 1].tk ~= "function" and ps.tokens[i + 1].kind ~= "identifier" then
+         return read_call_or_assignment(ps, i)
+      end
+      local node
+      i, node = read_local(ps, i)
+      if node then node.lj_const = true end
+      return i, node
+   end,
+   ["continue"] = function(ps, i)
+      local next_tk = ps.tokens[i + 1]
+      if next_tk.tk == ";" or next_tk.kind == "$EOF$" or stop_statement_list[next_tk.tk] then
+         return i + 1, new_block(ps, i, "continue")
+      end
+      return read_call_or_assignment(ps, i)
+   end,
    ["local"] = read_local,
    ["while"] = read_while,
    ["break"] = read_break,
@@ -18405,6 +18949,48 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
    end
 
+   local validating_continue = {}
+   local function validate_continue(b, loop, pending)
+      if validating_continue[b] then return end
+      validating_continue[b] = true
+      if b.kind == "function" or b.kind == "local_function" or b.kind == "global_function" or b.kind == "record_function" then
+         loop = nil
+         pending = {}
+      elseif b.kind == "while" or b.kind == "fornum" or b.kind == "forin" or b.kind == "repeat" then
+         loop = b
+         pending = {}
+      elseif b.kind == "continue" then
+         if not loop then
+            table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "continue outside a loop" })
+         elseif loop.kind == "repeat" then
+            table.insert(pending, b)
+         end
+      end
+      local indexes = {}
+      for key, _ in pairs(b) do
+         if not (type(key) == "string") then table.insert(indexes, key) end
+      end
+      table.sort(indexes)
+      for _, j in ipairs(indexes) do
+         local child = b[j]
+         if b.kind == "statements" and (child.kind == "local_declaration" or child.kind == "local_function" or child.kind == "local_type") and loop and loop.kind == "repeat" and b == loop[BLOCK_INDEXES.REPEAT.BODY] then
+            for _, jump in ipairs(pending) do
+               table.insert(errs, { filename = filename, y = jump.y, x = jump.x, msg = "continue jumps into scope of a local variable" })
+            end
+         end
+         if child.kind == "continue" then
+            local following = b[j + 1]
+            while following and following.kind == ";" do j = j + 1; following = b[j + 1] end
+            if following then
+               table.insert(errs, { filename = filename, y = child.y, x = child.x, msg = "continue must be the last statement of its block" })
+            end
+         end
+         validate_continue(child, loop, pending)
+      end
+      validating_continue[b] = nil
+   end
+   if read_program_depth == 1 and not skip_macro_expand then validate_continue(node, nil, {}) end
+
    errors.clear_redundant_errors(errs)
    read_program_depth = read_program_depth - 1
    return node
@@ -18452,6 +19038,8 @@ local show_type = types.show_type
 
 
 local traversal = { VisitorCallbacks = {}, Visitor = {} }
+
+
 
 
 
@@ -18709,6 +19297,7 @@ local no_traverse_nodes = {
    ["cast"] = true,
    ["goto"] = true,
    ["break"] = true,
+   ["continue"] = true,
    ["label"] = true,
    ["number"] = true,
    ["pragma"] = true,
@@ -18758,6 +19347,13 @@ function traversal.traverse_nodes(s, root,
    end
 
    local walkers = {
+      ["conditional"] = function(ast, xs)
+         xs[1] = recurse(ast.e1)
+         extra_callback("before_e2", s, ast, xs, visit_node)
+         xs[2] = recurse(ast.e2)
+         extra_callback("before_e3", s, ast, xs, visit_node)
+         xs[3] = recurse(ast.e3)
+      end,
       ["op"] = function(ast, xs)
          xs[1] = recurse(ast.e1)
          local p1 = ast.e1.op and ast.e1.op.prec or nil

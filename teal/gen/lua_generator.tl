@@ -68,6 +68,8 @@ local spaced_op: {integer:{string:boolean}} = {
       ["&"] = true,
       ["<<"] = true,
       [">>"] = true,
+      ["~>>"] = true,
+      ["??"] = true,
       [".."] = true,
       ["+"] = true,
       ["-"] = true,
@@ -278,7 +280,7 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
          local out <const>: Output = { y = node.y, h = 0 }
 
          if kind == "local" then
-            table.insert(out, "local ")
+            table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
          end
 
          table.insert(out, "function")
@@ -339,7 +341,7 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
       ["local_declaration"] = {
          after = function(_: nil, node: Node, children: {Output}): Output
             local out: Output = { y = node.y, h = 0 }
-            table.insert(out, "local ")
+            table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
             for i, var in ipairs(node.vars) do
                if i > 1 then
                   add_string(out, ", ")
@@ -394,8 +396,20 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
          after = function(_: nil, node: Node, children: {Output}): Output
             local out: Output = { y = node.y, h = 0 }
             add_child(out, children[1])
-            table.insert(out, " =")
+            table.insert(out, " " .. (node.compound or "") .. "=")
             add_child(out, children[3], " ")
+            return out
+         end,
+      },
+      ["conditional"] = {
+         after = function(_: nil, node: Node, children: {Output}): Output
+            local out: Output = { y = node.y, h = 0, "(" }
+            add_child(out, children[1])
+            table.insert(out, " ? (")
+            add_child(out, children[2])
+            table.insert(out, ") : ")
+            add_child(out, children[3])
+            table.insert(out, ")")
             return out
          end,
       },
@@ -610,6 +624,12 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
       ["op"] = {
          after = function(_: nil, node: Node, children: {Output}): Output
             local out: Output = { y = node.y, h = 0 }
+            if node.compound_value then
+               return children[3]
+            end
+            if node.safe_navigation then
+               table.insert(children[1], "?.")
+            end
             if node.op.op == "@funcall" then
                add_child(out, children[1], "", indent)
                table.insert(out, "(")
@@ -659,7 +679,7 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
                   if space == " " then
                      table.insert(out, " ")
                   end
-                  table.insert(out, node.op.op)
+                  table.insert(out, node.safe_navigation and node.op.op == "." and "" or node.op.op)
                   if children[4] and node.op.prec > tonumber(children[4]) then
                      table.insert(children[3], 1, "(")
                      table.insert(children[3], ")")
@@ -770,10 +790,27 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
          end,
       },
 
+      ["continue"] = emit_exactly_visitor_cbs,
       ["variable"] = emit_exactly_visitor_cbs,
       ["identifier"] = emit_exactly_visitor_cbs,
-      ["number"] = emit_exactly_visitor_cbs,
-      ["integer"] = emit_exactly_visitor_cbs,
+      ["number"] = {
+         after = function(_: nil, node: Node): Output
+            local text = node.tk:gsub("_", "")
+            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
+               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            end
+            return { y = node.y, h = 0, text }
+         end,
+      },
+      ["integer"] = {
+         after = function(_: nil, node: Node): Output
+            local text = node.tk:gsub("_", "")
+            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
+               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            end
+            return { y = node.y, h = 0, text }
+         end,
+      },
       ["nil"] = emit_exactly_visitor_cbs,
       ["boolean"] = emit_exactly_visitor_cbs,
       ["..."] = emit_exactly_visitor_cbs,
@@ -838,6 +875,14 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
    visit_node.cbs["expression_list"] = visit_node.cbs["variable_list"]
    visit_node.cbs["argument_list"] = visit_node.cbs["variable_list"]
 
+   visit_node.after = function(_: nil, node: Node, _children: {Output}, out: Output): Output
+      if gen_target ~= "luajit" and
+         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
+          (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
+         error("this extension requires the luajit generation target")
+      end
+      return out
+   end
    local out = traversal.traverse_nodes(nil, ast, visit_node, visit_type)
 
    local code: Output

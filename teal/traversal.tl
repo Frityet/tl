@@ -32,6 +32,7 @@ local record traversal
       before_arguments: function(S, {N}, {T})
       before_statements: function(S, {N}, {T})
       before_e2: function(S, {N}, {T})
+      before_e3: function(S, {N}, {T})
       after: function(S, N, {T}): T
    end
 
@@ -40,6 +41,7 @@ local record traversal
       "before_statements"
       "before_exp"
       "before_e2"
+      "before_e3"
    end
 
    type VisitorAfter = function<S, N, T>(S, N, {T}, T): T
@@ -283,6 +285,7 @@ local no_traverse_nodes: {NodeKind : boolean} = {
    ["cast"] = true,
    ["goto"] = true,
    ["break"] = true,
+   ["continue"] = true,
    ["label"] = true,
    ["number"] = true,
    ["pragma"] = true,
@@ -332,6 +335,13 @@ function traversal.traverse_nodes<S, T>(s: S, root: types.Node,
    end
 
    local walkers: {NodeKind : function(Node, {T})} = {
+      ["conditional"] = function(ast: Node, xs: {T})
+         xs[1] = recurse(ast.e1)
+         extra_callback("before_e2", s, ast, xs, visit_node)
+         xs[2] = recurse(ast.e2)
+         extra_callback("before_e3", s, ast, xs, visit_node)
+         xs[3] = recurse(ast.e3)
+      end,
       ["op"] = function(ast: Node, xs: {T})
          xs[1] = recurse(ast.e1)
          local p1 = ast.e1.op and ast.e1.op.prec or nil

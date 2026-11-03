@@ -24,7 +24,7 @@ return {
 | `-I --include-dir`   | `include_dir`              | `{string}` | `check` `gen` `run`  | Prepend this directory to the module search path.
 |                      | `source_dir`               | `string`   | `check` `gen` `run`  | Set the project source directory and add it to the module search path.
 | `--gen-compat`       | `gen_compat`               | `string`   | `gen` `run`          | Generate compatibility code for targeting different Lua VM versions. See [below](#generated-code) for details.
-| `--gen-target`       | `gen_target`               | `string`   | `gen` `run`          | Minimum targeted Lua version for generated code. Options are `5.1`, `5.3`, `5.4` and `5.5`. See [below](#generated-code) for details.
+| `--gen-target`       | `gen_target`               | `string`   | `gen` `run`          | Minimum targeted Lua version for generated code. Options are `5.1`, `5.3`, `5.4`, `5.5`, and `luajit`. See [below](#generated-code) for details.
 | `--keep-hashbang`    |                            |            | `gen`                | Preserve hashbang line (`#!`) at the top of file if present.
 | `-p --pretend`       |                            |            | `gen`                | Don't compile/write to any files, but type check and log what files would be written to.
 | `--wdisable`         | `disable_warnings`         | `{string}` | `check` `run`        | Disable the given warnings.
@@ -76,7 +76,7 @@ target implicitly.
 
 If set explicitly via the `--gen-target` flag of the `tl` CLI (or the equivalent
 options in the programmatic API), the generated code will target the Lua
-version requested: 5.1, 5.3, 5.4 or 5.5.
+version requested: 5.1, 5.3, 5.4, 5.5, or LuaJIT.
 
 If the code generation target is not set explicitly via `--gen-target`, Teal
 will target the Lua version most compatible with the version of the Lua VM
@@ -140,3 +140,12 @@ you may pass a declaration module to the compiler using the `--global-env-def` f
 in the CLI or the `global_env_def` string in `tlconfig.lua`.
 
 For more information, see the [declaration files](declaration_files.md#global-environment-definition) page.
+
+### LuaJIT 2.1 with the 3.0 syntax backport
+
+Use `--gen-target=luajit` (or `gen_target = "luajit"` in `tlconfig.lua`)
+for LuaJIT 2.1 builds with the LuaJIT 3.0 syntax extensions. This target is
+explicit: the default target under LuaJIT remains `5.1`.
+
+See [LuaJIT syntax extensions](luajit_extensions.md) for supported syntax,
+type checking, and generated code.

@@ -59,6 +59,8 @@ local traversal = { VisitorCallbacks = {}, Visitor = {} }
 
 
 
+
+
 function traversal.fields_of(t, meta)
    local i = 1
    local field_order, fields
@@ -283,6 +285,7 @@ local no_traverse_nodes = {
    ["cast"] = true,
    ["goto"] = true,
    ["break"] = true,
+   ["continue"] = true,
    ["label"] = true,
    ["number"] = true,
    ["pragma"] = true,
@@ -332,6 +335,13 @@ function traversal.traverse_nodes(s, root,
    end
 
    local walkers = {
+      ["conditional"] = function(ast, xs)
+         xs[1] = recurse(ast.e1)
+         extra_callback("before_e2", s, ast, xs, visit_node)
+         xs[2] = recurse(ast.e2)
+         extra_callback("before_e3", s, ast, xs, visit_node)
+         xs[3] = recurse(ast.e3)
+      end,
       ["op"] = function(ast, xs)
          xs[1] = recurse(ast.e1)
          local p1 = ast.e1.op and ast.e1.op.prec or nil

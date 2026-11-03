@@ -80,6 +80,8 @@ do
       "comment long got ]"
       "number dec"
       "number decfloat"
+      "number binary"
+      "number suffix"
       "number hex"
       "number hexfloat"
       "number power"
@@ -120,6 +122,8 @@ do
       ["comment long got ]"] = "$ERR$",
       ["number dec"] = "integer",
       ["number decfloat"] = "number",
+      ["number binary"] = "integer",
+      ["number suffix"] = "number",
       ["number hex"] = "integer",
       ["number hexfloat"] = "number",
       ["number power"] = "number",
@@ -400,6 +404,14 @@ do
       end
       state = "any"
 
+      local extension_operators: {string: {string}} = {
+         ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
+         ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
+         ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
+         ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
+         ["/"] = { "/=" }, ["%"] = { "%=" },
+      }
+
       while i <= len do
          if fwd then
             i = i + 1
@@ -421,7 +433,38 @@ do
             fwd = true
          end
 
-         if state == "any" then
+         local extension_op: string
+         if state == "any" and extension_operators[c] then
+            for _, candidate in ipairs(extension_operators[c]) do
+               if input:sub(i, i + #candidate - 1) == candidate then
+                  extension_op = candidate
+                  break
+               end
+            end
+         end
+         if extension_op then
+            begin_token()
+            end_token("op", extension_op)
+            i = i + #extension_op - 1
+            x = x + #extension_op - 1
+         elseif c == "_" and (state == "got 0" or state:sub(1, 7) == "number ") then
+            -- Separators do not change the numeric lexer state.
+         elseif state ~= "number suffix" and (state == "got 0" or state:sub(1, 7) == "number ") and
+            (c == "L" or c == "l" or c == "U" or c == "u" or c == "i" or c == "I") then
+            state = "number suffix"
+         elseif state == "number suffix" then
+            if not lex_word[c] then
+               end_token_prev("number")
+               fwd = false
+               state = "any"
+            end
+         elseif state == "number binary" then
+            if c ~= "0" and c ~= "1" then
+               end_token_prev("integer")
+               fwd = false
+               state = "any"
+            end
+         elseif state == "any" then
             if c == "`" then
                local c2 = input:sub(i + 1, i + 1)
                local c3 = input:sub(i + 2, i + 2)
@@ -618,6 +661,8 @@ do
          elseif state == "got 0" then
             if c == "x" or c == "X" then
                state = "number hex"
+            elseif c == "b" or c == "B" then
+               state = "number binary"
             elseif c == "e" or c == "E" then
                state = "number powersign"
             elseif lex_decimals[c] then
@@ -810,6 +855,22 @@ do
          add_comment(input:sub(ti, #input))
       end
 
+      for _, token in ipairs(tokens) do
+         if token.kind == "number" or token.kind == "integer" then
+            local text = token.tk:gsub("_", ""):lower()
+            local integer_suffix = text:sub(-2) == "ll"
+            if text:sub(-3) == "ull" then text = text:sub(1, -4)
+            elseif integer_suffix then text = text:sub(1, -3)
+            elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
+            local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
+            if not value then
+               token.kind = "$ERR$"
+               table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
+            elseif integer_suffix then
+               token.kind = "integer"
+            end
+         end
+      end
       table.insert(tokens, { x = x + 1, y = y, tk = "$EOF$", kind = "$EOF$", comments = comments })
 
       return tokens, errs

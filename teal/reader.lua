@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
 local errors = require("teal.errors")
 
 
@@ -189,9 +189,13 @@ end
 
 
 
+
 local read_type_list
 local read_typeargs_if_any
 local read_expression
+local read_prefix_expression
+local read_short_function
+local read_argument
 local read_expression_and_tk
 local read_statements
 local read_argument_list
@@ -205,6 +209,14 @@ local needs_local_or_global
 local read_nested_type
 local read_call_or_assignment
 local read_record_function
+
+local function read_nested_expression(ps, i)
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
+   local next_i, expression, n = read_expression(ps, i)
+   ps.ternary_middle = middle
+   return next_i, expression, n
+end
 
 
 local read_enum_body
@@ -329,6 +341,10 @@ local function clone_block_deep(b)
       yend = b.yend,
       xend = b.xend,
       is_longstring = b.is_longstring,
+      short_function = b.short_function,
+      lj_const = b.lj_const,
+      safe_navigation = b.safe_navigation,
+      compound = b.compound,
    }
    local child_indexes = {}
    for k, child in pairs(b) do
@@ -796,7 +812,7 @@ local function read_table_value(ps, i)
    end
 
    local e
-   i, e = read_expression(ps, i)
+   i, e = read_nested_expression(ps, i)
    if not e then
       e = new_block(ps, i - 1, "error_block")
    end
@@ -932,7 +948,11 @@ end
 
 local function read_table_literal(ps, i)
    local node = new_block(ps, i, "literal_table")
-   return read_bracket_list(ps, i, node, "{", "}", "term", read_table_item)
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
+   i, node = read_bracket_list(ps, i, node, "{", "}", "term", read_table_item)
+   ps.ternary_middle = middle
+   return i, node
 end
 
 local function read_macro_args_with_sig(ps, i, sig)
@@ -1348,24 +1368,21 @@ local function read_base_type(ps, i)
 end
 
 read_type = function(ps, i)
-   if ps.tokens[i].tk == "(" then
-      i = i + 1
-      local t
-      i, t = read_type(ps, i)
-      i = verify_tk(ps, i, ")")
-      return i, t
-   end
-
    local bt
    local istart = i
-   i, bt = read_base_type(ps, i)
+   if ps.tokens[i].tk == "(" then
+      i, bt = read_type(ps, i + 1)
+      i = verify_tk(ps, i, ")")
+   else
+      i, bt = read_base_type(ps, i)
+   end
    if not bt then
       return i
    end
-   if ps.tokens[i].tk == "|" then
+   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" then
       local u = new_type(ps, istart, "union_type")
       u[1] = bt
-      while ps.tokens[i].tk == "|" do
+      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" do
          i = i + 1
          i, bt = read_base_type(ps, i)
          if not bt then
@@ -1392,8 +1409,24 @@ read_type_list = function(ps, i, mode)
 
    local optional_paren = false
    if ps.tokens[i].tk == "(" then
-      optional_paren = true
-      i = i + 1
+
+      local depth = 0
+      local grouped_union = false
+      for j = i, #ps.tokens do
+         local tk = ps.tokens[j].tk
+         if tk == "(" then depth = depth + 1 end
+         if tk == ")" then
+            depth = depth - 1
+            if depth == 0 then
+               grouped_union = mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|"
+               break
+            end
+         end
+      end
+      if not grouped_union then
+         optional_paren = true
+         i = i + 1
+      end
    end
 
    local prev_i = i
@@ -1426,7 +1459,10 @@ local function read_function_args_rets_body(ps, i, node)
    i, node[BLOCK_INDEXES.FUNCTION.ARGS] = read_argument_list(ps, i)
    i, node[BLOCK_INDEXES.FUNCTION.RETS] = read_return_types(ps, i)
 
+   local middle = ps.ternary_middle
+   ps.ternary_middle = false
    i, node[BLOCK_INDEXES.FUNCTION.BODY] = read_statements(ps, i)
+   ps.ternary_middle = middle
    end_at(node, ps.tokens[i])
    i = verify_end(ps, i, istart, node)
    return i, node
@@ -1554,7 +1590,9 @@ end
 local function read_literal(ps, i)
    local tk = ps.tokens[i].tk
    local kind = ps.tokens[i].kind
-   if kind == "identifier" then
+   if (kind == "identifier" and ps.tokens[i + 1].tk == "->") or tk == "|" or tk == "||" then
+      return read_short_function(ps, i)
+   elseif kind == "identifier" then
       return verify_kind(ps, i, "identifier")
    elseif kind == "string" then
       local node = new_block(ps, i, "string")
@@ -1591,12 +1629,17 @@ end
 do
    local precedences = {
       [1] = {
+         ["!"] = 11,
          ["not"] = 11,
          ["#"] = 11,
          ["-"] = 11,
          ["~"] = 11,
       },
       [2] = {
+         ["||"] = 1,
+         ["&&"] = 2,
+         ["!="] = 3,
+         ["??"] = 1,
          ["or"] = 1,
          ["and"] = 2,
          ["is"] = 3,
@@ -1611,6 +1654,7 @@ do
          ["&"] = 6,
          ["<<"] = 7,
          [">>"] = 7,
+         ["~>>"] = 7,
          [".."] = 8,
          ["+"] = 9,
          ["-"] = 9,
@@ -1634,12 +1678,17 @@ do
 
    local op_map = {
       [1] = {
+         ["!"] = "op_not",
          ["not"] = "op_not",
          ["#"] = "op_len",
          ["-"] = "op_unm",
          ["~"] = "op_bnot",
       },
       [2] = {
+         ["??"] = "op_coalesce",
+         ["||"] = "op_or",
+         ["&&"] = "op_and",
+         ["!="] = "op_ne",
          ["or"] = "op_or",
          ["and"] = "op_and",
          ["is"] = "op_is",
@@ -1654,6 +1703,7 @@ do
          ["&"] = "op_band",
          ["<<"] = "op_shl",
          [">>"] = "op_shr",
+         ["~>>"] = "op_sar",
          [".."] = "op_concat",
          ["+"] = "op_add",
          ["-"] = "op_sub",
@@ -1679,7 +1729,7 @@ do
    local E
 
    local function after_valid_prefixexp(ps, prevnode, i)
-      return ps.tokens[i - 1].kind == ")" or
+      return prevnode.kind == "paren" or ps.tokens[i - 1].kind == ")" or
       prevnode.kind == "op_funcall" or
       prevnode.kind == "op_index" or
       prevnode.kind == "op_dot" or
@@ -1723,7 +1773,10 @@ do
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
+         local middle = ps.ternary_middle
+         ps.ternary_middle = false
          i, e1 = read_expression_and_tk(ps, i, ")")
+         ps.ternary_middle = middle
          if not e1 then
             fail(ps, prev_i, "expected an expression")
             return i
@@ -1739,7 +1792,21 @@ do
       end
 
       while true do
+         local safe_navigation = ps.tokens[i].tk == "?."
          local tkop = ps.tokens[i]
+         if safe_navigation then
+            i = i + 1
+            tkop = ps.tokens[i]
+            if tkop.kind == "identifier" then
+               tkop = { tk = ".", kind = ".", y = tkop.y, x = tkop.x }
+               i = i - 1
+            elseif tkop.tk ~= "[" and tkop.tk ~= ":" and not args_starters[tkop.kind] then
+               return fail(ps, i, "expected an index or call after '?.'")
+            end
+         end
+         if tkop.tk == ":" and ps.ternary_middle then
+            break
+         end
          if tkop.kind == "," or tkop.kind == ")" then
             break
          end
@@ -1775,7 +1842,7 @@ do
             end
 
             if op_kind == "op_colon" then
-               if ps.tokens[i].tk ~= "!" and not args_starters[ps.tokens[i].kind] then
+               if ps.tokens[i].tk ~= "?." and ps.tokens[i].tk ~= "!" and not args_starters[ps.tokens[i].kind] then
                   if ps.tokens[i].tk == "=" then
                      fail(ps, i, "syntax error, cannot perform an assignment here (missing 'local' or 'global'?)")
                   else
@@ -1816,7 +1883,7 @@ do
                if sig then
                   i, args = read_macro_args_with_sig(ps, i, sig)
                else
-                  i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
+                  i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_nested_expression)
                end
             elseif next_tk.kind == "string" or next_tk.kind == "{" then
                if mname then
@@ -1856,7 +1923,7 @@ do
             e1 = inv
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
-            if tkop.y > prev_tk.y and ps.read_lang ~= "lua" then
+            if tkop.y > prev_tk.y and (ps.read_lang ~= "lua" or not after_valid_prefixexp(ps, e1, i)) then
                table.insert(ps.tokens, i, { y = prev_tk.y, x = prev_tk.x + #prev_tk.tk, tk = ";", kind = ";" })
                break
             end
@@ -1866,7 +1933,7 @@ do
             local prev_i = i
 
             local args = new_block(ps, i, "expression_list")
-            i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_expression)
+            i, args = read_bracket_list(ps, i, args, "(", ")", "sep", read_nested_expression)
 
             if not after_valid_prefixexp(ps, e1, prev_i) then
                fail(ps, prev_i, "cannot call this expression")
@@ -1933,14 +2000,27 @@ do
          else
             break
          end
+         if safe_navigation then
+            e1.safe_navigation = true
+         end
       end
 
       return i, e1
    end
 
+   read_prefix_expression = function(ps, i)
+      local lhs
+      i, lhs = P(ps, i)
+      local tk = ps.tokens[i].tk
+      if lhs and tk ~= "~=" then
+         i, lhs = E(ps, i, lhs, 0)
+      end
+      return i, lhs
+   end
+
    E = function(ps, i, lhs, min_precedence)
       local lookahead = ps.tokens[i].tk
-      while precedences[2][lookahead] and precedences[2][lookahead] >= min_precedence do
+      while precedences[2][lookahead] and precedences[2][lookahead] >= min_precedence and not (ps.ternary_middle and lookahead == ":") do
          local op_tk = ps.tokens[i]
          local op_kind = op_map[2][op_tk.tk]
          local op_prec = precedences[2][op_tk.tk]
@@ -1953,7 +2033,7 @@ do
          end
          lookahead = ps.tokens[i].tk
          while precedences[2][lookahead] and ((precedences[2][lookahead] > op_prec) or
-            (is_right_assoc[lookahead] and (precedences[2][lookahead] == op_prec))) do
+            (is_right_assoc[lookahead] and (precedences[2][lookahead] == op_prec))) and not (ps.ternary_middle and lookahead == ":") do
             i, rhs = E(ps, i, rhs, precedences[2][lookahead])
             if not rhs then
                fail(ps, i, "expected an expression")
@@ -1973,6 +2053,17 @@ do
       if lhs then
          i, lhs = E(ps, i, lhs, 0)
       end
+      if lhs and ps.tokens[i].tk == "?" then
+         local conditional = new_block(ps, i, "conditional")
+         conditional[1] = lhs
+         local middle = ps.ternary_middle
+         ps.ternary_middle = true
+         i, conditional[2] = read_expression(ps, i + 1)
+         ps.ternary_middle = middle
+         i = verify_tk(ps, i, ":")
+         i, conditional[3] = read_expression(ps, i)
+         lhs = conditional
+      end
       if lhs then
          return i, lhs, 0
       end
@@ -1982,6 +2073,50 @@ do
       end
       return i
    end
+end
+
+read_short_function = function(ps, i)
+   local node = new_block(ps, i, "function")
+   node.short_function = true
+   local args = new_block(ps, i, "argument_list")
+   if ps.tokens[i].tk == "||" then
+      i = i + 1
+   elseif ps.tokens[i].tk == "|" then
+      i = i + 1
+      while ps.tokens[i].tk ~= "|" and ps.tokens[i].kind ~= "$EOF$" do
+         local argument
+         i, argument = read_argument(ps, i)
+         if argument then table.insert(args, argument) end
+         if ps.tokens[i].tk ~= "," then break end
+         i = i + 1
+      end
+      i = verify_tk(ps, i, "|")
+      end_at(args, ps.tokens[i - 1])
+   else
+      table.insert(args, new_block(ps, i, "argument"))
+      i = i + 1
+   end
+   node[BLOCK_INDEXES.FUNCTION.ARGS] = args
+   i = verify_tk(ps, i, "->")
+   if ps.tokens[i].tk == "do" then
+      local middle = ps.ternary_middle
+      ps.ternary_middle = false
+      i, node[BLOCK_INDEXES.FUNCTION.BODY] = read_statements(ps, i + 1)
+      ps.ternary_middle = middle
+      end_at(node, ps.tokens[i])
+      i = verify_tk(ps, i, "end")
+   else
+      local exp
+      i, exp = read_expression(ps, i)
+      local ret = new_block(ps, i - 1, "return")
+      ret[BLOCK_INDEXES.RETURN.EXPS] = new_block(ps, i - 1, "expression_list")
+      ret[BLOCK_INDEXES.RETURN.EXPS][1] = exp
+      local body = new_block(ps, i - 1, "statements")
+      body[1] = ret
+      node[BLOCK_INDEXES.FUNCTION.BODY] = body
+      end_at(node, ps.tokens[i - 1])
+   end
+   return i, node
 end
 
 read_expression_and_tk = function(ps, i, tk)
@@ -2049,7 +2184,7 @@ local function read_variable_name(ps, i)
    return i, node
 end
 
-local function read_argument(ps, i)
+read_argument = function(ps, i)
    local node
    local vararg_name
    if ps.tokens[i].tk == "..." then
@@ -2189,7 +2324,7 @@ local function read_identifier(ps, i)
 end
 
 local function read_local_function(ps, i)
-   i = verify_tk(ps, i, "local")
+   i = verify_tk(ps, i, ps.tokens[i].tk == "const" and "const" or "local")
    i = verify_tk(ps, i, "function")
    local node = new_block(ps, i - 2, "local_function")
    i, node[BLOCK_INDEXES.LOCAL_FUNCTION.NAME] = read_identifier(ps, i)
@@ -2762,7 +2897,7 @@ do
    read_call_or_assignment = function(ps, i)
       local exp
       local istart = i
-      i, exp = read_expression(ps, i)
+      i, exp = read_prefix_expression(ps, i)
       if not exp then
          return i
       end
@@ -2788,12 +2923,26 @@ do
 
       end_at(asgn[BLOCK_INDEXES.ASSIGNMENT.VARS], ps.tokens[i - 1])
 
-      if ps.tokens[i].tk ~= "=" then
+      local compound_ops = {
+         ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
+         ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
+         ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
+      }
+      local assignment_op = ps.tokens[i].tk
+      if compound_ops[assignment_op] then
+         asgn.compound = assignment_op:sub(1, -2)
+         if #asgn[BLOCK_INDEXES.ASSIGNMENT.VARS] ~= 1 then
+            fail(ps, i, "compound assignment requires a single variable")
+         end
+      elseif assignment_op ~= "=" then
          verify_tk(ps, i, "=")
          return i
       end
 
       i, asgn = read_assignment_expression_list(ps, i, asgn)
+      if asgn and asgn.compound and #asgn[BLOCK_INDEXES.ASSIGNMENT.EXPS] ~= 1 then
+         fail(ps, i - 1, "compound assignment requires a single expression")
+      end
       return i, asgn
    end
 end
@@ -3258,6 +3407,22 @@ read_statement_fns = {
    ["if"] = read_if,
    ["for"] = read_for,
    ["goto"] = read_goto,
+   ["const"] = function(ps, i)
+      if ps.tokens[i + 1].tk ~= "function" and ps.tokens[i + 1].kind ~= "identifier" then
+         return read_call_or_assignment(ps, i)
+      end
+      local node
+      i, node = read_local(ps, i)
+      if node then node.lj_const = true end
+      return i, node
+   end,
+   ["continue"] = function(ps, i)
+      local next_tk = ps.tokens[i + 1]
+      if next_tk.tk == ";" or next_tk.kind == "$EOF$" or stop_statement_list[next_tk.tk] then
+         return i + 1, new_block(ps, i, "continue")
+      end
+      return read_call_or_assignment(ps, i)
+   end,
    ["local"] = read_local,
    ["while"] = read_while,
    ["break"] = read_break,
@@ -3439,6 +3604,48 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    if not skip_macro_expand then
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
    end
+
+   local validating_continue = {}
+   local function validate_continue(b, loop, pending)
+      if validating_continue[b] then return end
+      validating_continue[b] = true
+      if b.kind == "function" or b.kind == "local_function" or b.kind == "global_function" or b.kind == "record_function" then
+         loop = nil
+         pending = {}
+      elseif b.kind == "while" or b.kind == "fornum" or b.kind == "forin" or b.kind == "repeat" then
+         loop = b
+         pending = {}
+      elseif b.kind == "continue" then
+         if not loop then
+            table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "continue outside a loop" })
+         elseif loop.kind == "repeat" then
+            table.insert(pending, b)
+         end
+      end
+      local indexes = {}
+      for key, _ in pairs(b) do
+         if not (type(key) == "string") then table.insert(indexes, key) end
+      end
+      table.sort(indexes)
+      for _, j in ipairs(indexes) do
+         local child = b[j]
+         if b.kind == "statements" and (child.kind == "local_declaration" or child.kind == "local_function" or child.kind == "local_type") and loop and loop.kind == "repeat" and b == loop[BLOCK_INDEXES.REPEAT.BODY] then
+            for _, jump in ipairs(pending) do
+               table.insert(errs, { filename = filename, y = jump.y, x = jump.x, msg = "continue jumps into scope of a local variable" })
+            end
+         end
+         if child.kind == "continue" then
+            local following = b[j + 1]
+            while following and following.kind == ";" do j = j + 1; following = b[j + 1] end
+            if following then
+               table.insert(errs, { filename = filename, y = child.y, x = child.x, msg = "continue must be the last statement of its block" })
+            end
+         end
+         validate_continue(child, loop, pending)
+      end
+      validating_continue[b] = nil
+   end
+   if read_program_depth == 1 and not skip_macro_expand then validate_continue(node, nil, {}) end
 
    errors.clear_redundant_errors(errs)
    read_program_depth = read_program_depth - 1

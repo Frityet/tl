@@ -268,6 +268,7 @@ local binop_types = {
    ["|"] = integer_binop,
    ["<<"] = integer_binop,
    [">>"] = integer_binop,
+   ["~>>"] = integer_binop,
    ["~"] = integer_binop,
    ["=="] = equality_binop,
    ["~="] = equality_binop,
@@ -938,6 +939,33 @@ local function assert_is_a(ctx, w, t1, t2, ectx, name)
    return ok
 end
 
+local function short_block_returns(body)
+   local last = body[#body]
+   if not last then return false end
+   if last.kind == "return" then return true end
+   if last.kind == "do" then return short_block_returns(last.body) end
+   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
+      for _, branch in ipairs(last.if_blocks) do
+         if not short_block_returns(branch.body) then return false end
+      end
+      return true
+   end
+   return false
+end
+
+local function non_nil_type(self, node, t)
+   t = untuple(t)
+   local structural = self:to_structural(t)
+   if structural.typename == "union" then
+      local kept = {}
+      for _, member in ipairs(structural.types) do
+         if not (member.typename == "nil") then table.insert(kept, member) end
+      end
+      if #kept > 0 then return unite(node, kept, true, false) end
+   end
+   return t
+end
+
 local function count_scope_vars(self)
    local n = 0
    for i = 1, #self.st do
@@ -1410,6 +1438,25 @@ visit_node.cbs = {
          local n_got = #got_t
 
          node.block_returns = true
+         local return_var = self:find_var("@return", "check_only")
+         local short = return_var and return_var.declared_at
+         if short and short.infer_returns then
+            local previous = short.inferred_rets
+            if not previous then
+               short.inferred_rets = drop_constant_values(got, false)
+            else
+               local merged = a_type(node, "tuple", { tuple = {} })
+               local n = math.max(#previous.tuple, #got_t)
+               for i = 1, n do
+                  local a = previous.tuple[i] or (previous.is_va and previous.tuple[#previous.tuple]) or a_type(node, "nil", {})
+                  local b = got_t[i] or (got.is_va and got_t[n_got]) or a_type(node, "nil", {})
+                  merged.tuple[i] = unite(node, { a, b }, true, not self.feat_strict_nil)
+               end
+               merged.is_va = previous.is_va or got.is_va
+               short.inferred_rets = merged
+            end
+            return NONE
+         end
          local expected = self:find_var_type("@return")
          if not expected then
 
@@ -1690,6 +1737,13 @@ visit_node.cbs = {
    },
    ["local_function"] = {
       before = function(self, node)
+         if node.lj_const then
+            for _, argument in ipairs(node.args) do
+               if argument.tk == node.name.tk then
+                  self.errs:add(argument, "cannot re-declare const variable '" .. node.name.tk .. "'")
+               end
+            end
+         end
          self:widen_all_unions()
          if self.collector then
             self.collector.reserve_symbol_list_slot(node)
@@ -1717,7 +1771,7 @@ visit_node.cbs = {
             rets = self.get_rets(rets),
          }))
 
-         self:add_var(node, node.name.tk, t, nil, nil, function_has_explicit_types(node.args, node.rets))
+         self:add_var(node, node.name.tk, t, node.lj_const and "const" or nil, nil, function_has_explicit_types(node.args, node.rets))
          return t
       end,
    },
@@ -1755,7 +1809,8 @@ visit_node.cbs = {
          self:widen_all_unions()
          self:begin_scope(node)
          if node.implicit_global_function then
-            local typ = self:find_var_type(node.name.tk)
+            local typ, attribute = self:find_var_type(node.name.tk)
+            if attribute == "const" then self.errs:add(node, "cannot assign to <const> variable") end
             if typ then
                if typ.typename == "function" then
                   node.is_predeclared_local_function = true
@@ -1949,6 +2004,18 @@ visit_node.cbs = {
          self:begin_scope(node)
 
          local expected = node.expected
+         if node.short_function and expected then
+            local resolved = self:resolve_typevars(expected)
+            expected = self:to_structural(resolved or expected)
+         end
+         if node.short_function then
+            node.infer_returns = not (expected and expected.typename == "function")
+            if expected and expected.typename == "function" then
+               node.rets = expected.rets
+            else
+               node.rets = a_vararg(node, { a_type(node, "any", {}) })
+            end
+         end
          if expected and expected.typename == "function" then
             for i, t in ipairs(expected.args.tuple) do
                if node.args[i] then
@@ -1968,6 +2035,17 @@ visit_node.cbs = {
          assert(args.typename == "tuple")
          local rets = children[2]
          assert(rets.typename == "tuple")
+         if node.infer_returns then
+            rets = node.inferred_rets or a_type(node, "tuple", { tuple = {} })
+            if not short_block_returns(node.body) then
+               local nullable = a_type(node, "tuple", { tuple = {} })
+               for i, member in ipairs(rets.tuple) do
+                  nullable.tuple[i] = unite(node, { member, a_type(node, "nil", {}) }, true, not self.feat_strict_nil)
+               end
+               nullable.is_va = rets.is_va
+               rets = nullable
+            end
+         end
 
          self:end_function_scope(node)
 
@@ -2017,13 +2095,33 @@ visit_node.cbs = {
          return untuple(children[1])
       end,
    },
+   ["conditional"] = {
+      before = function(_self, node)
+         node.e1.expected = a_type(node, "boolean_context", {})
+         node.e2.expected = node.expected
+         node.e3.expected = node.expected
+      end,
+      before_e2 = function(self, node)
+         self:begin_implied_scope()
+         self:apply_facts_from(node, node.e1)
+      end,
+      before_e3 = function(self, node)
+         self:end_implied_scope()
+         self:begin_implied_scope()
+         self:apply_facts(node, facts_not(node, self.fdb:get(node.e1)))
+      end,
+      after = function(self, node, children)
+         self:end_implied_scope()
+         return unite(node, { untuple(children[2]), untuple(children[3]) }, true, not self.feat_strict_nil)
+      end,
+   },
    ["op"] = {
       before = function(self, node)
          self:begin_implied_scope()
          if node.expected then
             if node.op.op == "and" then
                node.e2.expected = node.expected
-            elseif node.op.op == "or" then
+            elseif node.op.op == "or" or node.op.op == "??" then
                node.e1.expected = node.expected
                if not (node.e2.kind == "literal_table" and #node.e2 == 0) then
                   node.e2.expected = node.expected
@@ -2036,6 +2134,13 @@ visit_node.cbs = {
       end,
       before_e2 = function(self, node, children)
          local e1type = children[1]
+         if node.optional_chain then
+            if node.e1.optional_chain and node.e1.chain_value_type then
+               e1type = node.e1.chain_value_type
+            end
+            if node.safe_navigation then e1type = non_nil_type(self, node, e1type) end
+            children[1] = e1type
+         end
 
          if node.op.op == "and" then
             self:apply_facts_from(node, node.e1)
@@ -2064,6 +2169,20 @@ visit_node.cbs = {
                   self:is_a(e1type.rets, node.expected)
                end
                local e1args = e1type.args.tuple
+               local has_short_function = false
+               for _, argument in ipairs(node.e2) do
+                  if argument.short_function then has_short_function = true end
+               end
+               if has_short_function then
+
+                  for i, argument in ipairs(node.e2) do
+                     local expected = e1args[i - argdelta]
+                     if expected and argument.kind == "variable" then
+                        local actual = self:find_var_type(argument.tk)
+                        if actual then self:is_a(actual, expected) end
+                     end
+                  end
+               end
                local at = argdelta
                for _, typ in ipairs(e1args) do
                   at = at + 1
@@ -2101,6 +2220,17 @@ visit_node.cbs = {
 
          if ra.typename == "circular_require" or (ra.typename == "typedecl" and ra.def and ra.def.typename == "circular_require") then
             return self.errs:invalid_at(node, "cannot dereference a type from a circular require")
+         end
+
+         if node.compound_value and node.e1.chain_always_nil then return a_type(node, "any", {}) end
+         if node.op.op == "??" then
+            if ra.typename == "nil" then return untuple(gb) end
+            return unite(node, { non_nil_type(self, node, ua), untuple(gb) }, true, not self.feat_strict_nil)
+         end
+
+         if node.optional_chain and (node.e1.chain_always_nil or (node.safe_navigation and ra.typename == "nil")) then
+            node.chain_always_nil = true
+            return node.is_lvalue and a_type(node, "any", {}) or a_type(node, "nil", {})
          end
 
          if node.op.op == "@funcall" then
@@ -2454,6 +2584,10 @@ visit_node.cbs = {
             end
 
             local types_op = binop_types[node.op.op]
+            if self.env.opts.gen_target == "luajit" and types_op == integer_binop and
+               (ra.fields or rb.fields) then
+               return self.errs:invalid_at(node, "bit operator metamethods are not available in the LuaJIT 2.1 backport")
+            end
 
             local tn = types_op[ra.typename] and types_op[ra.typename][rb.typename]
             local t = tn and a_type(node, tn, {})
@@ -2561,7 +2695,7 @@ visit_node.cbs = {
       after = function(self, node, children)
          local t = children[1]
          if not t then
-            if node.expected and node.tk == "self" then
+            if node.expected and (node.tk == "self" or node.short_function) then
                t = node.expected
             else
                t = self.feat_lax and

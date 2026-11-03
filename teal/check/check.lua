@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
 local context = require("teal.check.context")
 local Context = context.Context
 
@@ -38,6 +38,29 @@ local visit_type = visitors.visit_type
 local check = {}
 
 
+
+local function extension_type_after(fn)
+   return function(self, node, children, t)
+      t = fn and fn(self, node, children, t) or t
+      if self.env.opts.gen_target ~= "luajit" and
+         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
+         (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
+         self.errs:add(node, "this extension requires the luajit generation target")
+      end
+      if node.optional_chain then node.chain_value_type = t end
+      if node.optional_chain and not node.is_lvalue then
+         if t.typename == "tuple" then
+            local tuple = {}
+            for i, member in ipairs(t.tuple) do
+               tuple[i] = types.unite(node, { member, a_type(node, "nil", {}) }, true, false)
+            end
+            return a_type(node, "tuple", { tuple = tuple, is_va = t.is_va })
+         end
+         return types.unite(node, { t, a_type(node, "nil", {}) }, true, false)
+      end
+      return t
+   end
+end
 
 
 
@@ -109,7 +132,7 @@ function check.check(ast, env, filename)
 
    local self = Context.new(env, filename)
 
-   local visit_node, visit_type = visit_node, visit_type
+   local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
       visit_node, visit_type = patch_visitors(
       visit_node, internal_compiler_check,

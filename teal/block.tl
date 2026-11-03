@@ -22,6 +22,8 @@ local record block
       "label"
       "repeat"
       "do"
+      "continue"
+      "conditional"
       "break"
       "return"
       "newtype"
@@ -77,6 +79,8 @@ local record block
       "op_band"
       "op_shl"
       "op_shr"
+      "op_sar"
+      "op_coalesce"
       "op_concat"
       "op_add"
       "op_sub"
@@ -116,6 +120,10 @@ local record block
          name: string
       end
 
+      short_function: boolean
+      lj_const: boolean
+      safe_navigation: boolean
+      compound: string
       tk: string
       kind: BlockKind
       yend: integer

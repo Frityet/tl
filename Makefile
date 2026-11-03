@@ -1,6 +1,6 @@
 LUA ?= lua
 STABLE_TL ?= $(LUA) ./tl
-NEW_TL ?= $(LUA) ./tl
+NEW_TL ?= env TL_PATH="./?.tl;./?/init.tl;./?.d.tl" $(LUA) extras/dev-tl.lua
 TLGENFLAGS = --check --gen-target=5.1
 BUSTED_CMD ?= busted
 BUSTED = $(BUSTED_CMD) --suppress-pending
@@ -52,7 +52,7 @@ all: selfbuild suite
 $(STRIPDIR)/%.tl: %.tl FORCE
 	@mkdir -p `dirname $@`
 	@if [ "$(STRIP_STRICT_NIL)" = "1" ]; then \
-		sed '/^[[:space:]]*$(STRICT_NIL_PRAGMA)[[:space:]]*$$/d' $< > $@; \
+		sed 's/^[[:space:]]*$(STRICT_NIL_PRAGMA)[[:space:]]*$$//' $< > $@; \
 	else \
 		cp $< $@; \
 	fi
@@ -128,7 +128,8 @@ binary:
 	extras/binary.sh --clean
 
 combine: build2
-	$(STABLE_TL) run extras/combine.tl
+	$(NEW_TL) run extras/combine.tl teal.api.v2 tl.lua
+	$(NEW_TL) run extras/combine.tl teal.init teal.lua
 
 revert:
 	git checkout $(PRECOMPILED) $(addsuffix .lua,$(basename $(SOURCES)))

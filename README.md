@@ -29,7 +29,9 @@ luarocks install tl
 This should put a `tl` command in your `$PATH` (run `eval $(luarocks path)` if
 the LuaRocks-installed binaries are not in your `$PATH`).
 
-Teal works with Lua 5.1-5.4, including LuaJIT.
+Teal works with Lua 5.1-5.4, including LuaJIT. Use `--gen-target=luajit` for
+LuaJIT 2.1 with the backported LuaJIT 3.0 syntax extensions; see the
+[syntax and lowering guide](docs/src/luajit_extensions.md).
 
 ### Binaries
 

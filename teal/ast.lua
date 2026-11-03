@@ -100,9 +100,25 @@ local lexer = require("teal.lexer")
 
 
 
+
+
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -273,6 +289,7 @@ local precedences = {
       ["~"] = 11,
    },
    [2] = {
+      ["??"] = 1,
       ["or"] = 1,
       ["and"] = 2,
       ["is"] = 3,
@@ -287,6 +304,7 @@ local precedences = {
       ["&"] = 6,
       ["<<"] = 7,
       [">>"] = 7,
+      ["~>>"] = 7,
       [".."] = 8,
       ["+"] = 9,
       ["-"] = 9,
@@ -325,6 +343,8 @@ local op_kinds = {
    op_band = { op = "&", arity = 2 },
    op_shl = { op = "<<", arity = 2 },
    op_shr = { op = ">>", arity = 2 },
+   op_sar = { op = "~>>", arity = 2 },
+   op_coalesce = { op = "??", arity = 2 },
    op_concat = { op = "..", arity = 2 },
    op_add = { op = "+", arity = 2 },
    op_sub = { op = "-", arity = 2 },
@@ -413,7 +433,9 @@ end
 
 local function block_number_value(b)
    if b and (b.kind == "integer" or b.kind == "number") then
-      return tonumber(b.tk)
+      local text = b.tk:gsub("_", "")
+      if text:match("^0[bB][01]+$") then return tonumber(text:sub(3), 2) end
+      return tonumber(text)
    end
    return nil
 end
@@ -435,6 +457,12 @@ local function new_node(state, block, kind)
       tk = block.tk,
       kind = kind or (bkind),
    }, node_mt)
+   if not state.in_macro_quote then
+      node.short_function = block.short_function
+      node.lj_const = block.lj_const
+      node.safe_navigation = block.safe_navigation
+      node.compound = block.compound
+   end
    end_at(node, block)
    return node
 end
@@ -806,12 +834,18 @@ parse_expression = function(state, block)
             end
          end
       end
+      node.optional_chain = node.safe_navigation or
+      ((op_info.op == "." or op_info.op == ":" or op_info.op == "@index" or op_info.op == "@funcall") and node.e1.optional_chain)
       return node
    end
 
    local node = new_node(state, block)
 
-   if kind == "string" then
+   if kind == "conditional" then
+      node.e1 = parse_expression(state, block[1]) or new_node(state, block, "error_node")
+      node.e2 = parse_expression(state, block[2]) or new_node(state, block, "error_node")
+      node.e3 = parse_expression(state, block[3]) or new_node(state, block, "error_node")
+   elseif kind == "string" then
       node.conststr = block_string_value(block)
       if block.is_longstring ~= nil then
          node.is_longstring = block.is_longstring
@@ -823,6 +857,8 @@ parse_expression = function(state, block)
    elseif kind == "number" or kind == "integer" then
       node.kind = kind
       node.constnum = block_number_value(block)
+      local normalized = block.tk:gsub("_", ""):lower()
+      node.luajit_literal = normalized:sub(-2) == "ll" or normalized:sub(-1) == "i"
    elseif kind == "boolean" then
       node.kind = kind
    elseif kind == "identifier" then
@@ -869,6 +905,9 @@ parse_expression = function(state, block)
       node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.FUNCTION.TYPEARGS])
       local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.FUNCTION.ARGS])
       node.args = args
+      if node.short_function then
+         for _, argument in ipairs(args) do argument.short_function = true end
+      end
       node.min_arity = min_arity
       local r = parse_type_list(state, block[reader.BLOCK_INDEXES.FUNCTION.RETS], "rets")
       node.rets = r
@@ -890,6 +929,7 @@ parse_expression = function(state, block)
          return new_node(state, block, "literal_table")
       end
       local inner = block[reader.BLOCK_INDEXES.MACRO_QUOTE.BLOCK]
+      state.in_macro_quote = true
       local res = block_to_constructor(state, inner)
       state.in_macro_quote = false
       return res
@@ -1004,6 +1044,12 @@ parse_fns.local_declaration = function(state, block)
    assert(block)
    local node = new_node(state, block)
    node.vars = parse_variable_list(state, block[reader.BLOCK_INDEXES.LOCAL_DECLARATION.VARS], false)
+   if node.lj_const then
+      for _, var in ipairs(node.vars) do
+         var.attribute = "const"
+         var.lj_const = true
+      end
+   end
 
    if node.vars then
       for _, var_node in ipairs(node.vars) do
@@ -1044,6 +1090,14 @@ parse_fns.assignment = function(state, block)
       node.exps = parse_expression_list(state, block[reader.BLOCK_INDEXES.ASSIGNMENT.EXPS])
    end
 
+   if node.compound and node.exps and node.exps[1] then
+      local rhs = node.exps[1]
+      node.exps[1] = setmetatable({
+         kind = "op", f = rhs.f, y = rhs.y, x = rhs.x, yend = rhs.yend, xend = rhs.xend,
+         op = ast.operator(node, 2, node.compound),
+         e1 = node.vars[1], e2 = rhs, compound_value = true,
+      }, node_mt)
+   end
    if node.vars then
       for _, var_node in ipairs(node.vars) do
          if var_node.kind == "variable" then
@@ -1196,6 +1250,10 @@ parse_fns["return"] = function(state, block)
    return node
 end
 
+parse_fns["continue"] = function(state, block)
+   return new_node(state, block)
+end
+
 parse_fns["break"] = function(state, block)
    return new_node(state, block)
 end
@@ -1341,7 +1399,22 @@ function block_to_constructor(state, block)
       table.insert(tbl, it)
    end
 
+   local function add_boolean_field(tbl, owner, keyname, value)
+      if not value then return end
+      local item = new_node(state, owner, "literal_table_item")
+      item.key_parsed = "short"
+      item.key = new_node(state, owner, "identifier")
+      item.key.tk = string.format("%q", keyname)
+      item.value = new_node(state, owner, "boolean")
+      item.value.tk = "true"
+      table.insert(tbl, item)
+   end
+
    local node = new_node(state, block, "literal_table")
+   add_boolean_field(node, block, "short_function", block.short_function)
+   add_boolean_field(node, block, "lj_const", block.lj_const)
+   add_boolean_field(node, block, "safe_navigation", block.safe_navigation)
+   if block.compound then add_string_field(node, block, "compound", block.compound) end
    if not node.yend then
       node.yend = block.yend or block.y
    end
