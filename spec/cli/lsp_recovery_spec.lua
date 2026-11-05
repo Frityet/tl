@@ -5,6 +5,7 @@ describe('LSP parser recovery', function()
    teardown(util.chdir_teardown)
 
    it('serves requests for damaged macros and recovers after edits', function()
+      local uri = require('spec.lsp_util').document(finally, '').uri
       local messages = {
          [[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}]],
          [[{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///tmp/tl-lsp-recovery.tl","languageId":"teal","version":1,"text":"local macro broken!(x: Expression)\nlocal t = {value = }"}}}]],
@@ -21,6 +22,7 @@ describe('LSP parser recovery', function()
       }
       local framed = {}
       for _, message in ipairs(messages) do
+         message = message:gsub('file:///tmp/tl%-lsp%-recovery%.tl', function() return uri end)
          framed[#framed + 1] = 'Content-Length: ' .. #message .. '\r\n\r\n' .. message
       end
       local input = util.write_tmp_file(finally, table.concat(framed), '.jsonrpc')

@@ -40,6 +40,7 @@ local record type_reporter
       symbol_list: {Symbol}
 
       store_type: function(y: integer, x: integer, typ: Type)
+      store_member_receiver: function(y: integer, x: integer, typ: Type)
       store_macro_expansion: function(y: integer, x: integer, expansion: string)
       reserve_symbol_list_slot: function(Node)
       add_to_symbol_list: function(node: Node, name: string, t: Type)
@@ -81,6 +82,7 @@ local record type_reporter
       type Symbol = {integer, integer, string, integer}
 
       by_pos: {string: {integer: {integer: integer}}}
+      member_receivers: {string: {integer: {integer: integer}}}
       types: {integer: TypeInfo}
       symbols: {Symbol}
       symbols_by_file: {string: {Symbol}}
@@ -208,6 +210,7 @@ function type_reporter.new(): TypeReporter
       typename_to_num = {},
       tr = setmetatable({
          by_pos = {},
+         member_receivers = {},
          types = {},
          symbols_by_file = {},
          globals = {},
@@ -385,6 +388,8 @@ function TypeReporter:get_collector(filename: string): TypeCollector
 
    local ft: {integer:{integer:integer}} = {}
    self.tr.by_pos[filename] = ft
+   local receivers: {integer:{integer:integer}} = {}
+   self.tr.member_receivers[filename] = receivers
    local expansions: {integer:{integer:string}} = {}
    self.tr.macro_expansions[filename] = expansions
 
@@ -403,6 +408,14 @@ function TypeReporter:get_collector(filename: string): TypeCollector
       end
 
       yt[x] = self:get_typenum(typ)
+   end
+
+   collector.store_member_receiver = function(y: integer, x: integer, typ: Type)
+      if not typ then return end
+      typ = types.untuple(typ)
+      if skip_types[typ.typename] then return end
+      receivers[y] = receivers[y] or {}
+      receivers[y][x] = self:get_typenum(typ)
    end
 
    collector.store_macro_expansion = function(y: integer, x: integer, expansion: string)

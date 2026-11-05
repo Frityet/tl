@@ -2153,6 +2153,10 @@ visit_node.cbs = {
             children[1] = e1type
          end
 
+         if self.collector and (node.op.op == "." or node.op.op == ":") then
+            self.collector.store_member_receiver(node.y, node.x, e1type)
+         end
+
          if node.op.op == "and" then
             self:apply_facts_from(node, node.e1)
          elseif node.op.op == "or" then

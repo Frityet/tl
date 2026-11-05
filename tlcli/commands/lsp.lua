@@ -670,7 +670,8 @@ local function token_at_or_before(document, position)
    for _, candidate in ipairs(document.tokens_by_line[line_number] or {}) do
       local line = document.lines[line_number] or ""
       local start = byte_to_utf16(line:sub(1, math.max(0, candidate.x - 1)), candidate.x - 1)
-      if start <= character then winner = candidate else break end
+      if start > character then break end
+      if candidate.kind ~= "$EOF$" then winner = candidate end
    end
    local previous_line = line_number - 1
    while not winner and previous_line >= 1 do
@@ -1353,6 +1354,28 @@ local function completion_kind_for_type(info)
    return 6
 end
 
+local function completion_probe_report(server, document, position, separator)
+   local offset = lsp_position_to_offset(document.text, document.lines, position)
+   local placeholder = "__teal_completion_probe" .. (separator.tk == ":" and "()" or "")
+   local source = document.text:sub(1, offset - 1) .. placeholder .. document.text:sub(offset)
+   local config = {}
+   for key, value in pairs(server.tlconfig) do (config)[key] = value end
+   config._init_env_modules = {}
+   for _, name in ipairs(server.tlconfig._init_env_modules or {}) do table.insert(config._init_env_modules, name) end
+   local ok, report = pcall(function()
+
+
+
+      local compiler = driver.setup_compiler(config)
+      compiler:enable_type_reporting(true)
+      local input = compiler:input(source, document.path)
+      if not input then return nil end
+      input:lex():parse():check()
+      return compiler:get_type_report()
+   end)
+   return ok and report or nil
+end
+
 local function completion_items(server, document, position)
    analyze_document(server, document)
    local entries = {}
@@ -1385,28 +1408,52 @@ local function completion_items(server, document, position)
          }
       end
       local info
-      if receiver then
+      local report = document.type_report
+      local receivers = report and report.member_receivers and report.member_receivers[document.path]
+      local receiver_id = receivers and receivers[previous.y] and receivers[previous.y][previous.x]
+      if not receiver_id and cursor_token == previous and report then
+
+
+         local row = report.by_pos[document.path] and report.by_pos[document.path][previous.y]
+         receiver_id = row and row[previous.x]
+      end
+      if receiver_id then
+         info = report.types[receiver_id]
+      elseif receiver then
          info = type_info(document, receiver_position, receiver)
       end
-      if info and not info.fields and info.ref and document.type_report then
-         info = document.type_report.types[info.ref] or info
-      end
-      if info and info.fields then
-         for field, type_id in pairs(info.fields) do
-            local field_type = document.type_report.types[type_id]
+      local visited = {}
+      local function add_members(member_info)
+         if not member_info or visited[member_info] then return end
+         visited[member_info] = true
+         for field, type_id in pairs(member_info.fields or {}) do
+            local field_type = report.types[type_id]
             local detail = field_type and field_type.str or "field"
             add(field, completion_kind_for_type(field_type), detail, nil, detail:match("^function") ~= nil)
          end
+         if member_info.ref then add_members(report.types[member_info.ref]) end
+         for _, type_id in ipairs(member_info.types or {}) do add_members(report.types[type_id]) end
       end
-      if not info or not info.fields then
+      if info then add_members(info) end
+      if #entries == 0 and cursor_token == previous then
+         local probe = completion_probe_report(server, document, position, previous)
+         local by_file = probe and probe.member_receivers and probe.member_receivers[document.path]
+         local id = by_file and by_file[previous.y] and by_file[previous.y][previous.x]
+         if id then
+            report = probe
+            visited = {}
+            add_members(report.types[id])
+         end
+      end
+      if #entries == 0 then
          local receiver_field = receiver and first_syntax_field(document, receiver.tk)
          local receiver_type = receiver_field and (receiver_field.detail:match("([%a_][%w_]*)%s*<") or receiver_field.detail:match("([%a_][%w_]*)%s*$"))
          local candidates = receiver_type and server.type_documents[receiver_type]
          if receiver_type and not candidates then ensure_workspace_index(server); candidates = server.type_documents[receiver_type] end
-         if not candidates then candidates = { [document] = true } end
-         for candidate in pairs(candidates) do
+         if receiver_type and not candidates then candidates = { [document] = true } end
+         for candidate in pairs(candidates or {}) do
             analyze_document(server, candidate)
-            local available = receiver_type and candidate.fields_by_type[receiver_type] or candidate.fields_by_name
+            local available = candidate.fields_by_type[receiver_type]
             for name, fields in pairs(available or {}) do
                local field = fields[1]
                local method = field.detail:match("^function%f[%A]") ~= nil

@@ -100,6 +100,8 @@ local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location =
 
 
 
+
+
 local TypeReport = type_reporter.TypeReport
 local TypeReporter = type_reporter.TypeReporter
 
@@ -208,6 +210,7 @@ function type_reporter.new()
       typename_to_num = {},
       tr = setmetatable({
          by_pos = {},
+         member_receivers = {},
          types = {},
          symbols_by_file = {},
          globals = {},
@@ -385,6 +388,8 @@ function TypeReporter:get_collector(filename)
 
    local ft = {}
    self.tr.by_pos[filename] = ft
+   local receivers = {}
+   self.tr.member_receivers[filename] = receivers
    local expansions = {}
    self.tr.macro_expansions[filename] = expansions
 
@@ -403,6 +408,14 @@ function TypeReporter:get_collector(filename)
       end
 
       yt[x] = self:get_typenum(typ)
+   end
+
+   collector.store_member_receiver = function(y, x, typ)
+      if not typ then return end
+      typ = types.untuple(typ)
+      if skip_types[typ.typename] then return end
+      receivers[y] = receivers[y] or {}
+      receivers[y][x] = self:get_typenum(typ)
    end
 
    collector.store_macro_expansion = function(y, x, expansion)
