@@ -154,16 +154,26 @@ clean: cleantemp
 .PHONY: all build1 replace1 build2 selfbuild suite suite-strict \
 	suite bin binary cov revert cov cleantemp clean strip_sources FORCE
 
-# Bounded compiler fuzzing (Python standard library + this checkout's Lua compiler).
-PYTHON ?= python3
+# Teal-authored bounded compiler fuzzing. LuaJIT is only required for the supervisor.
+FUZZ_LUA ?= luajit
 FUZZFLAGS ?=
+FUZZ_SOURCES = extras/fuzz/model.tl extras/fuzz/json.tl extras/fuzz/hash.tl \
+	extras/fuzz/system.tl extras/fuzz/generator.tl extras/fuzz/runner.tl \
+	extras/fuzz/worker.tl extras/fuzz/fuzz.tl extras/fuzz/test_fuzz.tl
+
 fuzz:
-	$(PYTHON) extras/fuzz/fuzz.py --lua $(LUA) $(FUZZFLAGS)
+	$(FUZZ_LUA) extras/fuzz/fuzz.lua --lua $(LUA) $(FUZZFLAGS)
 
 fuzz-smoke:
-	$(PYTHON) extras/fuzz/fuzz.py --lua $(LUA) --cases 32 --stop-on-failure $(FUZZFLAGS)
+	$(FUZZ_LUA) extras/fuzz/fuzz.lua --lua $(LUA) --cases 32 --stop-on-failure $(FUZZFLAGS)
 
 fuzz-test:
-	$(PYTHON) -m unittest discover -s extras/fuzz -p 'test_*.py' -v
+	$(FUZZ_LUA) extras/fuzz/test_fuzz.lua
 
-.PHONY: fuzz fuzz-smoke fuzz-test
+fuzz-check:
+	$(STABLE_TL) check $(FUZZ_SOURCES)
+
+fuzz-build: fuzz-check
+	$(STABLE_TL) gen --root . --output-dir . --gen-target=5.1 --gen-compat=off $(FUZZ_SOURCES)
+
+.PHONY: fuzz fuzz-smoke fuzz-test fuzz-check fuzz-build
