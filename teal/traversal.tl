@@ -33,6 +33,8 @@ local record traversal
       before_statements: function(S, {N}, {T})
       before_e2: function(S, {N}, {T})
       before_e3: function(S, {N}, {T})
+      child_order: function(S, N): {integer}
+      before_child: function(S, N, {T}, integer)
       after: function(S, N, {T}): T
    end
 
@@ -309,7 +311,17 @@ function traversal.traverse_nodes<S, T>(s: S, root: types.Node,
    local recurse: function(types.Node): T
 
    local function walk_children(ast: Node, xs: {T})
+      local callbacks = visit_node.cbs and visit_node.cbs[ast.kind]
+      local order = callbacks and callbacks.child_order and callbacks.child_order(s, ast)
+      if order then
+         for _, i in ipairs(order) do
+            if callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
+            xs[i] = recurse(ast[i])
+         end
+         return
+      end
       for i, child in ipairs(ast) do
+         if callbacks and callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
          xs[i] = recurse(child)
       end
    end

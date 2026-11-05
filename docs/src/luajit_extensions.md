@@ -69,7 +69,10 @@ local pair = || -> do return 1, 2 end
 Parameters can use Teal annotations between the pipes. Unannotated
 parameters receive contextual types when an expected function signature
 is available. Otherwise, they follow Teal's usual unannotated parameter
-rules. Return types are inferred when no expected signature is available,
+rules. Contextual inference includes generic callbacks, using the types of
+other arguments even when supplied as literals, fields, or call results.
+See [contextual parameter inference](functions.md#contextual-parameter-inference).
+Return types are inferred when no expected signature is available,
 including unions across returns and nil for paths that fall through.
 The expression form returns one expression, which may itself produce
 multiple results; the block form can use an explicit return list.

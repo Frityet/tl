@@ -16,9 +16,9 @@ local generator = { RNG = {} }
 
 
 
-generator.version = 3
-generator.features = 20
-generator.portable = { 0, 1, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 19 }
+generator.version = 4
+generator.features = 24
+generator.portable = { 0, 1, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 19, 20, 21, 22, 23 }
 function generator.rng(seed, index)
    local rng = { state = ((seed % 2147483646) * 65537 + (index % 2147483646) * 104729) % 2147483646 + 1 }
    rng.next = function(self, n)
@@ -122,11 +122,19 @@ function generator.tlng_program(rng, feature, native)
    elseif feature == 16 then
       return string.format("const thousand = 1_000\nreturn thousand + %s", expr), value + 1000
    elseif feature == 17 then
-      return string.format("local function apply<A, B>(x: A, f: function(A): B): B\n return f(x)\nend\nreturn apply(%s, |n: number| -> n + 1)", expr), value + 1
+      return string.format("local function apply<A, B>(x: A, f: function(A): B): B\n return f(x)\nend\nreturn apply(%s, n -> n + 1)", expr), value + 1
    elseif feature == 18 then
       return string.format("local macro (@)!(a: Expression, b: Expression): Operator<infix, additive>\n return `$a + $b`\nend\nlocal macro (@@)! = (@)!\nreturn %s @@ 2", expr), value + 2
    elseif feature == 19 then
       return string.format("local record Export end\nmacro Export.(@)!(a: Expression, b: Expression): Operator<infix, additive>\n return `$a + $b`\nend\nlocal macro (@)! = Export.(@)!\nreturn %s @ 2", expr), value + 2
+   elseif feature == 20 then
+      return string.format("local function apply<A, B>(x: A, f: function(A): B): B return f(x) end\nreturn apply(%s, function(n) return n + 1 end)", expr), value + 1
+   elseif feature == 21 then
+      return string.format("local record Item value: number end\nlocal item: Item = {value = %s}\nlocal function apply<A, B>(f: function(A): B, x: A): B return f(x) end\nreturn apply(n -> n + 2, item.value)", expr), value + 2
+   elseif feature == 22 then
+      return string.format("local function use(f: (function(number, number, number): number) | nil): number\n if f then return f(%s, 2, 3) end\n return 0\nend\nreturn use(|value, _, _| -> value + 3)", expr), value + 3
+   elseif feature == 23 then
+      return string.format("local add: function(number): (function(number): number) = outer -> inner -> outer + inner\nreturn add(%s)(2)", expr), value + 2
    end
    error("unknown tl-ng feature: " .. tostring(feature))
 end

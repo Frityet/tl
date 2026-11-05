@@ -67,6 +67,40 @@ end
 The only changes made to the code above were the addition of type signatures
 in both function declarations.
 
+### Contextual parameter inference
+
+Omitted parameter types are inferred when a surrounding function signature
+provides them. This works for anonymous functions and short functions, including
+typed assignments, record fields, optional callback signatures, and functions
+returned by other functions:
+
+```lua
+local increment: function(integer): integer = x -> x + 1
+local double: function(integer): integer = function(x) return x * 2 end
+```
+
+Generic calls use their other arguments to infer callback parameters, including
+when those arguments are literals, record fields, or call results:
+
+```lua
+local function apply<A, B>(value: A, f: function(A): B): B
+   return f(value)
+end
+
+local result = apply(3, x -> x + 1) -- x is an integer
+```
+
+The value arguments supply context even when the callback appears first.
+Checking callbacks after those arguments does not change runtime evaluation
+order. Named function implementations and record methods can also obtain
+parameter types from an existing declaration of their signature.
+
+Explicit parameter and return annotations take precedence. An anonymous
+function without a return annotation also uses its contextual return type;
+unresolved generic callback results are inferred from its returns. Without a
+surrounding signature, parameters follow the existing unannotated-parameter
+rules; parameter types are not guessed from standalone function bodies.
+
 Teal also supports [macro expressions](macroexp.md), which are a restricted
 form of function whose contents are expanded inline when generating Lua code.
 

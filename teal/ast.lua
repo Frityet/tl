@@ -257,6 +257,7 @@ local parse_typeargs_if_any
 
 
 
+
 local ast = {}
 
 
@@ -902,6 +903,8 @@ parse_expression = function(state, block)
          end
       end
    elseif kind == "function" then
+      local rets_block = block[reader.BLOCK_INDEXES.FUNCTION.RETS]
+      node.has_return_annotation = rets_block and rets_block.tk == ":"
       node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.FUNCTION.TYPEARGS])
       local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.FUNCTION.ARGS])
       node.args = args
@@ -1503,6 +1506,7 @@ parse_fns.global_function = function(state, block)
    end
 
    node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.TYPEARGS])
+   node.has_return_annotation = block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.RETS] and block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.RETS].tk == ":"
    local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.ARGS])
    node.args = args
    node.min_arity = min_arity
@@ -1582,6 +1586,7 @@ parse_fns.record_function = function(state, block)
    end
 
    node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.RECORD_FUNCTION.TYPEARGS])
+   node.has_return_annotation = block[reader.BLOCK_INDEXES.RECORD_FUNCTION.RETS] and block[reader.BLOCK_INDEXES.RECORD_FUNCTION.RETS].tk == ":"
 
    node.is_method = block.tk == ":"
    local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.RECORD_FUNCTION.ARGS])

@@ -516,6 +516,7 @@ local parse_typeargs_if_any
 
 
 
+
 local ast = {}
 
 
@@ -1161,6 +1162,8 @@ parse_expression = function(state, block)
          end
       end
    elseif kind == "function" then
+      local rets_block = block[reader.BLOCK_INDEXES.FUNCTION.RETS]
+      node.has_return_annotation = rets_block and rets_block.tk == ":"
       node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.FUNCTION.TYPEARGS])
       local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.FUNCTION.ARGS])
       node.args = args
@@ -1762,6 +1765,7 @@ parse_fns.global_function = function(state, block)
    end
 
    node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.TYPEARGS])
+   node.has_return_annotation = block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.RETS] and block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.RETS].tk == ":"
    local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.GLOBAL_FUNCTION.ARGS])
    node.args = args
    node.min_arity = min_arity
@@ -1841,6 +1845,7 @@ parse_fns.record_function = function(state, block)
    end
 
    node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.RECORD_FUNCTION.TYPEARGS])
+   node.has_return_annotation = block[reader.BLOCK_INDEXES.RECORD_FUNCTION.RETS] and block[reader.BLOCK_INDEXES.RECORD_FUNCTION.RETS].tk == ":"
 
    node.is_method = block.tk == ":"
    local args, min_arity = parse_argument_list(state, block[reader.BLOCK_INDEXES.RECORD_FUNCTION.ARGS])
@@ -5163,7 +5168,7 @@ end
 
 function Context:add_internal_function_variables(node, args, keep_literal)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(node.short_function and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
+   self:add_var((node.short_function or node.infer_returns) and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do
@@ -8823,6 +8828,65 @@ local function short_block_returns(body)
    return false
 end
 
+local function contextual_function(self, expected)
+   if not expected then return nil end
+   local resolved = self:resolve_typevars(expected)
+   if resolved.typename == "nominal" and resolved.typevals then
+      local declaration = resolved.found
+      if declaration and declaration.typename == "typedecl" then
+         local def = declaration.def
+
+
+         if def.typename == "generic" and #resolved.typevals ~= #def.typeargs then return nil end
+      end
+   end
+   local structural = self:to_structural(resolved or expected)
+   if structural.typename == "function" then return structural end
+   if structural.typename == "union" then
+      local candidate
+      for _, member in ipairs(structural.types) do
+         local typ = self:to_structural(member)
+         if typ.typename == "function" and not candidate then candidate = typ
+         elseif not (typ.typename == "nil") then return nil end
+      end
+      return candidate
+   end
+end
+
+local function contextualize_function(self, node, signature)
+   node.infer_returns = false
+   node.inferred_rets = nil
+   local expected = contextual_function(self, signature)
+   if node.short_function or (expected and not node.has_return_annotation) then
+      local unresolved_returns = false
+      if expected then
+         types.map(self, expected.rets, {
+            ["typevar"] = function(ctx, typ)
+               if not ctx:find_var_type(typ.typevar) then unresolved_returns = true end
+               return typ, false
+            end,
+         })
+      end
+
+
+      node.infer_returns = not expected or unresolved_returns
+      if expected and not node.infer_returns then node.rets = expected.rets
+      else node.rets = a_vararg(node, { a_type(node, "any", {}) }) end
+   end
+   if expected then
+      for i, argument in ipairs(node.args) do
+         argument.expected = expected.args.tuple[i] or (expected.args.is_va and expected.args.tuple[#expected.args.tuple])
+      end
+   end
+end
+
+local function callback_literal(node)
+   if node.kind == "function" then return true end
+   if node.kind == "paren" then return callback_literal(node.e1) end
+   if node.kind == "conditional" then return callback_literal(node.e2) or callback_literal(node.e3) end
+   return false
+end
+
 local function non_nil_type(self, node, t)
    t = untuple(t)
    local structural = self:to_structural(t)
@@ -9684,6 +9748,7 @@ visit_node.cbs = {
             if typ then
                if typ.typename == "function" then
                   node.is_predeclared_local_function = true
+                  contextualize_function(self, node, typ)
                elseif not self.feat_lax then
                   self.errs:add(node, "cannot declare function: type of " .. node.name.tk .. " is %s", typ)
                end
@@ -9724,7 +9789,7 @@ visit_node.cbs = {
          self:widen_all_unions()
          self:begin_scope(node)
       end,
-      before_arguments = function(self, _node, children)
+      before_arguments = function(self, node, children)
          local rtype = self:to_structural(resolve_typedecl(children[1]))
 
 
@@ -9735,7 +9800,9 @@ visit_node.cbs = {
                   constraint = typ.constraint,
                }))
             end
+            rtype = rtype.t
          end
+         if rtype.fields then contextualize_function(self, node, rtype.fields[node.name.tk]) end
       end,
       before_statements = function(self, node, children)
          local args = children[3]
@@ -9873,37 +9940,7 @@ visit_node.cbs = {
          self:widen_all_unions(node)
          self:begin_scope(node)
 
-         local expected = node.expected
-         if node.short_function and expected then
-            local resolved = self:resolve_typevars(expected)
-            expected = self:to_structural(resolved or expected)
-         end
-         if node.short_function then
-            local unresolved_returns = false
-            if expected and expected.typename == "function" then
-               types.map(self, expected.rets, {
-                  ["typevar"] = function(ctx, typ)
-                     if not ctx:find_var_type(typ.typevar) then unresolved_returns = true end
-                     return typ, false
-                  end,
-               })
-            end
-
-
-            node.infer_returns = not (expected and expected.typename == "function") or unresolved_returns
-            if not node.infer_returns and expected.typename == "function" then
-               node.rets = expected.rets
-            else
-               node.rets = a_vararg(node, { a_type(node, "any", {}) })
-            end
-         end
-         if expected and expected.typename == "function" then
-            for i, t in ipairs(expected.args.tuple) do
-               if node.args[i] then
-                  node.args[i].expected = t
-               end
-            end
-         end
+         contextualize_function(self, node, node.expected)
       end,
       before_statements = function(self, node, children)
          local args = children[1]
@@ -10054,19 +10091,17 @@ visit_node.cbs = {
                   self:is_a(e1type.rets, node.expected)
                end
                local e1args = e1type.args.tuple
-               local has_short_function = false
+               local has_callback = false
                for _, argument in ipairs(node.e2) do
-                  if argument.short_function then has_short_function = true end
+                  if callback_literal(argument) then has_callback = true end
                end
-               if has_short_function then
-
-                  for i, argument in ipairs(node.e2) do
-                     local expected = e1args[i - argdelta]
-                     if expected and argument.kind == "variable" then
-                        local actual = self:find_var_type(argument.tk)
-                        if actual then self:is_a(actual, expected) end
-                     end
+               if has_callback then
+                  local expected_args = a_type(node.e2, "tuple", { tuple = {} })
+                  expected_args.is_va = e1type.args.is_va
+                  for i, typ in ipairs(e1args) do
+                     if i + argdelta > 0 then expected_args.tuple[i + argdelta] = typ end
                   end
+                  node.e2.expected = expected_args
                end
                local at = argdelta
                for _, typ in ipairs(e1args) do
@@ -10580,8 +10615,8 @@ visit_node.cbs = {
       after = function(self, node, children)
          local t = children[1]
          if not t then
-            if node.expected and (node.tk == "self" or node.short_function) then
-               t = node.expected
+            if node.expected then
+               t = self:infer_at(node, node.expected)
             else
                t = self.feat_lax and
                a_type(node, "unknown", {}) or
@@ -10715,7 +10750,44 @@ visit_node.cbs["nil"] = visit_node.cbs["boolean"]
 
 visit_node.cbs["..."] = visit_node.cbs["variable"]
 visit_node.cbs["argument_list"] = visit_node.cbs["variable_list"]
-visit_node.cbs["expression_list"] = visit_node.cbs["variable_list"]
+visit_node.cbs["expression_list"] = {
+   after = visit_node.cbs["variable_list"].after,
+   child_order = function(_self, node)
+      local expected = node.expected
+      if not expected or not (expected.typename == "tuple") then return nil end
+
+
+
+      local order = {}
+      for i, child in ipairs(node) do if not callback_literal(child) then table.insert(order, i) end end
+      for i, child in ipairs(node) do if callback_literal(child) then table.insert(order, i) end end
+      return order
+   end,
+   before_child = function(self, node, children, index)
+      local expected = node.expected
+      if not expected or not (expected.typename == "tuple") then return end
+      local expected_args = expected
+      local function formal(i)
+         return expected_args.tuple[i] or (expected_args.is_va and expected_args.tuple[#expected_args.tuple])
+      end
+      for i = 1, #node do
+         local actual = children[i]
+         if actual then
+            if i == #node and actual.typename == "tuple" then
+               for j, member in ipairs(actual.tuple) do
+                  local typ = formal(i + j - 1)
+                  if typ then self:is_a(member, typ) end
+               end
+            else
+               local typ = formal(i)
+               if typ then self:is_a(untuple(actual), typ) end
+            end
+         end
+      end
+      local typ = formal(index)
+      if typ then node[index].expected = self:infer_at(node[index], typ) end
+   end,
+}
 
 visit_node.after = function(_self, node, _children, t)
    if node.expanded then
@@ -19505,6 +19577,8 @@ local traversal = { VisitorCallbacks = {}, Visitor = {} }
 
 
 
+
+
 function traversal.fields_of(t, meta)
    local i = 1
    local field_order, fields
@@ -19753,7 +19827,17 @@ function traversal.traverse_nodes(s, root,
    local recurse
 
    local function walk_children(ast, xs)
+      local callbacks = visit_node.cbs and visit_node.cbs[ast.kind]
+      local order = callbacks and callbacks.child_order and callbacks.child_order(s, ast)
+      if order then
+         for _, i in ipairs(order) do
+            if callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
+            xs[i] = recurse(ast[i])
+         end
+         return
+      end
       for i, child in ipairs(ast) do
+         if callbacks and callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
          xs[i] = recurse(child)
       end
    end

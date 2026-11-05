@@ -1892,7 +1892,7 @@ end
 
 function Context:add_internal_function_variables(node, args, keep_literal)
    self:add_var(nil, "@is_va", a_type(node, args.is_va and "any" or "nil", {}))
-   self:add_var(node.short_function and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
+   self:add_var((node.short_function or node.infer_returns) and node or nil, "@return", node.rets or a_type(node, "tuple", { tuple = {} }), nil, nil, keep_literal)
 
    if node.typeargs then
       for _, t in ipairs(node.typeargs) do

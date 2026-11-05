@@ -230,7 +230,7 @@ describe("record method", function()
       ]], output)
    end)
 
-   it("record method assignment must match record type", util.check_type_error([[
+   it("infers anonymous record method types from the metatable contract", util.check([[
       local type Foo = record
          x: string
       end
@@ -238,10 +238,7 @@ describe("record method", function()
       foo_mt.__tostring = function()
          return "hello"
       end
-   ]], {
-      { y = 5, msg = "in assignment: incompatible number of returns: got 0 (), expected 1 (string)" },
-      { y = 6, msg = "excess return values, expected 0 (), got 1 (string \"hello\")" },
-   }))
+   ]]))
 
    it("allows functions declared on method tables (#27)", function()
       util.mock_io(finally, {

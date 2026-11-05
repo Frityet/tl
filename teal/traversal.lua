@@ -61,6 +61,8 @@ local traversal = { VisitorCallbacks = {}, Visitor = {} }
 
 
 
+
+
 function traversal.fields_of(t, meta)
    local i = 1
    local field_order, fields
@@ -309,7 +311,17 @@ function traversal.traverse_nodes(s, root,
    local recurse
 
    local function walk_children(ast, xs)
+      local callbacks = visit_node.cbs and visit_node.cbs[ast.kind]
+      local order = callbacks and callbacks.child_order and callbacks.child_order(s, ast)
+      if order then
+         for _, i in ipairs(order) do
+            if callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
+            xs[i] = recurse(ast[i])
+         end
+         return
+      end
       for i, child in ipairs(ast) do
+         if callbacks and callbacks.before_child then callbacks.before_child(s, ast, xs, i) end
          xs[i] = recurse(child)
       end
    end
