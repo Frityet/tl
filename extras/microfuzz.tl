@@ -1,5 +1,8 @@
 #!/usr/bin/env -S tl run
 
+-- Legacy unbounded parser experiment. For reproducible, isolated compiler
+-- fuzzing with pipeline checks and saved repros, see extras/fuzz/README.md.
+
 math.randomseed(os.time())
 
 print("micro fuzz!")

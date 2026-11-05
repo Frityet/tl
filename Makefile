@@ -153,3 +153,17 @@ clean: cleantemp
 
 .PHONY: all build1 replace1 build2 selfbuild suite suite-strict \
 	suite bin binary cov revert cov cleantemp clean strip_sources FORCE
+
+# Bounded compiler fuzzing (Python standard library + this checkout's Lua compiler).
+PYTHON ?= python3
+FUZZFLAGS ?=
+fuzz:
+	$(PYTHON) extras/fuzz/fuzz.py --lua $(LUA) $(FUZZFLAGS)
+
+fuzz-smoke:
+	$(PYTHON) extras/fuzz/fuzz.py --lua $(LUA) --cases 32 --stop-on-failure $(FUZZFLAGS)
+
+fuzz-test:
+	$(PYTHON) -m unittest discover -s extras/fuzz -p 'test_*.py' -v
+
+.PHONY: fuzz fuzz-smoke fuzz-test
