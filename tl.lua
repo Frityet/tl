@@ -9878,8 +9878,19 @@ visit_node.cbs = {
             expected = self:to_structural(resolved or expected)
          end
          if node.short_function then
-            node.infer_returns = not (expected and expected.typename == "function")
+            local unresolved_returns = false
             if expected and expected.typename == "function" then
+               types.map(self, expected.rets, {
+                  ["typevar"] = function(ctx, typ)
+                     if not ctx:find_var_type(typ.typevar) then unresolved_returns = true end
+                     return typ, false
+                  end,
+               })
+            end
+
+
+            node.infer_returns = not (expected and expected.typename == "function") or unresolved_returns
+            if not node.infer_returns and expected.typename == "function" then
                node.rets = expected.rets
             else
                node.rets = a_vararg(node, { a_type(node, "any", {}) })
@@ -10653,6 +10664,7 @@ visit_node.cbs["break"] = {
    end,
 }
 visit_node.cbs["do"] = visit_node.cbs["break"]
+visit_node.cbs["continue"] = visit_node.cbs["break"]
 
 local function after_literal(self, node)
    self.fdb:set_truthy(node)

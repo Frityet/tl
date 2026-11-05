@@ -2009,8 +2009,19 @@ visit_node.cbs = {
             expected = self:to_structural(resolved or expected)
          end
          if node.short_function then
-            node.infer_returns = not (expected and expected is FunctionType)
+            local unresolved_returns = false
             if expected and expected is FunctionType then
+               types.map(self, expected.rets, {
+                  ["typevar"] = function(ctx: Context, typ: TypeVarType): Type, boolean
+                     if not ctx:find_var_type(typ.typevar) then unresolved_returns = true end
+                     return typ, false
+                  end,
+               })
+            end
+            -- An unresolved callback result is an inference variable of the
+            -- enclosing call, not a declared return annotation of this lambda.
+            node.infer_returns = not (expected and expected is FunctionType) or unresolved_returns
+            if not node.infer_returns and expected is FunctionType then
                node.rets = expected.rets
             else
                node.rets = a_vararg(node, { a_type(node, "any", {}) })
@@ -2784,6 +2795,7 @@ visit_node.cbs["break"] = {
    end,
 }
 visit_node.cbs["do"] = visit_node.cbs["break"]
+visit_node.cbs["continue"] = visit_node.cbs["break"]
 
 local function after_literal(self: Context, node: Node): Type
    self.fdb:set_truthy(node)

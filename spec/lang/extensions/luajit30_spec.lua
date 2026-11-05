@@ -221,6 +221,34 @@ describe('LuaJIT 3.0 syntax backported to 2.1', function()
       ]])})
    end)
 
+   runtime_it('infers unresolved generic callback return types from short functions', function()
+      assert.same({4, '2', 5, 'ok'}, {run([[
+         local function apply<A, B>(x: A, f: function(A): B): B
+            return f(x)
+         end
+         local n = apply(3, |x: number| -> x + 1)
+         local s: string = apply(2, |x: number| -> tostring(x))
+         local t = apply(4, |x: number| -> {x, x + 1})
+         local f = apply(0, |x: number| -> |s: string| -> s)
+         return n, s, t[2], f('ok')
+      ]])})
+   end)
+
+   it('preserves generic callback result type errors', function()
+      type_error([[
+         local function apply<A, B>(x: A, f: function(A): B): B return f(x) end
+         local n: number = apply(1, |x: number| -> 'text')
+      ]], 'expected number')
+   end)
+
+   it('checks continue with internal compiler assertions enabled', function()
+      local env = assert(tl.new_env({defaults = {gen_target = 'luajit', gen_compat = 'off'}}))
+      env.opts.run_internal_compiler_checks = true
+      local result = tl.check_string('for i = 1, 3 do if i == 2 then continue end end', env, 'continue.tl')
+      assert.same({}, result.syntax_errors)
+      assert.same({}, result.type_errors)
+   end)
+
    runtime_it('preserves outer varargs and multi-return expression short functions', function()
       assert.same({1, nil, 3}, {run([[
          local f = |...: integer | nil| -> ...
