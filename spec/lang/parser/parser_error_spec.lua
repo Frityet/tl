@@ -48,6 +48,16 @@ describe("parser errors", function()
       end
    end)
 
+   it("reports invalid macro return values without indexing scalars", function()
+      for _, value in ipairs({ "nil", "false", "1", '"text"', "{}" }) do
+         local _, errs = tl.parse(
+            "local macro broken!(): Expression return " .. value .. " end; local x = broken!()",
+            "broken.tl")
+         assert.equals(1, #errs)
+         assert.equals("macro 'broken' did not return a Block", errs[1].msg)
+      end
+   end)
+
    it("parse errors include filename", function ()
       local result = tl.check_string("local x 1", nil, "foo.tl")
       assert.same("foo.tl", result.syntax_errors[1].filename, "parse errors should contain .filename property")

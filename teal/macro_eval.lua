@@ -502,7 +502,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = tostring(res) })
       return b
    end
-   if not (res and res.kind) then
+   if type(res) ~= "table" or not res.kind then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = display_name .. " did not return a Block" })
       return b
    end
