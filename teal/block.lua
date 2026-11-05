@@ -2,7 +2,17 @@
 local errors = require("teal.errors")
 
 
-local block = { Block = { ExpectedContext = {} } }
+local block = { OperatorSpec = {}, Block = { ExpectedContext = {} } }
+
+
+
+
+
+
+
+
+
+
 
 
 

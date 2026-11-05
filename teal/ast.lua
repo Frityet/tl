@@ -1411,6 +1411,7 @@ function block_to_constructor(state, block)
    end
 
    local node = new_node(state, block, "literal_table")
+   add_boolean_field(node, block, "operator_use", block.operator_use)
    add_boolean_field(node, block, "short_function", block.short_function)
    add_boolean_field(node, block, "lj_const", block.lj_const)
    add_boolean_field(node, block, "safe_navigation", block.safe_navigation)

@@ -584,3 +584,9 @@ FORNUM.STEP
 
 ARGUMENT.TYPE
 ```
+
+## Custom operators
+
+A macro returning `Operator<'@', infix, multiplicative>` declares an operator
+that expands through that macro. See [Custom operators](custom_operators.md)
+for named and symbolic spellings, fixities, precedence, scope, and imports.

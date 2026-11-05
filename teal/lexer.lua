@@ -484,6 +484,9 @@ do
                   if k then
                      begin_token()
                      end_token(k, c)
+                  elseif c:match("%p") or c:byte() >= 128 then
+                     begin_token()
+                     end_token_here("op")
                   elseif not lex_space[c] then
                      begin_token()
                      end_token_here("$ERR$")

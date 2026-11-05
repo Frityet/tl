@@ -28,6 +28,7 @@
   - [Metamethods](./metamethods.md)
   - [Macro expressions](./macroexp.md)
   - [Macros](./macros.md)
+  - [Custom operators](./custom_operators.md)
 - [Behavior rules](./behavior.md)
   - [Type aliasing rules](./aliasing.md)
   - [Type variable matching](./type_variables.md)

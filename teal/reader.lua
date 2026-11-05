@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
 local errors = require("teal.errors")
 
 
@@ -11,7 +11,9 @@ local block = require("teal.block")
 
 
 
+
 local macro_eval = require("teal.macro_eval")
+
 
 
 
@@ -190,6 +192,8 @@ end
 
 
 
+
+
 local read_type_list
 local read_typeargs_if_any
 local read_expression
@@ -341,6 +345,8 @@ local function clone_block_deep(b)
       yend = b.yend,
       xend = b.xend,
       is_longstring = b.is_longstring,
+      custom_operator = b.custom_operator,
+      operator_use = b.operator_use,
       short_function = b.short_function,
       lj_const = b.lj_const,
       safe_navigation = b.safe_navigation,
@@ -466,6 +472,154 @@ local function build_macro_sig(args, errs, filename, macro_name)
    return sig
 end
 
+local operator_precedences = {
+   conditional = 0, logical_or = 1, disjunction = 1, logical_and = 2, conjunction = 2,
+   comparison = 3, relational = 3, bitwise_or = 4, bitwise_xor = 5, bitwise_and = 6,
+   shift = 7, concatenation = 8, concatenative = 8, additive = 9,
+   multiplicative = 10, unary = 11, exponentiation = 12, power = 12,
+   postfix = 100, primary = 100,
+}
+
+local reserved_operator_tokens = {
+   ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true, ["elseif"] = true,
+   ["end"] = true, ["false"] = true, ["for"] = true, ["function"] = true,
+   ["goto"] = true, ["if"] = true, ["in"] = true, ["local"] = true, ["nil"] = true,
+   ["not"] = true, ["or"] = true, ["repeat"] = true, ["return"] = true,
+   ["then"] = true, ["true"] = true, ["until"] = true, ["while"] = true,
+   ["as"] = true, ["is"] = true,
+   ["+"] = true, ["-"] = true, ["*"] = true, ["/"] = true, ["//"] = true,
+   ["%"] = true, ["^"] = true, ["#"] = true, ["&"] = true, ["|"] = true,
+   ["~"] = true, ["<<"] = true, [">>"] = true, ["~>>"] = true,
+   ["=="] = true, ["~="] = true, ["!="] = true, ["<"] = true, [">"] = true,
+   ["<="] = true, [">="] = true, ["!"] = true, ["&&"] = true, ["||"] = true,
+   ["?"] = true, ["??"] = true, ["?."] = true, ["="] = true, ["->"] = true,
+   ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true, ["%="] = true,
+   ["&="] = true, ["|="] = true, ["<<="] = true, [">>="] = true, ["~>>="] = true,
+   ["..="] = true, ["."] = true, [".."] = true, ["..."] = true, [":"] = true, ["::"] = true,
+}
+
+local function operator_error(ps, where, message)
+   table.insert(ps.errs, { filename = ps.filename, y = where.y, x = where.x, msg = message })
+end
+
+local function register_operator(ps, spec, where)
+   local registry = ps.custom_operators[spec.fixity]
+   local previous = registry[spec.symbol]
+   if previous and previous.binding == spec.binding then return end
+   local key = spec.fixity .. ":" .. spec.symbol
+   if ps.local_operators[key] then
+      operator_error(ps, where, "duplicate " .. spec.fixity .. " operator '" .. spec.symbol .. "' in this scope")
+      return
+   end
+   local ambiguous = spec.fixity == "infix" and ps.custom_operators.postfix[spec.symbol] or
+   (spec.fixity == "postfix" and ps.custom_operators.infix[spec.symbol])
+   if ambiguous then
+      operator_error(ps, where, "infix and postfix operators cannot share the symbol '" .. spec.symbol .. "'")
+      return
+   end
+   ps.local_operators[key] = true
+   registry[spec.symbol] = spec
+end
+
+local function operator_word(b)
+   if b and b.kind == "nominal_type" and b[1] and not b[2] then return b[1].tk end
+   return nil
+end
+
+local function read_operator_annotation(ps, node, key)
+   local rets = node[BLOCK_INDEXES.LOCAL_MACRO.RETS]
+   local list = rets and rets[1]
+   local annotation = list and list[1]
+   if not annotation or annotation.kind ~= "nominal_type" or not annotation[1] or annotation[1].tk ~= "Operator" then return nil end
+   local args = annotation[2]
+   if #list ~= 1 or not args or (#args ~= 3 and #args ~= 4) then
+      operator_error(ps, annotation, "expected Operator<'symbol', prefix|infix|postfix, precedence[, left|right]>")
+      return nil
+   end
+   if args[1].kind ~= "string" then
+      operator_error(ps, args[1], "operator symbol must be a string literal")
+      return nil
+   end
+   local load_text = ((_G).loadstring or load)
+   local decode = load_text("return " .. args[1].tk)
+   local symbol = decode and decode()
+   local identifier = symbol and symbol:match("^[%a_][%w_]*$")
+   if not symbol or symbol == "" or reserved_operator_tokens[symbol] or symbol:find("--", 1, true) or
+      (not identifier and (symbol:find("[%w_%s%(%){%}%[%],;'\"`$]") ~= nil)) then
+      operator_error(ps, args[1], "operator must use a non-reserved identifier or unused symbols")
+      return nil
+   end
+   local fixity = operator_word(args[2])
+   if fixity ~= "prefix" and fixity ~= "infix" and fixity ~= "postfix" then
+      operator_error(ps, args[2], "operator fixity must be prefix, infix, or postfix")
+      return nil
+   end
+   local group = operator_word(args[3])
+   local precedence = group and operator_precedences[group]
+   if not precedence then
+      operator_error(ps, args[3], "unknown operator precedence group '" .. (group or args[3].tk) .. "'")
+      return nil
+   end
+   local associativity = args[4] and operator_word(args[4]) or "left"
+   if associativity ~= "left" and associativity ~= "right" then
+      operator_error(ps, args[4], "operator associativity must be left or right")
+      return nil
+   end
+   if args[4] and fixity ~= "infix" then
+      operator_error(ps, args[4], "only infix operators accept associativity")
+      return nil
+   end
+   local params = node[BLOCK_INDEXES.LOCAL_MACRO.ARGS]
+   local wanted = fixity == "infix" and 2 or 1
+   local valid = params and #params == wanted
+   if params then
+      for _, argument in ipairs(params) do
+         local typ = argument[BLOCK_INDEXES.ARGUMENT.TYPE]
+         if argument.tk == "..." or operator_word(typ) ~= "Expression" then valid = false end
+         for _, child in ipairs(argument) do
+            if child.kind == "question" then valid = false end
+         end
+      end
+   end
+   if not valid then
+      operator_error(ps, annotation, "a " .. fixity .. " operator requires exactly " .. tostring(wanted) .. " Expression parameter(s)")
+      return nil
+   end
+   return {
+      symbol = symbol, fixity = fixity, precedence = precedence,
+      right_associative = associativity == "right",
+      binding = "@operator:" .. ps.filename .. ":" .. tostring(node.y) .. ":" .. tostring(node.x) .. ":" .. key,
+   }
+end
+
+local function find_operator(ps, at, fixity)
+   local best
+   local width = 0
+   for symbol, spec in pairs(ps.custom_operators[fixity]) do
+      local text = ""
+      local previous
+      for j = at, #ps.tokens do
+         local token = ps.tokens[j]
+         if previous and (token.y ~= previous.y or token.x ~= previous.x + #previous.tk) then break end
+         text = text .. token.tk
+         if text == symbol then
+            if not best or #symbol > #best.symbol then best = spec; width = j - at + 1 end
+            break
+         end
+         if #text >= #symbol or symbol:sub(1, #text) ~= text then break end
+         previous = token
+      end
+   end
+   return best, width
+end
+
+local function operator_invocation(ps, token, spec, lhs, rhs)
+   local target = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
+   local args = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
+   return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
+   operator_use = true, [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = target, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, }
+end
+
 local function extract_macro_owner_from_newtype(nt)
    if not nt or nt.kind ~= "newtype" then
       return nil
@@ -549,6 +703,8 @@ local function skip(ps, i, skip_fn)
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      custom_operators = ps.custom_operators,
+      local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
@@ -630,6 +786,7 @@ local function collect_module_macro_exports(node, errs, filename)
                local suffix_owner = owner_key == return_path and "" or owner_key:sub(#return_path + 2)
                local exported_key = suffix_owner == "" and name.tk or (suffix_owner .. "." .. name.tk)
                local sig = build_macro_sig(stmt[BLOCK_INDEXES.LOCAL_MACRO.ARGS], errs, filename, exported_key)
+               sig.operator = stmt.custom_operator
                table.insert(exports, {
                   key = exported_key,
                   sig = sig,
@@ -847,6 +1004,8 @@ local function read_table_item(ps, i, n)
             read_lang = ps.read_lang,
             allow_macro_vars = ps.allow_macro_vars,
             in_local_macro = ps.in_local_macro,
+            custom_operators = ps.custom_operators,
+            local_operators = ps.local_operators,
             macro_sigs = ps.macro_sigs,
             require_aliases = ps.require_aliases,
             imported_macro_decls = ps.imported_macro_decls,
@@ -1123,6 +1282,8 @@ local function read_trying_list(ps, i, list, read_item, ret_lookahead)
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      custom_operators = ps.custom_operators,
+      local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
@@ -1532,7 +1693,7 @@ read_macro_quote = function(ps, i)
 
       local kept_code = table.concat(kept_lines, "\n")
       local parsed_block
-      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true)
+      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
 
 
       if #splices > 0 and parsed_block and parsed_block.kind == "statements" then
@@ -1549,7 +1710,7 @@ read_macro_quote = function(ps, i)
       end
    else
 
-      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true)
+      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
       if #werrs == 0 then
          local ret = wrapped[1]
          if ret and ret.kind == "return" and ret[BLOCK_INDEXES.RETURN.EXPS] then
@@ -1734,7 +1895,8 @@ do
       prevnode.kind == "op_index" or
       prevnode.kind == "op_dot" or
       prevnode.kind == "op_colon" or
-      prevnode.kind == "identifier"
+      prevnode.kind == "identifier" or
+      prevnode.kind == "macro_invocation"
    end
 
 
@@ -1750,7 +1912,14 @@ do
       end
       local e1
       local t1 = ps.tokens[i]
-      if precedences[1][t1.tk] ~= nil then
+      local prefix, prefix_width = find_operator(ps, i, "prefix")
+      if prefix then
+         i = i + prefix_width
+         i, e1 = P(ps, i)
+         if not e1 then return fail(ps, i, "expected an operand for operator '" .. prefix.symbol .. "'") end
+         i, e1 = E(ps, i, e1, prefix.precedence)
+         e1 = operator_invocation(ps, t1, prefix, e1)
+      elseif precedences[1][t1.tk] ~= nil then
          local op_kind = op_map[1][t1.tk]
          i = i + 1
          local prev_i = i
@@ -1759,6 +1928,7 @@ do
             fail(ps, prev_i, "expected an expression")
             return i
          end
+         i, e1 = E(ps, i, e1, precedences[1][t1.tk])
          e1 = { f = ps.filename, y = t1.y, x = t1.x, kind = op_kind, [BLOCK_INDEXES.OP.E1] = e1, tk = t1.tk }
       elseif ps.allow_macro_vars and ps.tokens[i].tk == "$" then
          local dtk = ps.tokens[i]
@@ -1792,6 +1962,14 @@ do
       end
 
       while true do
+         local infix = find_operator(ps, i, "infix")
+         local postfix, postfix_width = find_operator(ps, i, "postfix")
+         if postfix and postfix.precedence >= 100 and not infix then
+            e1 = operator_invocation(ps, ps.tokens[i], postfix, e1)
+            i = i + postfix_width
+         else
+            if infix or postfix then break end
+         end
          local safe_navigation = ps.tokens[i].tk == "?."
          local tkop = ps.tokens[i]
          if safe_navigation then
@@ -1920,6 +2098,12 @@ do
             end
 
             local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
+            local signature = mname and ps.macro_sigs[mname]
+            if signature and signature.operator then
+               inv[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = {
+                  kind = "identifier", tk = signature.operator.binding, f = ps.filename, y = e1.y, x = e1.x,
+               }
+            end
             e1 = inv
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
@@ -2018,30 +2202,42 @@ do
       return i, lhs
    end
 
+   local function next_operator(ps, i)
+      local postfix, postfix_width = find_operator(ps, i, "postfix")
+      local infix, infix_width = find_operator(ps, i, "infix")
+      local spec = postfix or infix
+      if infix and postfix and #infix.symbol > #postfix.symbol then spec = infix end
+      if spec then return spec.precedence, spec.right_associative, spec, spec == postfix and postfix_width or infix_width, spec.fixity end
+      local tk = ps.tokens[i].tk
+      if ps.ternary_middle and tk == ":" then return nil end
+      return precedences[2][tk], is_right_assoc[tk], nil, 1, "infix"
+   end
+
    E = function(ps, i, lhs, min_precedence)
-      local lookahead = ps.tokens[i].tk
-      while precedences[2][lookahead] and precedences[2][lookahead] >= min_precedence and not (ps.ternary_middle and lookahead == ":") do
-         local op_tk = ps.tokens[i]
-         local op_kind = op_map[2][op_tk.tk]
-         local op_prec = precedences[2][op_tk.tk]
-         i = i + 1
-         local rhs
-         i, rhs = P(ps, i)
-         if not rhs then
-            fail(ps, i, "expected an expression")
-            return i
-         end
-         lookahead = ps.tokens[i].tk
-         while precedences[2][lookahead] and ((precedences[2][lookahead] > op_prec) or
-            (is_right_assoc[lookahead] and (precedences[2][lookahead] == op_prec))) and not (ps.ternary_middle and lookahead == ":") do
-            i, rhs = E(ps, i, rhs, precedences[2][lookahead])
-            if not rhs then
-               fail(ps, i, "expected an expression")
-               return i
+      while true do
+         local precedence, right, custom, width, fixity = next_operator(ps, i)
+         if not precedence or precedence < min_precedence then break end
+         local token = ps.tokens[i]
+         i = i + width
+         if fixity == "postfix" then
+            lhs = operator_invocation(ps, token, custom, lhs)
+         else
+            local rhs
+            i, rhs = P(ps, i)
+            if not rhs then return fail(ps, i, "expected an expression") end
+            while true do
+               local next_prec = next_operator(ps, i)
+               if not next_prec or next_prec < precedence or (next_prec == precedence and not right) then break end
+               i, rhs = E(ps, i, rhs, next_prec)
+               if not rhs then return fail(ps, i, "expected an expression") end
             end
-            lookahead = ps.tokens[i].tk
+            if custom then
+               lhs = operator_invocation(ps, token, custom, lhs, rhs)
+            else
+               lhs = { f = ps.filename, y = token.y, x = token.x, kind = op_map[2][token.tk],
+               [BLOCK_INDEXES.OP.E1] = lhs, [BLOCK_INDEXES.OP.E2] = rhs, tk = token.tk, }
+            end
          end
-         lhs = { f = ps.filename, y = op_tk.y, x = op_tk.x, kind = op_kind, [BLOCK_INDEXES.OP.E1] = lhs, [BLOCK_INDEXES.OP.E2] = rhs, tk = op_tk.tk }
       end
       return i, lhs
    end
@@ -3122,7 +3318,12 @@ end
 
 local function register_macro_signature(ps, node, key)
    if key then
-      ps.macro_sigs[key] = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
+      local signature = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
+      local spec = read_operator_annotation(ps, node, key)
+      node.custom_operator = spec
+      signature.operator = spec
+      ps.macro_sigs[key] = signature
+      if spec then register_operator(ps, spec, node) end
    end
 end
 
@@ -3148,6 +3349,17 @@ local function read_macro_alias_target(ps, i, node)
 
    i = verify_tk(ps, i, "!")
    node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = target
+   local key = path_block_to_string(target)
+   local signature = key and ps.macro_sigs[key]
+   if not signature and key then
+      local alias = key:match("^([^.]+)%.")
+      if alias then ensure_required_alias_macros(ps, alias); signature = ps.macro_sigs[key] end
+   end
+   if signature then
+      local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
+      ps.macro_sigs[name.tk] = signature
+      if signature.operator then register_operator(ps, signature.operator, node) end
+   end
    table.insert(ps.macro_aliases, node)
    end_at(node, ps.tokens[i - 1])
    return i, node
@@ -3446,6 +3658,17 @@ needs_local_or_global = {
 }
 
 read_statements = function(ps, i, toplevel)
+   local outer_operators = ps.custom_operators
+   local outer_macro_sigs = ps.macro_sigs
+   ps.macro_sigs = {}
+   for key, signature in pairs(outer_macro_sigs) do ps.macro_sigs[key] = signature end
+   local outer_local_operators = ps.local_operators
+   ps.local_operators = {}
+   local operators = { prefix = {}, infix = {}, postfix = {} }
+   for fixity, bindings in pairs(outer_operators) do
+      for symbol, spec in pairs(bindings) do operators[fixity][symbol] = spec end
+   end
+   ps.custom_operators = operators
    local node = new_block(ps, i, "statements")
    local item
    while true do
@@ -3506,10 +3729,13 @@ read_statements = function(ps, i, toplevel)
    end
 
    end_at(node, ps.tokens[i])
+   ps.custom_operators = outer_operators
+   ps.local_operators = outer_local_operators
+   if not toplevel then ps.macro_sigs = outer_macro_sigs end
    return i, node
 end
 
-function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand)
+function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
    if read_program_depth == 0 then
       module_macro_cache = {}
       module_macro_missing = {}
@@ -3530,6 +3756,8 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       read_lang = read_lang,
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
+      custom_operators = operator_context or { prefix = {}, infix = {}, postfix = {} },
+      local_operators = {},
       macro_sigs = {},
       require_aliases = {},
       imported_macro_decls = {},
@@ -3652,11 +3880,11 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    return node
 end
 
-function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand)
+function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename, input)
    local tokens, errs = lexer.lex(input, filename)
-   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand)
+   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
    return node, errs
 end
 

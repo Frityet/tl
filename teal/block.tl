@@ -111,6 +111,14 @@ local record block
       "question"
    end
 
+   record OperatorSpec
+      symbol: string
+      fixity: string
+      precedence: integer
+      right_associative: boolean
+      binding: string
+   end
+
    record Block
       is {Block}, Where
       where self.kind ~= nil
@@ -120,6 +128,8 @@ local record block
          name: string
       end
 
+      custom_operator: OperatorSpec
+      operator_use: boolean
       short_function: boolean
       lj_const: boolean
       safe_navigation: boolean
