@@ -1374,6 +1374,8 @@ function block_to_constructor(state, block)
       call.e2 = new_node(state, block, "expression_list")
       call.e2[1] = new_node(state, block[reader.BLOCK_INDEXES.MACRO_VAR.NAME], "variable")
       call.e2[1].tk = block[reader.BLOCK_INDEXES.MACRO_VAR.NAME] and block[reader.BLOCK_INDEXES.MACRO_VAR.NAME].tk or ""
+      call.e2[2] = new_node(state, block, "string")
+      call.e2[2].tk = string.format("%q", call.e2[1].tk)
       return call
    end
 

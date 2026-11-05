@@ -888,10 +888,10 @@ local function analyze_document(server, document)
          source = "tl", message = input_err or "could not read document",
       })
    else
-      local token_list = input:lex()
-      tokens = token_list.tokens
-      local parse_tree = token_list:parse()
       local ok, checked_module, checked_errors = pcall(function()
+         local token_list = input:lex()
+         tokens = token_list.tokens
+         local parse_tree = token_list:parse()
          return parse_tree:check(module_name_from_path(document.path, server.root))
       end)
       if ok then

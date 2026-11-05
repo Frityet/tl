@@ -3829,7 +3829,9 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    check_macro_arity(node)
 
    local lang: BlockLang = read_lang or "tl"
-   if not skip_macro_expand then
+   -- Recovery blocks may have missing children. Do not compile or execute
+   -- macros until the complete input has parsed successfully.
+   if not skip_macro_expand and #errs == 0 then
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
    end
 

@@ -1633,6 +1633,8 @@ function block_to_constructor(state, block)
       call.e2 = new_node(state, block, "expression_list")
       call.e2[1] = new_node(state, block[reader.BLOCK_INDEXES.MACRO_VAR.NAME], "variable")
       call.e2[1].tk = block[reader.BLOCK_INDEXES.MACRO_VAR.NAME] and block[reader.BLOCK_INDEXES.MACRO_VAR.NAME].tk or ""
+      call.e2[2] = new_node(state, block, "string")
+      call.e2[2].tk = string.format("%q", call.e2[1].tk)
       return call
    end
 
@@ -14378,7 +14380,11 @@ local function children(b)
    return children_iter, b, 0
 end
 
-local function clone_value(v)
+local function clone_value(v, splice_name)
+   if type(v) ~= "table" or not v.kind then
+      local subject = splice_name and ("macro splice '$" .. splice_name .. "'") or "macro clone"
+      error(subject .. " expected a Block, got " .. type(v), 0)
+   end
    local out = {
       kind = v.kind,
       f = v.f,
@@ -19228,7 +19234,9 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    check_macro_arity(node)
 
    local lang = read_lang or "tl"
-   if not skip_macro_expand then
+
+
+   if not skip_macro_expand and #errs == 0 then
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
    end
 

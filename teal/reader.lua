@@ -3829,7 +3829,9 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    check_macro_arity(node)
 
    local lang = read_lang or "tl"
-   if not skip_macro_expand then
+
+
+   if not skip_macro_expand and #errs == 0 then
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
    end
 

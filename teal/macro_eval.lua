@@ -57,7 +57,11 @@ local function children(b)
    return children_iter, b, 0
 end
 
-local function clone_value(v)
+local function clone_value(v, splice_name)
+   if type(v) ~= "table" or not v.kind then
+      local subject = splice_name and ("macro splice '$" .. splice_name .. "'") or "macro clone"
+      error(subject .. " expected a Block, got " .. type(v), 0)
+   end
    local out = {
       kind = v.kind,
       f = v.f,
