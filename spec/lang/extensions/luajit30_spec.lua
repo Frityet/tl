@@ -342,6 +342,13 @@ describe('LuaJIT 3.0 syntax backported to 2.1', function()
       ]]))
    end)
 
+   runtime_it('accepts conditional expressions returned by macros', function()
+      assert.equals(7, run([[
+         local macro choose!() return `true ? 7 : 9` end
+         return choose!()
+      ]]))
+   end)
+
    runtime_it('supports extensions in macro implementations on a capable host', function()
       assert.equals(2, run([[
          local macro two!()
