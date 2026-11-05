@@ -175,7 +175,41 @@ local function is_statement_kind(k)
    return k == "assignment" or k == "local_declaration" or k == "global_declaration" or
    k == "return" or k == "if" or k == "while" or k == "fornum" or k == "forin" or
    k == "do" or k == "repeat" or k == "local_function" or k == "global_function" or
-   k == "record_function" or k == "newtype" or k == "pragma"
+   k == "record_function" or k == "newtype" or k == "pragma" or
+   k == "local_type" or k == "global_type" or k == "goto" or k == "label" or
+   k == "break" or k == ";" or k == "comment" or k == "hashbang" or
+   k == "local_macroexp" or k == "local_macro"
+end
+
+local function is_expression_kind(k)
+   return k == "nil" or k == "string" or k == "number" or k == "integer" or
+   k == "boolean" or k == "literal_table" or k == "function" or
+   k == "identifier" or k == "..." or k == "paren" or k == "macro_invocation" or
+   k:sub(1, 3) == "op_"
+end
+
+
+
+local function validate_statement_positions(b, statement)
+   if statement then
+
+      while b.kind == "paren" and b[BLOCK_INDEXES.PAREN.EXP] do
+         b = b[BLOCK_INDEXES.PAREN.EXP]
+      end
+      if b.kind ~= "statements" and b.kind ~= "op_funcall" and not is_statement_kind(b.kind) then
+         return nil
+      end
+   end
+   if b.kind ~= "macro_quote" and b.kind ~= "local_macro" then
+      for i, child in children(b) do
+         local checked = validate_statement_positions(child, b.kind == "statements")
+         if not checked then
+            return nil
+         end
+         b[i] = checked
+      end
+   end
+   return b
 end
 
 
@@ -334,7 +368,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
             end
          elseif expected == "expr" then
             if ab and ab.kind == "statements" then
-               if #ab == 1 and not is_statement_kind(ab[1].kind) then
+               if #ab == 1 and is_expression_kind(ab[1].kind) then
                   ab = ab[1]
                else
                   table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. mname .. "' argument " .. tostring(i) .. " must be an Expression" })
@@ -366,20 +400,38 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    local wx = current_where.x
    reanchor_block_positions(res, wy, wx, setmetatable({}, { __mode = "k" }))
    if context == "expr" and res.kind == "statements" then
-      if #res == 1 and not is_statement_kind(res[1].kind) then
-         return traverse_invoking_macros(res[1], filename, env, errs, "expr")
+      if #res == 1 and is_expression_kind(res[1].kind) then
+         res = res[1]
+      else
+         table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "macro '" .. mname .. "' returned statements in an expression context; invoke it as a standalone statement" })
+         return b
       end
-      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "macro '" .. mname .. "' returned statements in an expression context" })
-      return b
    end
 
-   return traverse_invoking_macros(res, filename, env, errs, context)
+   local previous_errors = #errs
+   local expanded = traverse_invoking_macros(res, filename, env, errs, context)
+   if #errs > previous_errors then
+      return b
+   end
+   if context == "expr" and not is_expression_kind(expanded.kind) then
+      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "macro '" .. mname .. "' returned statements in an expression context; invoke it as a standalone statement" })
+      return b
+   end
+   local checked = validate_statement_positions(expanded, context == "stmt")
+   if not checked then
+      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "macro '" .. mname .. "' returned an expression that cannot be used as a statement; assign or return its value" })
+      return b
+   end
+   return checked
 end
 
 traverse_invoking_macros = function(b, filename, env, errs, context)
 
    if seen and seen[b] then return b end
    if seen then seen[b] = true end
+   if b.kind == "macro_invocation" then
+      return eval_macro_invocation(b, filename, env, errs, context)
+   end
 
    local patches
    for i, child in children(b) do

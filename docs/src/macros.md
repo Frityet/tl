@@ -75,6 +75,17 @@ Macros usually construct AST blocks by quoting Teal syntax:
 - **Single backticks** quote an expression: `` `a + 1` ``
 - **Triple backticks** quote statements: use three backticks (```` ``` ````)
 
+The expansion must fit the invocation's context. A standalone macro call can
+expand to statements or a function call. A different expression, such as
+`` `1 + 2` ``, must be assigned, returned, or used within another expression.
+Triple-backtick quotes must contain valid statements; quoting `1 + 2` with
+triple backticks is a syntax error.
+
+A macro that generates a declaration (for example, `local record Name end`)
+must be invoked as a standalone statement. Writing `local x = declare!()`
+does not turn the generated declaration into a value. These context errors
+are reported at the macro invocation before Lua is generated.
+
 Inside a macro quote, `$name` splices the macro argument named `name`:
 
 ```lua
