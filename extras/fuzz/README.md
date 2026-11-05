@@ -27,8 +27,10 @@ are retained. Existing corpus files are never modified.
 
 ## Inputs and checks
 
-Each `(seed, index)` independently determines one source file, regardless of job
-count or completion order. The eight interleaved profiles are:
+Each `(seed, index, profile, native target lane, corpus)` independently determines
+one source file, regardless of job count or completion order. Native `luajit`
+and standard Lua targets use different dialect feature sets. The eight
+interleaved profiles are:
 
 - **grammar:** bounded typed arithmetic, functions, generic functions, records,
   arrays/indexing, multiple returns, enum branches, union narrowing, numeric
@@ -123,16 +125,28 @@ profile is only intended for a compiler supporting tl-ng syntax:
 
 ```sh
 python3 extras/fuzz/fuzz.py --root /path/to/tl-ng --profile tl-ng \
-  --lua luajit --targets 5.1 --seed 33 --cases 10000 --jobs 4
+  --lua luajit --targets 5.1,luajit --seed 33 --cases 10000 --jobs 4
 ```
 
-It adds macro reader-error recovery, invalid-splice/scalar-result, and short
-function editor seeds from `profiles/tl-ng/`, plus deterministic incomplete byte
-prefixes. Extension seeds are robustness probes: normal diagnostics are allowed;
-compiler exceptions, broken invariants and timeouts still fail. The profile does
-not claim every seed is a valid tl-ng program or validate exact diagnostic text.
-Extend that directory or use `--corpus` for custom operators and other features;
-keep upstream-only campaigns on the default profile.
+It interleaves the upstream grammar with 18 dialect generators: typed short
+functions, ternaries, nil coalescing, safe navigation, compound assignments,
+`continue`, macros, named/symbolic/Unicode custom operators, prefix/postfix
+operators, precedence, associativity, lexical shadowing and generic callbacks.
+These valid programs
+have independent numeric oracles and execute after lowering. They also feed the
+editor-mutation profile. Standard Lua targets use the 11 portable generators;
+the native `luajit` target uses all 18, including features restricted to that
+target. Native loading/execution requires LuaJIT with the full backported
+extension set. The worker probes ternary support to identify that runtime; it
+does not emulate missing runtime features. Native bit operations are not yet in
+the closed arithmetic grammar.
+
+Macro reader-error recovery, invalid-splice/scalar-result, and short-function
+editor seeds from `profiles/tl-ng/` add robustness probes and incomplete byte
+prefixes. Normal diagnostics are allowed for those seeds; compiler exceptions,
+broken invariants and timeouts fail. Exact diagnostic text is covered by the
+compiler's regression suite. Extend the directory or use `--corpus` for more
+features; keep upstream-only campaigns on the default profile.
 
 ## Tests
 

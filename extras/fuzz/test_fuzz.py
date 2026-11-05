@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -97,6 +98,37 @@ class CompilerTests(unittest.TestCase):
         for i in (0, 1, 6, 8, 9, 14):
             with self.subTest(index=i):
                 result = self.run_case(fuzz.case_for(100, i, []), lua=lua)
+                self.assertEqual(result['status'], 'ok', result)
+                self.assertEqual(result['executed'], 1)
+
+    def test_tlng_dialect_semantics(self):
+        reader = fuzz.ROOT / 'teal/reader.lua'
+        if not reader.exists() or 'custom_operators' not in reader.read_text():
+            self.skipTest('optional tl-ng grammar requires tl-ng compiler')
+        interpreters = list(dict.fromkeys(filter(None, (self.lua, shutil.which('luajit')))))
+        for feature in fuzz.TLNG_PORTABLE_FEATURES:
+            for seed in (0, 7):
+                source, expected = fuzz.tlng_program(random.Random(seed), feature)
+                for lua in interpreters:
+                    with self.subTest(feature=feature, seed=seed, lua=lua):
+                        case = fuzz.Case(source.encode(), 'tl-ng-grammar', expected)
+                        result = self.run_case(case, lua=lua)
+                        self.assertEqual(result['status'], 'ok', result)
+                        self.assertEqual(result['executed'], 1)
+
+    def test_tlng_native_extension_semantics(self):
+        reader = fuzz.ROOT / 'teal/reader.lua'
+        lua = shutil.which('luajit')
+        if not lua or not reader.exists() or 'custom_operators' not in reader.read_text():
+            self.skipTest('native extension grammar requires tl-ng and LuaJIT')
+        probe = subprocess.run([lua, '-e', "assert(loadstring('return true ? 1 : 2'))"], capture_output=True, timeout=3)
+        if probe.returncode:
+            self.skipTest('LuaJIT lacks backported syntax extensions')
+        for feature in range(fuzz.TLNG_FEATURES):
+            source, expected = fuzz.tlng_program(random.Random(7), feature)
+            with self.subTest(feature=feature):
+                result = fuzz.run_case(fuzz.Case(source.encode(), 'tl-ng-grammar', expected),
+                                       lua, fuzz.ROOT, 'luajit', 3)
                 self.assertEqual(result['status'], 'ok', result)
                 self.assertEqual(result['executed'], 1)
 

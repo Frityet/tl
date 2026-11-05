@@ -121,19 +121,91 @@ def mutate(rng: random.Random, source: bytes) -> bytes:
     return source
 
 
-def case_for(seed: int, index: int, corpus: list[bytes], max_depth: int = 128, profile: str = 'upstream') -> Case:
+TLNG_FEATURES = 18
+TLNG_PORTABLE_FEATURES = (0, 1, 6, 7, 8, 9, 10, 11, 13, 16, 17)
+
+
+def tlng_program(rng: random.Random, feature: int | None = None, native: bool = False) -> tuple[str, int]:
+    """Closed dialect programs with a source-independent arithmetic oracle."""
+    expr, value = expression(rng, 3)
+    if feature is None:
+        feature = rng.randrange(TLNG_FEATURES) if native else rng.choice(TLNG_PORTABLE_FEATURES)
+    if feature == 0:
+        return f'const f: function(number): number = x -> x + 2\nreturn f({expr})', value + 2
+    if feature == 1:
+        return f'const f = |x: number| -> do return x * 2 end\nreturn f({expr})', value * 2
+    if feature == 2:
+        return f'return {expr} < 0 ? -{expr} : {expr}', abs(value)
+    if feature == 3:
+        return ('local function f(x: number | nil): number\n'
+                f'   return x ?? {expr}\nend\nreturn f(nil)'), value
+    if feature == 4:
+        return ('local record R\n   value: number\nend\n'
+                'local function f(x: R | nil): number\n'
+                f'   return x?.value ?? {expr}\nend\nreturn f(nil)'), value
+    if feature == 5:
+        return ('local total: number = 0\nfor i = 1, 4 do\n'
+                f'   if i == 2 then continue end\n   total += {expr}\nend\nreturn total'), value * 3
+    if feature == 6:
+        return ('local macro identity!(v: Expression): Expression\n'
+                f'   return `$v`\nend\nreturn identity!({expr})'), value
+    if feature == 7:
+        symbol = rng.choice(('@', '⊗', '<=>', '\\'))
+        literal = json.dumps(symbol, ensure_ascii=False)
+        return (f'local macro product!(lhs: Expression, rhs: Expression): Operator<{literal}, infix, multiplicative>\n'
+                f'   return `($lhs) * ($rhs)`\nend\nreturn {expr} {symbol} 2 + 1'), value * 2 + 1
+    if feature == 8:
+        return ("local macro plus!(lhs: Expression, rhs: Expression): Operator<'combine', infix, additive>\n"
+                f'   return `($lhs) + ($rhs)`\nend\nreturn {expr} combine 2 * 3'), value + 6
+    if feature == 9:
+        return ("local macro negate!(x: Expression): Operator<'@@', prefix, unary>\n"
+                f'   return `-($x)`\nend\nreturn @@ {expr}'), -value
+    if feature == 10:
+        return ("local macro twice!(x: Expression): Operator<'@@', postfix, postfix>\n"
+                f'   return `($x) * 2`\nend\nreturn {expr} @@ + 1'), value * 2 + 1
+    if feature == 11:
+        return ("local macro subtract!(lhs: Expression, rhs: Expression): Operator<'**', infix, exponentiation, right>\n"
+                f'   return `($lhs) - ($rhs)`\nend\nreturn {expr} ** 2 ** 3'), value + 1
+    if feature == 12:
+        return ('const choose = || -> (true ? false : true)\n'
+                f'return choose() ? 1 : {expr}'), value
+    if feature == 13:
+        return ("local macro outer!(lhs: Expression, rhs: Expression): Operator<'@', infix, additive>\n"
+                '   return `($lhs) + ($rhs)`\nend\n'
+                f'local before = {expr} @ 2\ndo\n'
+                "   local macro inner!(lhs: Expression, rhs: Expression): Operator<'@', infix, additive>\n"
+                '      return `($lhs) * ($rhs)`\n   end\n'
+                f'   return before + ({expr} @ 3)\nend'), value * 4 + 2
+    if feature == 14:
+        return f'return (!false && {expr} != 0 || false) ? {expr} : 1', value if value != 0 else 1
+    if feature == 15:
+        return (f'local t: {{number}} = {{{expr}}}\nlocal calls: number = 0\n'
+                'local function index(): integer calls += 1; return 1 end\n'
+                't[index()] += 2\nreturn t[1] + 100 * calls'), value + 102
+    if feature == 16:
+        return f'const thousand = 1_000\nreturn thousand + {expr}', value + 1000
+    if feature == 17:
+        return ('local function apply<A, B>(x: A, f: function(A): B): B\n'
+                f'   return f(x)\nend\nreturn apply({expr}, |n: number| -> n + 1)'), value + 1
+    raise ValueError(f'unknown tl-ng feature: {feature}')
+
+
+def case_for(seed: int, index: int, corpus: list[bytes], max_depth: int = 128, profile: str = 'upstream', native: bool = False) -> Case:
     # Each case is independently addressable; scheduling/jobs never affect its bytes.
     rng = random.Random((seed << 64) ^ index)
     source, expected = valid_program(rng)
     selected_profile = profile
+    dialect = profile == 'tl-ng' and index % 16 < 8
+    if dialect:
+        source, expected = tlng_program(rng, native=native)
     profile = index % 8
     if profile == 0:
-        return Case(source.encode(), 'grammar', expected, seed, index)
+        return Case(source.encode(), 'tl-ng-grammar' if dialect else 'grammar', expected, seed, index)
     if profile == 1:
         # Metamorphic alpha renaming plus trivia; preserve the independent numeric oracle.
         source = re.sub(r'\btotal\b', 'renamed_total', source)
         source = '-- metamorphic\n' + source.replace('\n', '\n-- trivia\n')
-        return Case(source.encode(), 'metamorphic', expected, seed, index)
+        return Case(source.encode(), 'tl-ng-metamorphic' if dialect else 'metamorphic', expected, seed, index)
     if profile == 2:
         source = mutate(rng, source.encode())
         return Case(source, 'editor', None, seed, index)
@@ -158,8 +230,9 @@ def case_for(seed: int, index: int, corpus: list[bytes], max_depth: int = 128, p
         return Case(mutate(rng, original), 'corpus-mutation', None, seed, index)
     if profile == 6:
         # Valid wide programs exercise scopes, type declarations and repeated lowering.
-        source, expected = valid_program(rng, 40)
-        return Case(source.encode(), 'wide', expected, seed, index)
+        if not dialect:
+            source, expected = valid_program(rng, 40)
+        return Case(source.encode(), 'tl-ng-grammar' if dialect else 'wide', expected, seed, index)
     original = corpus[(index // 8) % len(corpus)] if corpus else source.encode()
     if selected_profile == 'tl-ng' and index % 16 == 15:
         original = original[:rng.randrange(len(original) + 1)]
@@ -317,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         parser().error(f'reference root does not contain teal/api/v2.lua: {args.reference_root}')
     args.output.mkdir(parents=True, exist_ok=True)
     targets = args.targets.split(',')
-    if any(t not in ('5.1', '5.2', '5.3', '5.4', '5.5') for t in targets):
+    if any(t not in ('5.1', '5.2', '5.3', '5.4', '5.5', 'luajit') for t in targets):
         parser().error('unsupported generation target')
     try:
         revision = subprocess.run(['git', '-C', str(args.root), 'rev-parse', 'HEAD'],
@@ -363,10 +436,10 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     def jobs():
         for index in range(args.start, args.start + args.cases):
-            case = case_for(args.seed, index, corpus, args.max_depth, args.profile)
-            if len(case.source) > args.max_input:
-                case = dataclasses.replace(case, source=case.source[:args.max_input], expected=None, profile='truncated')
             for target in targets:
+                case = case_for(args.seed, index, corpus, args.max_depth, args.profile, native=target == 'luajit')
+                if len(case.source) > args.max_input:
+                    case = dataclasses.replace(case, source=case.source[:args.max_input], expected=None, profile='truncated')
                 yield case, target
     iterator = iter(jobs())
     pending = {}

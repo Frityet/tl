@@ -81,7 +81,9 @@ local function main()
    local _, lua_errors = api.parse(generated, 'fuzz.lua', 'lua')
    ensure(#lua_errors == 0, 'generated Lua rejected by parser: ' .. diagnostics(lua_errors))
    local version = tonumber((_VERSION:gsub('Lua ', '')))
-   local can_load = target == '5.1' or version >= tonumber(target)
+   local native = target == 'luajit'
+   local can_load = native and type(jit) == 'table' and loadstring('return true ? 1 : 2') ~= nil
+      or not native and (target == '5.1' or version >= tonumber(target))
    if can_load then
       stage = 'load'
       local fn, load_error
