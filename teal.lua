@@ -5141,6 +5141,7 @@ function Context:find_record_to_extend(exp)
          return nil, nil, dname
       end
       t = t.fields[fname]
+      if not t then return nil, nil, dname end
 
       if t.typename == "typedecl" then
          local def = t.def
@@ -14850,8 +14851,13 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       return
    end
 
+   local host_name = name
+   if name:sub(1, 1) == "(" then
+      host_name = "__teal_operator_macro";
+      (mast)[1].name.tk = host_name
+   end
    local code = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
-   local chunk, load_err = load(code .. "\nreturn " .. name, name, "t", env.sandbox)
+   local chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })
       return
@@ -14886,6 +14892,10 @@ local function compile_macro_alias(mb, env)
 
    env.macros[name_block.tk] = target
    env.signatures[name_block.tk] = env.signatures[target_key]
+   if mb.custom_operator then
+      env.macros[mb.custom_operator.binding] = target
+      env.signatures[mb.custom_operator.binding] = env.signatures[target_key]
+   end
    return true
 end
 
@@ -15127,7 +15137,8 @@ function macro_eval.compile_all_and_expand(node, filename, read_lang, errs)
       local remove = {}
       for index, child in children(b) do
          if child.kind == "local_macro" and child.custom_operator then
-            compile_local_macro(child, filename, read_lang, env, errs)
+            if child[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then table.insert(aliases, child)
+            else compile_local_macro(child, filename, read_lang, env, errs) end
             table.insert(remove, 1, index)
          else
             collect_operators(child)
@@ -15573,7 +15584,7 @@ end
 
 -- module teal.reader from teal/reader.lua
 package.preload["teal.reader"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
 local errors = require("teal.errors")
 
 
@@ -15874,9 +15885,18 @@ end
 
 local function split_dotted_path(path)
    local out = {}
-   for part in path:gmatch("[^%.]+") do
-      table.insert(out, part)
+   local start = 1
+   local operator_name = false
+   for i = 1, #path do
+      local ch = path:sub(i, i)
+      if ch == "(" then operator_name = true
+      elseif ch == ")" then operator_name = false
+      elseif ch == "." and not operator_name then
+         table.insert(out, path:sub(start, i - 1))
+         start = i + 1
+      end
    end
+   table.insert(out, path:sub(start))
    return out
 end
 
@@ -16077,6 +16097,67 @@ local function operator_error(ps, where, message)
    table.insert(ps.errs, { filename = ps.filename, y = where.y, x = where.x, msg = message })
 end
 
+local function macro_operator_symbol(name)
+   if name and name.kind == "identifier" and name.tk:sub(1, 1) == "(" and name.tk:sub(-1) == ")" then
+      return name.tk:sub(2, -2)
+   end
+end
+
+local function valid_operator_symbol(symbol)
+   local identifier = symbol:match("^[%a_][%w_]*$")
+   return symbol ~= "" and not reserved_operator_tokens[symbol] and not symbol:find("--", 1, true) and
+   (identifier ~= nil or symbol:find("[%w_%s%(%){%}%[%],;'\"`$]") == nil)
+end
+
+local function read_macro_name(ps, i)
+   if ps.tokens[i].kind == "identifier" then return i + 1, new_block(ps, i, "identifier") end
+   local name = new_block(ps, i, "error_block")
+   if ps.tokens[i].tk ~= "(" then return fail(ps, i, "expected a macro name or parenthesized operator"), name end
+   local opening = i
+   i = i + 1
+   local parts = {}
+   local previous
+   while ps.tokens[i].tk ~= ")" and ps.tokens[i].kind ~= "$EOF$" do
+      local token = ps.tokens[i]
+      if token.tk == "(" then
+         return fail(ps, i, "operator macro names cannot contain '(' or ')'"), name
+      end
+      if previous and (token.y ~= previous.y or token.x ~= previous.x + #previous.tk) then
+         return fail(ps, i, "operator name must be a non-reserved identifier or unused symbols without whitespace"), name
+      end
+      table.insert(parts, token.tk)
+      previous = token
+      i = i + 1
+   end
+   if ps.tokens[i].tk ~= ")" then return fail(ps, i, "expected ')' after operator macro name"), name end
+   local symbol = table.concat(parts)
+   if not valid_operator_symbol(symbol) then
+      return fail(ps, opening, "operator name must be a non-reserved identifier or unused symbols"), name
+   end
+   name.kind = "identifier"
+   name.tk = "(" .. symbol .. ")"
+   end_at(name, ps.tokens[i])
+   return i + 1, name
+end
+
+local function operator_macro_call_at(ps, i)
+   if ps.tokens[i].tk ~= "(" then return false end
+   local j = i + 1
+   local parts = {}
+   local previous
+   while ps.tokens[j].tk ~= ")" and ps.tokens[j].kind ~= "$EOF$" do
+      local token = ps.tokens[j]
+      if token.tk == "(" or (previous and (token.y ~= previous.y or token.x ~= previous.x + #previous.tk)) then return false end
+      table.insert(parts, token.tk)
+      previous = token
+      j = j + 1
+   end
+   local symbol = table.concat(parts)
+   if ps.tokens[j].tk ~= ")" or not ps.tokens[j + 1] or ps.tokens[j + 1].tk ~= "!" or not valid_operator_symbol(symbol) then return false end
+
+   return ps.macro_sigs["(" .. symbol .. ")"] ~= nil or not symbol:match("^[%a_][%w_]*$")
+end
+
 local function register_operator(ps, spec, where)
    local registry = ps.custom_operators[spec.fixity]
    local previous = registry[spec.symbol]
@@ -16105,43 +16186,38 @@ local function read_operator_annotation(ps, node, key)
    local rets = node[BLOCK_INDEXES.LOCAL_MACRO.RETS]
    local list = rets and rets[1]
    local annotation = list and list[1]
-   if not annotation or annotation.kind ~= "nominal_type" or not annotation[1] or annotation[1].tk ~= "Operator" then return nil end
+   local symbol = macro_operator_symbol(node[BLOCK_INDEXES.LOCAL_MACRO.NAME])
+   if not annotation or annotation.kind ~= "nominal_type" or not annotation[1] or annotation[1].tk ~= "Operator" then
+      if symbol then operator_error(ps, node, "operator macro requires Operator<prefix|infix|postfix, precedence[, left|right]>") end
+      return nil
+   end
+   if not symbol then
+      operator_error(ps, annotation, "declare the operator in the macro name: local macro (symbol)!(...): Operator<fixity, precedence>")
+      return nil
+   end
    local args = annotation[2]
-   if #list ~= 1 or not args or (#args ~= 3 and #args ~= 4) then
-      operator_error(ps, annotation, "expected Operator<'symbol', prefix|infix|postfix, precedence[, left|right]>")
+   if #list ~= 1 or not args or (#args ~= 2 and #args ~= 3) then
+      operator_error(ps, annotation, "expected Operator<prefix|infix|postfix, precedence[, left|right]>")
       return nil
    end
-   if args[1].kind ~= "string" then
-      operator_error(ps, args[1], "operator symbol must be a string literal")
-      return nil
-   end
-   local load_text = ((_G).loadstring or load)
-   local decode = load_text("return " .. args[1].tk)
-   local symbol = decode and decode()
-   local identifier = symbol and symbol:match("^[%a_][%w_]*$")
-   if not symbol or symbol == "" or reserved_operator_tokens[symbol] or symbol:find("--", 1, true) or
-      (not identifier and (symbol:find("[%w_%s%(%){%}%[%],;'\"`$]") ~= nil)) then
-      operator_error(ps, args[1], "operator must use a non-reserved identifier or unused symbols")
-      return nil
-   end
-   local fixity = operator_word(args[2])
+   local fixity = operator_word(args[1])
    if fixity ~= "prefix" and fixity ~= "infix" and fixity ~= "postfix" then
-      operator_error(ps, args[2], "operator fixity must be prefix, infix, or postfix")
+      operator_error(ps, args[1], "operator fixity must be prefix, infix, or postfix")
       return nil
    end
-   local group = operator_word(args[3])
+   local group = operator_word(args[2])
    local precedence = group and operator_precedences[group]
    if not precedence then
-      operator_error(ps, args[3], "unknown operator precedence group '" .. (group or args[3].tk) .. "'")
+      operator_error(ps, args[2], "unknown operator precedence group '" .. (group or args[2].tk) .. "'")
       return nil
    end
-   local associativity = args[4] and operator_word(args[4]) or "left"
+   local associativity = args[3] and operator_word(args[3]) or "left"
    if associativity ~= "left" and associativity ~= "right" then
-      operator_error(ps, args[4], "operator associativity must be left or right")
+      operator_error(ps, args[3], "operator associativity must be left or right")
       return nil
    end
-   if args[4] and fixity ~= "infix" then
-      operator_error(ps, args[4], "only infix operators accept associativity")
+   if args[3] and fixity ~= "infix" then
+      operator_error(ps, args[3], "only infix operators accept associativity")
       return nil
    end
    local params = node[BLOCK_INDEXES.LOCAL_MACRO.ARGS]
@@ -16466,6 +16542,7 @@ local function ensure_required_alias_macros(ps, alias)
       if not ps.imported_macro_keys[imported_key] then
          ps.imported_macro_keys[imported_key] = true
          ps.macro_sigs[imported_key] = exp.sig
+         if exp.sig.operator then ps.macro_sigs[exp.sig.operator.binding] = exp.sig end
 
          local imported_decl = clone_block_deep(exp.decl)
          local parts = split_dotted_path(imported_key)
@@ -17515,6 +17592,8 @@ do
          end
          local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
          e1 = macro_var
+      elseif operator_macro_call_at(ps, i) then
+         i, e1 = read_macro_name(ps, i)
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
          local prev_i = i
@@ -17570,7 +17649,9 @@ do
 
             local key
             i = i + 1
-            if ps.allow_macro_vars and ps.tokens[i].tk == "$" then
+            if ps.tokens[i].tk == "(" and tkop.tk == "." then
+               i, key = read_macro_name(ps, i)
+            elseif ps.allow_macro_vars and ps.tokens[i].tk == "$" then
                local dtk = ps.tokens[i]
                i = i + 1
                local ident
@@ -17764,6 +17845,10 @@ do
          end
       end
 
+      local reference = e1.kind == "op_dot" and e1[BLOCK_INDEXES.OP.E2] or e1
+      if macro_operator_symbol(reference) then
+         fail(ps, i, "operator macro references require '!()' or a local macro import")
+      end
       return i, e1
    end
 
@@ -18898,15 +18983,46 @@ local function register_macro_signature(ps, node, key)
       node.custom_operator = spec
       signature.operator = spec
       ps.macro_sigs[key] = signature
-      if spec then register_operator(ps, spec, node) end
+      if spec then
+         ps.macro_sigs[spec.binding] = signature
+         if not node[BLOCK_INDEXES.LOCAL_MACRO.OWNER] then register_operator(ps, spec, node) end
+      end
    end
+end
+
+local function bind_macro_alias(ps, node, signature)
+   local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
+   local symbol = macro_operator_symbol(name)
+   if symbol and not signature.operator then
+      operator_error(ps, name, "operator alias must target an operator macro")
+      return
+   elseif signature.operator and not symbol then
+      operator_error(ps, name, "operator aliases must use a parenthesized operator name")
+      return
+   end
+   if symbol then
+      local original = signature.operator
+      local spec = {
+         symbol = symbol, fixity = original.fixity, precedence = original.precedence,
+         right_associative = original.right_associative,
+         binding = "@operator:" .. ps.filename .. ":" .. tostring(node.y) .. ":" .. tostring(node.x) .. ":" .. name.tk,
+      }
+      node.custom_operator = spec
+      node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = setmetatable({
+         kind = "identifier", tk = original.binding, f = ps.filename, y = name.y, x = name.x,
+      }, node_mt)
+      signature = { kinds = signature.kinds, vararg = signature.vararg, operator = spec }
+      ps.macro_sigs[spec.binding] = signature
+      register_operator(ps, spec, node)
+   end
+   ps.macro_sigs[name.tk] = signature
 end
 
 local function read_macro_alias_target(ps, i, node)
    i = verify_tk(ps, i, "=")
 
    local target
-   i, target = read_identifier(ps, i)
+   i, target = read_macro_name(ps, i)
    if not target then
       return i, node
    end
@@ -18915,7 +19031,7 @@ local function read_macro_alias_target(ps, i, node)
       local dot = new_block(ps, i, "op_dot")
       dot[BLOCK_INDEXES.OP.E1] = target
       i = i + 1
-      i, dot[BLOCK_INDEXES.OP.E2] = read_identifier(ps, i)
+      i, dot[BLOCK_INDEXES.OP.E2] = read_macro_name(ps, i)
       if not dot[BLOCK_INDEXES.OP.E2] then
          return i, node
       end
@@ -18931,11 +19047,9 @@ local function read_macro_alias_target(ps, i, node)
       if alias then ensure_required_alias_macros(ps, alias); signature = ps.macro_sigs[key] end
    end
    if signature then
-      local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
-      ps.macro_sigs[name.tk] = signature
-      if signature.operator then register_operator(ps, signature.operator, node) end
+      bind_macro_alias(ps, node, signature)
    end
-   table.insert(ps.macro_aliases, node)
+   if not signature then table.insert(ps.macro_aliases, node) end
    end_at(node, ps.tokens[i - 1])
    return i, node
 end
@@ -18945,7 +19059,7 @@ local function read_local_macro(ps, i)
    i = verify_tk(ps, i, "local")
    i = verify_tk(ps, i, "macro")
    local node = new_block(ps, istart, "local_macro")
-   i, node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = read_identifier(ps, i)
+   i, node[BLOCK_INDEXES.LOCAL_MACRO.NAME] = read_macro_name(ps, i)
    i = verify_tk(ps, i, "!")
    if ps.tokens[i].tk == "=" then
       return read_macro_alias_target(ps, i, node)
@@ -18974,11 +19088,12 @@ local function read_attached_macro(ps, i)
       table.insert(dot_pos, i)
       i = i + 1
       local part
-      i, part = read_identifier(ps, i)
+      i, part = read_macro_name(ps, i)
       if not part then
          return fail(ps, i, "expected macro name")
       end
       table.insert(names, part)
+      if macro_operator_symbol(part) then break end
    end
 
    if #names < 2 then
@@ -19032,7 +19147,7 @@ local function resolve_macro_aliases(ps)
          end
 
          if name and sig then
-            ps.macro_sigs[name.tk] = sig
+            if not ps.macro_sigs[name.tk] or not node.custom_operator then bind_macro_alias(ps, node, sig) end
             resolved_any = true
          else
             table.insert(unresolved, node)
@@ -19065,7 +19180,7 @@ local function read_local(ps, i)
       return read_local_function(ps, i)
    elseif ntk == "type" and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
       return read_type_declaration(ps, i + 2, "local_type")
-   elseif ntk == "macro" and ps.tokens[i + 2].kind == "identifier" then
+   elseif ntk == "macro" and (ps.tokens[i + 2].kind == "identifier" or ps.tokens[i + 2].tk == "(") then
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
@@ -19339,6 +19454,16 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       imported_macro_keys = {},
       macro_aliases = {},
    }
+   if operator_context then
+      for _, fixity in ipairs({ "prefix", "postfix", "infix" }) do
+         for symbol, spec in pairs(operator_context[fixity] or {}) do
+            local signature = { kinds = { "expr" }, vararg = "", operator = spec }
+            if fixity == "infix" then signature.kinds[2] = "expr" end
+            ps.macro_sigs["(" .. symbol .. ")"] = signature
+            ps.macro_sigs[spec.binding] = signature
+         end
+      end
+   end
    local i = 1
    local hashbang
    if ps.tokens[i].kind == "hashbang" then

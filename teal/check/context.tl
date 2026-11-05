@@ -2127,6 +2127,7 @@ function Context:find_record_to_extend(exp: Node): Type, Variable, string
          return nil, nil, dname
       end
       t = t.fields[fname]
+      if not t then return nil, nil, dname end
 
       if t is TypeDeclType then
          local def = t.def

@@ -62,4 +62,16 @@ describe('LSP member completion', function()
    it('does not guess unrelated record fields for an unknown receiver', function()
       assert.same({}, completions('local value: any = {}\nlocal result = value.'))
    end)
+
+   it('lists parenthesized local and attached operator macros', function()
+      local labels = completions([[
+         local macro (@)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end
+         local record Export end
+         macro Export.(|>)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end
+      ]])
+      local found = {}
+      for _, label in ipairs(labels) do found[label] = true end
+      assert.is_true(found['(@)!'])
+      assert.is_true(found['Export.(|>)!'])
+   end)
 end)

@@ -708,6 +708,21 @@ local function macro_name_at(tokens: {Token}, start: integer): string, integer
       if token.tk == "!" then
          return table.concat(parts, "") .. "!", index
       end
+      if token.tk == "(" then
+         table.insert(parts, "(")
+         index = index + 1
+         while tokens[index] and tokens[index].tk ~= ")" do
+            if tokens[index].tk == "(" or tokens[index].kind == "$EOF$" then return nil, index end
+            table.insert(parts, tokens[index].tk)
+            index = index + 1
+         end
+         if not tokens[index] then return nil, index end
+         table.insert(parts, ")")
+         local following = tokens[index + 1]
+         if following and following.tk == "!" then return table.concat(parts, "") .. "!", index + 1 end
+         if following and (following.tk == "(" or following.tk == "=") then return table.concat(parts, "") .. "!", index end
+         return nil, index
+      end
       if token.kind ~= "identifier" and token.tk ~= "." then
          return nil, index
       end

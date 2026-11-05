@@ -7,7 +7,7 @@ describe('custom operators in the CLI', function()
    it('checks and lowers operator macros for a standard Lua target', function()
       local source = util.write_tmp_file(finally, [[
          local function multiply(a: integer, b: integer): integer return a * b end
-         local macro matmul!(lhs: Expression, rhs: Expression): Operator<'@', infix, multiplicative>
+         local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, multiplicative>
             return `multiply($lhs, $rhs)`
          end
          return 2 @ 3 + 1

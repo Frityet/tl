@@ -7,7 +7,7 @@ describe("parser errors", function()
          "local macro broken!(x: Expre)\nlocal t = {value = }",
          "local macro broken!(x: Expression)\nlocal t = {value = }",
          "local macro broken!(x: Expression)\nreturn {value = }\nend",
-         'local macro broken!(x: Expression): Operator<"@", infix, additive>\nreturn {value = }\nend',
+         'local macro (@)!(x: Expression): Operator<infix, additive>\nreturn {value = }\nend',
       }) do
          local _, errs = tl.parse(code, "broken.tl")
          assert.is_true(#errs > 0, code)

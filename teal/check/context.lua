@@ -2127,6 +2127,7 @@ function Context:find_record_to_extend(exp)
          return nil, nil, dname
       end
       t = t.fields[fname]
+      if not t then return nil, nil, dname end
 
       if t.typename == "typedecl" then
          local def = t.def

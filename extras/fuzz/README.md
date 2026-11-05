@@ -55,13 +55,15 @@ fixtures, rather than language features needed to run the supervisor itself.
 
 ## Inputs and checks
 
-Generator **version 2** uses a local Park–Miller PRNG with explicit integer state;
+Generator **version 3** uses a local Park–Miller PRNG with explicit integer state;
 it never reads or changes Lua's global random state. Each
 `(seed, index, profile, native target lane, corpus, max-depth)` determines a case
-independently of jobs/order. Version 2 intentionally changes the old Python
-version 1 seed stream. Existing saved binary `.tl`/`.json` repros still replay
-with their original expected return/target; original Python seed indices cannot
-regenerate identical version 2 bytes. Keep original repro files for old bugs.
+independently of jobs/order. Version 2 changed the old Python version 1 seed
+stream; version 3 updates operator templates to parenthesized macro names and
+`Operator<fixity, precedence>`. Saved binary `.tl`/`.json` repros still replay
+with their original expected return/target, but operator sources using the old
+syntax need their original compiler. Seed indices cannot regenerate identical
+bytes across generator versions. Keep original repro files for old bugs.
 
 The eight interleaved profiles are:
 
@@ -162,11 +164,11 @@ luajit extras/fuzz/fuzz.lua --root /path/to/tl-ng --profile tl-ng \
   --lua luajit --targets 5.1,luajit --seed 33 --cases 10000 --jobs 4
 ```
 
-The profile interleaves 18 dialect generators: typed short functions, ternaries,
+The profile interleaves 20 dialect generators: typed short functions, ternaries,
 nil coalescing, safe navigation, compound assignments, `continue`, macros,
 named/symbolic/Unicode operators, prefix/postfix operators, precedence,
-associativity, lexical shadowing and generic callbacks. Standard targets use
-11 portable generators; native `luajit` uses all 18. Their independent numeric
+associativity, lexical shadowing, generic callbacks, and local/qualified operator
+imports. Standard targets use 13 portable generators; native `luajit` uses all 20. Their independent numeric
 oracles execute after lowering and also seed editor mutations. Native loading
 requires LuaJIT with the full backported extension set; the worker probes
 ternary support and does not emulate missing features. Native bit operations

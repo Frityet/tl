@@ -357,8 +357,13 @@ local function compile_local_macro(mb: Block, filename: string, read_lang: Block
       return
    end
 
+   local host_name = name
+   if name:sub(1, 1) == "(" then
+      host_name = "__teal_operator_macro"
+      (mast as ParserNode)[1].name.tk = host_name
+   end
    local code = lua_generator.generate(mast as ParserNode, macro_gen_target, lua_generator.fast_opts)
-   local chunk, load_err = load(code .. "\nreturn " .. name, name, "t", env.sandbox)
+   local chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })
       return
@@ -393,6 +398,10 @@ local function compile_macro_alias(mb: Block, env: MacroEnv): boolean
 
    env.macros[name_block.tk] = target
    env.signatures[name_block.tk] = env.signatures[target_key]
+   if mb.custom_operator then
+      env.macros[mb.custom_operator.binding] = target
+      env.signatures[mb.custom_operator.binding] = env.signatures[target_key]
+   end
    return true
 end
 
@@ -634,7 +643,8 @@ function macro_eval.compile_all_and_expand(node: Block, filename: string, read_l
       local remove: {integer} = {}
       for index, child in children(b) do
          if child.kind == "local_macro" and child.custom_operator then
-            compile_local_macro(child, filename, read_lang, env, errs)
+            if child[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then table.insert(aliases, child)
+            else compile_local_macro(child, filename, read_lang, env, errs) end
             table.insert(remove, 1, index)
          else
             collect_operators(child)

@@ -3,8 +3,8 @@ local tl = require('teal.api.v2')
 
 local function declaration(symbol, expression, fixity, precedence, associativity)
    local params = (fixity or 'infix') == 'infix' and 'lhs: Expression, rhs: Expression' or 'lhs: Expression'
-   return ('local macro apply!(%s): Operator<%q, %s, %s%s>\n return `%s`\nend\n'):format(
-      params, symbol, fixity or 'infix', precedence or 'multiplicative',
+   return ('local macro (%s)!(%s): Operator<%s, %s%s>\n return `%s`\nend\n'):format(
+      symbol, params, fixity or 'infix', precedence or 'multiplicative',
       associativity and (', ' .. associativity) or '', expression or '$lhs * $rhs')
 end
 
@@ -35,7 +35,7 @@ describe('custom operators declared by macros', function()
       local output = generate([[
          local utils = {}
          function utils.matmul(lhs: integer, rhs: integer): integer return lhs * rhs + 1 end
-         local macro matmul!(lhs: Expression, rhs: Expression): Operator<'@', infix, multiplicative>
+         local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, multiplicative>
             return `utils.matmul($lhs, $rhs)`
          end
          return 1 + 2 @ 3 * 4
@@ -73,7 +73,7 @@ describe('custom operators declared by macros', function()
       end
    end)
 
-   it('supports unused single symbols, Unicode symbols, and escaped backslashes', function()
+   it('supports unused single symbols, Unicode symbols, and raw backslashes', function()
       for _, symbol in ipairs({'@', '\\', '×', '÷', '⊗', '√'}) do
          assert.equals(10, run(declaration(symbol) .. 'return 2 ' .. symbol .. ' 5'))
       end
@@ -130,7 +130,7 @@ describe('custom operators declared by macros', function()
    end)
 
    it('can use one symbol for prefix and infix operators', function()
-      local prefix = declaration('@', '$lhs + 1', 'prefix', 'unary'):gsub('apply!', 'prefix!')
+      local prefix = declaration('@', '$lhs + 1', 'prefix', 'unary')
       assert.equals(10, run(declaration('@', '$lhs * $rhs') .. prefix .. 'return @ 4 @ 2'))
    end)
 
@@ -173,7 +173,7 @@ describe('custom operators declared by macros', function()
    end)
 
    it('keeps ordinary macro invocation available', function()
-      assert.equals(6, run(declaration('@') .. 'return apply!(2, 3)'))
+      assert.equals(6, run(declaration('@') .. 'return (@)!(2, 3)'))
    end)
 
    it('preserves operand evaluation order for the supplied call expansion', function()
@@ -205,7 +205,7 @@ describe('custom operators declared by macros', function()
       util.mock_io(finally, {
          ['ops.tl'] = [[
             local record Ops end
-            macro Ops.multiply!(lhs: Expression, rhs: Expression): Operator<'@', infix, multiplicative>
+            macro Ops.(@)!(lhs: Expression, rhs: Expression): Operator<infix, multiplicative>
                return `$lhs * $rhs`
             end
             return Ops
@@ -213,20 +213,150 @@ describe('custom operators declared by macros', function()
       })
       assert.equals(6, run([[
          local ops = require('ops')
-         local macro multiply! = ops.multiply!
+         local macro (@)! = ops.(@)!
          return 2 @ 3
       ]]))
    end)
 
-   it('preserves lexical bindings for explicit macro calls', function()
+   it('exports and imports the parenthesized operator syntax', function()
+      util.mock_io(finally, {
+         ['operators.tl'] = [[
+            local record Export end
+            macro Export.(||>)!(vals: Expression, fn: Expression): Operator<infix, additive>
+               return `($fn)($vals)`
+            end
+            return Export
+         ]],
+      })
+      assert.equals(7, run([[
+         local ops = require('operators')
+         local macro (||>)! = ops.(||>)!
+         local function inc(n: integer): integer return n + 1 end
+         return 6 ||> inc
+      ]]))
+   end)
+
+   it('keeps exported spellings inactive until explicitly imported', function()
+      util.mock_io(finally, {
+         ['ops.tl'] = [[
+            local record Export end
+            macro Export.(@)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end
+            return Export
+         ]],
+      })
+      rejects([[local ops = require('ops'); return 1 @ 2]])
+      assert.equals(3, run([[local ops = require('ops'); return ops.(@)!(1, 2)]]))
+   end)
+
+   it('supports local operator aliases and renaming', function()
+      assert.same({5, 5, 5}, {run(declaration('@', '$lhs + $rhs') .. [[
+         local macro (@@)! = (@)!
+         local macro (combine)! = (@@)!
+         return 2 @ 3, 2 @@ 3, (combine)!(2, 3)
+      ]])})
+   end)
+
+   it('keeps attached operators qualified until a local binding is declared', function()
+      local attached = [[
+         local record Export end
+         macro Export.(@)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end
+      ]]
+      rejects(attached .. 'return 2 @ 3')
+      assert.equals(5, run(attached .. 'local macro (@)! = Export.(@)!; return 2 @ 3'))
+   end)
+
+   it('can select distinct exported implementations of the same spelling', function()
+      util.mock_io(finally, {
+         ['ops.tl'] = [[
+            local record Export
+               record Add end
+               record Multiply end
+            end
+            macro Export.Add.(@)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end
+            macro Export.Multiply.(@)!(a: Expression, b: Expression): Operator<infix, multiplicative> return `$a * $b` end
+            return Export
+         ]],
+      })
+      assert.same({5, 6}, {run([[
+         local ops = require('ops')
+         local macro (plus)! = ops.Add.(@)!
+         local macro (times)! = ops.Multiply.(@)!
+         return 2 plus 3, 2 times 3
+      ]])})
+   end)
+
+   it('preserves lexical bindings through shadowed aliases', function()
       assert.same({5, 6, 5}, {run(declaration('@', '$lhs + $rhs') .. [[
-         local a = apply!(2, 3)
+         local macro (@@)! = (@)!
+         local a = 2 @@ 3
          local b = 0
          do
       ]] .. declaration('@', '$lhs * $rhs') .. [[
-            b = apply!(2, 3)
+            local macro (@@)! = (@)!
+            b = 2 @@ 3
          end
-         return a, b, apply!(2, 3)
+         return a, b, 2 @@ 3
+      ]])})
+   end)
+
+   it('supports operator spellings containing dots in imported paths', function()
+      util.mock_io(finally, {
+         ['ops.tl'] = [[
+            local record Export
+               record Nested end
+            end
+            macro Export.Nested.(?.@)!(a: Expression, b: Expression): Operator<infix, additive>
+               return `$a + $b`
+            end
+            return Export
+         ]],
+      })
+      assert.equals(5, run([[
+         local ops = require('ops')
+         local macro (?.@)! = ops.Nested.(?.@)!
+         return 2 ?.@ 3
+      ]]))
+   end)
+
+   it('does not reinterpret ordinary parenthesized macro calls', function()
+      assert.equals(4, run([[
+         local macro inc!(x: Expression): Expression return `$x + 1` end
+         return (inc)!(3)
+      ]]))
+   end)
+
+   it('rejects operator references in runtime expressions', function()
+      rejects([[local x = ops.(@)]], 'operator macro references')
+   end)
+
+   it('requires operator metadata on parenthesized names', function()
+      rejects([[local macro (@)!(a: Expression, b: Expression): Expression return `$a + $b` end]], 'requires Operator')
+      rejects([[local macro apply!(a: Expression, b: Expression): Operator<'@', infix, additive> return `$a + $b` end]], 'macro name')
+   end)
+
+   it('requires the macro marker on declarations and both sides of imports', function()
+      rejects([[local macro (@)(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end]])
+      rejects([[local record Export end; macro Export.(@)(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end]])
+      rejects(declaration('@') .. 'local macro (@@) = (@)!')
+      rejects(declaration('@') .. 'local macro (@@)! = (@)')
+   end)
+
+   it('rejects importing an ordinary macro as an operator', function()
+      rejects([[
+         local macro inc!(x: Expression): Expression return `$x + 1` end
+         local macro (@)! = inc!
+      ]], 'must target an operator macro')
+   end)
+
+   it('preserves lexical bindings for explicit macro calls', function()
+      assert.same({5, 6, 5}, {run(declaration('@', '$lhs + $rhs') .. [[
+         local a = (@)!(2, 3)
+         local b = 0
+         do
+      ]] .. declaration('@', '$lhs * $rhs') .. [[
+            b = (@)!(2, 3)
+         end
+         return a, b, (@)!(2, 3)
       ]])})
    end)
 
@@ -243,6 +373,16 @@ describe('custom operators declared by macros', function()
       assert.equals(7, run(declaration('@') .. [[
          local macro inc!(value: Expression) return `$value + 1` end
          return inc!(2 @ 3)
+      ]]))
+   end)
+
+   it('preserves explicit named operator calls inside quotes', function()
+      assert.equals(5, run(declaration('combine', '$lhs + $rhs') .. [[
+         local macro quoted!(): Expression return `(combine)!(2, 3)` end
+         do
+      ]] .. declaration('combine', '$lhs * $rhs') .. [[
+            return quoted!()
+         end
       ]]))
    end)
 
@@ -263,7 +403,7 @@ describe('custom operators declared by macros', function()
    end)
 
    it('preserves grouping for a single expression returned in a block', function()
-      assert.equals(2, run([[local macro add!(lhs: Expression, rhs: Expression): Operator<'@', infix, exponentiation>
+      assert.equals(2, run([[local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, exponentiation>
          local out = block('statements')
          table.insert(out, `$lhs + $rhs`)
          return out
@@ -273,13 +413,13 @@ describe('custom operators declared by macros', function()
 
    it('rejects built-in operators and reserved identifiers', function()
       for _, symbol in ipairs({'+', '-', '*', '/', '//', '~=', '??', '?.', '->', '..', '+=', 'and', 'if', 'local', 'is', 'as'}) do
-         rejects(declaration(symbol), 'non%-reserved identifier or unused symbols')
+         rejects(declaration(symbol))
       end
    end)
 
    it('rejects whitespace, delimiters, and comment-forming symbols', function()
-      for _, symbol in ipairs({'', 'two words', '1op', '(', '[', '{', ';', '$', '-->', "'", 'a@'}) do
-         rejects(declaration(symbol), 'non%-reserved identifier or unused symbols')
+      for _, symbol in ipairs({'', 'two words', '1op', '(', ')', '@(', '@)', '[', '{', ';', '$', '-->', "'", 'a@'}) do
+         rejects(declaration(symbol))
       end
    end)
 
@@ -291,9 +431,9 @@ describe('custom operators declared by macros', function()
    end)
 
    it('requires the correct number of Expression parameters', function()
-      rejects([[local macro f!(a: Expression): Operator<'@', infix, multiplicative> return `$a` end]], 'exactly 2')
-      rejects([[local macro f!(a: Statement, b: Expression): Operator<'@', infix, multiplicative> return `$b` end]], 'Expression')
-      rejects([[local macro f!(...: Expression): Operator<'@', prefix, unary> return `1` end]], 'exactly 1')
+      rejects([[local macro (@)!(a: Expression): Operator<infix, multiplicative> return `$a` end]], 'exactly 2')
+      rejects([[local macro (@)!(a: Statement, b: Expression): Operator<infix, multiplicative> return `$b` end]], 'Expression')
+      rejects([[local macro (@)!(...: Expression): Operator<prefix, unary> return `1` end]], 'exactly 1')
    end)
 
    it('rejects duplicate declarations and ambiguous infix/postfix bindings', function()
@@ -302,7 +442,7 @@ describe('custom operators declared by macros', function()
    end)
 
    it('rejects statement expansions in expressions', function()
-      rejects([[local macro f!(a: Expression, b: Expression): Operator<'@', infix, multiplicative>
+      rejects([[local macro (@)!(a: Expression, b: Expression): Operator<infix, multiplicative>
          return ```local n = $a + $b```
       end
       return 1 @ 2]], 'statements in an expression context')

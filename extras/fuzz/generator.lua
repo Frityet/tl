@@ -16,9 +16,9 @@ local generator = { RNG = {} }
 
 
 
-generator.version = 2
-generator.features = 18
-generator.portable = { 0, 1, 6, 7, 8, 9, 10, 11, 13, 16, 17 }
+generator.version = 3
+generator.features = 20
+generator.portable = { 0, 1, 6, 7, 8, 9, 10, 11, 13, 16, 17, 18, 19 }
 function generator.rng(seed, index)
    local rng = { state = ((seed % 2147483646) * 65537 + (index % 2147483646) * 104729) % 2147483646 + 1 }
    rng.next = function(self, n)
@@ -102,20 +102,19 @@ function generator.tlng_program(rng, feature, native)
       return string.format("local macro identity!(v: Expression): Expression\n return `$v`\nend\nreturn identity!(%s)", expr), value
    elseif feature == 7 then
       local symbol = pick(rng, { "@", "⊗", "<=>", "\\" })
-      local literal = '"' .. (symbol:gsub("\\", "\\\\")) .. '"'
-      return string.format("local macro product!(lhs: Expression, rhs: Expression): Operator<%s, infix, multiplicative>\n return `($lhs) * ($rhs)`\nend\nreturn %s %s 2 + 1", literal, expr, symbol), value * 2 + 1
+      return string.format("local macro (%s)!(lhs: Expression, rhs: Expression): Operator<infix, multiplicative>\n return `($lhs) * ($rhs)`\nend\nreturn %s %s 2 + 1", symbol, expr, symbol), value * 2 + 1
    elseif feature == 8 then
-      return string.format("local macro plus!(lhs: Expression, rhs: Expression): Operator<'combine', infix, additive>\n return `($lhs) + ($rhs)`\nend\nreturn %s combine 2 * 3", expr), value + 6
+      return string.format("local macro (combine)!(lhs: Expression, rhs: Expression): Operator<infix, additive>\n return `($lhs) + ($rhs)`\nend\nreturn %s combine 2 * 3", expr), value + 6
    elseif feature == 9 then
-      return string.format("local macro negate!(x: Expression): Operator<'@@', prefix, unary>\n return `-($x)`\nend\nreturn @@ %s", expr), -value
+      return string.format("local macro (@@)!(x: Expression): Operator<prefix, unary>\n return `-($x)`\nend\nreturn @@ %s", expr), -value
    elseif feature == 10 then
-      return string.format("local macro twice!(x: Expression): Operator<'@@', postfix, postfix>\n return `($x) * 2`\nend\nreturn %s @@ + 1", expr), value * 2 + 1
+      return string.format("local macro (@@)!(x: Expression): Operator<postfix, postfix>\n return `($x) * 2`\nend\nreturn %s @@ + 1", expr), value * 2 + 1
    elseif feature == 11 then
-      return string.format("local macro subtract!(lhs: Expression, rhs: Expression): Operator<'**', infix, exponentiation, right>\n return `($lhs) - ($rhs)`\nend\nreturn %s ** 2 ** 3", expr), value + 1
+      return string.format("local macro (**)!(lhs: Expression, rhs: Expression): Operator<infix, exponentiation, right>\n return `($lhs) - ($rhs)`\nend\nreturn %s ** 2 ** 3", expr), value + 1
    elseif feature == 12 then
       return string.format("const choose = || -> (true ? false : true)\nreturn choose() ? 1 : %s", expr), value
    elseif feature == 13 then
-      return string.format("local macro outer!(lhs: Expression, rhs: Expression): Operator<'@', infix, additive>\n return `($lhs) + ($rhs)`\nend\nlocal before = %s @ 2\ndo\n local macro inner!(lhs: Expression, rhs: Expression): Operator<'@', infix, additive>\n return `($lhs) * ($rhs)`\n end\n return before + (%s @ 3)\nend", expr, expr), value * 4 + 2
+      return string.format("local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, additive>\n return `($lhs) + ($rhs)`\nend\nlocal before = %s @ 2\ndo\n local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, additive>\n return `($lhs) * ($rhs)`\n end\n return before + (%s @ 3)\nend", expr, expr), value * 4 + 2
    elseif feature == 14 then
       return string.format("return (!false && %s != 0 || false) ? %s : 1", expr, expr), value ~= 0 and value or 1
    elseif feature == 15 then
@@ -124,6 +123,10 @@ function generator.tlng_program(rng, feature, native)
       return string.format("const thousand = 1_000\nreturn thousand + %s", expr), value + 1000
    elseif feature == 17 then
       return string.format("local function apply<A, B>(x: A, f: function(A): B): B\n return f(x)\nend\nreturn apply(%s, |n: number| -> n + 1)", expr), value + 1
+   elseif feature == 18 then
+      return string.format("local macro (@)!(a: Expression, b: Expression): Operator<infix, additive>\n return `$a + $b`\nend\nlocal macro (@@)! = (@)!\nreturn %s @@ 2", expr), value + 2
+   elseif feature == 19 then
+      return string.format("local record Export end\nmacro Export.(@)!(a: Expression, b: Expression): Operator<infix, additive>\n return `$a + $b`\nend\nlocal macro (@)! = Export.(@)!\nreturn %s @ 2", expr), value + 2
    end
    error("unknown tl-ng feature: " .. tostring(feature))
 end
