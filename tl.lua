@@ -17532,8 +17532,14 @@ do
       local prefix, prefix_width = find_operator(ps, i, "prefix")
       if prefix then
          i = i + prefix_width
+         local previous_errors = #ps.errs
          i, e1 = P(ps, i)
-         if not e1 then return fail(ps, i, "expected an operand for operator '" .. prefix.symbol .. "'") end
+         if not e1 then
+            if #ps.errs == previous_errors then
+               return fail(ps, i, "expected an operand for operator '" .. prefix.symbol .. "'")
+            end
+            return i
+         end
          i, e1 = E(ps, i, e1, prefix.precedence)
          e1 = operator_invocation(ps, t1, prefix, e1)
       elseif precedences[1][t1.tk] ~= nil then
@@ -19498,6 +19504,25 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
 
    if not skip_macro_expand and #errs == 0 then
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
+   elseif not skip_macro_expand then
+
+
+
+
+      local recovered = {}
+      local function recover_macro_declarations(b)
+         if recovered[b] then return end
+         recovered[b] = true
+         if b.kind == "local_macro" then
+            b.kind = "error_block"
+            for j = 1, math.max(5, #b) do b[j] = nil end
+         else
+            for j = 1, math.max(5, #b) do
+               if b[j] then recover_macro_declarations(b[j]) end
+            end
+         end
+      end
+      recover_macro_declarations(node)
    end
 
    local validating_continue = {}

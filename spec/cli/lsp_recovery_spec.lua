@@ -1,8 +1,45 @@
 local util = require('spec.util')
+local lsp = require('spec.lsp_util')
 
 describe('LSP parser recovery', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
+
+   for _, body in ipairs({'', 'return `print($expr)`'}) do
+      it('reports syntax without macro implementation errors: ' .. body, function()
+         local dir = util.write_tmp_dir(finally, {
+            ['diagnostic_fixture.d.tl'] = 'local record API value: integer end\nreturn API',
+         })
+         util.do_in(dir, function()
+            local source = 'local dependency = require("diagnostic_fixture")\n'
+               .. 'local macro (emit)!(expr: Expression): Operator<prefix, unary>\n'
+               .. body .. '\nend\nlocal value = emit []\nprint(dependency)'
+            local document = lsp.document(finally, source)
+            local repaired = [[local dependency = require("diagnostic_fixture")
+local macro (emit)!(expr: Expression): Operator<prefix, unary> return `$expr` end
+local value = emit 1
+print(dependency, value)]]
+            local responses = lsp.exchange(finally, {
+               {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+               {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+               {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic', params = {textDocument = {uri = document.uri}}},
+               {jsonrpc = '2.0', method = 'textDocument/didChange', params = {
+                  textDocument = {uri = document.uri, version = 2}, contentChanges = {{text = repaired}},
+               }},
+               {jsonrpc = '2.0', id = 3, method = 'textDocument/diagnostic', params = {textDocument = {uri = document.uri}}},
+               {jsonrpc = '2.0', id = 4, method = 'shutdown', params = {}},
+               {jsonrpc = '2.0', method = 'exit', params = {}},
+            })
+            local diagnostics = responses[2].items
+            assert.equals(1, #diagnostics)
+            assert.equals('syntax', diagnostics[1].code)
+            assert.equals('syntax error', diagnostics[1].message)
+            assert.equals(4, diagnostics[1].range.start.line)
+            assert.equals(19, diagnostics[1].range.start.character)
+            assert.same({}, responses[3].items)
+         end)
+      end)
+   end
 
    it('serves requests for damaged macros and recovers after edits', function()
       local uri = require('spec.lsp_util').document(finally, '').uri

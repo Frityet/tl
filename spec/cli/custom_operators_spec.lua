@@ -4,6 +4,22 @@ describe('custom operators in the CLI', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
 
+   it('reports only the syntax error for an invalid prefix operand', function()
+      local source = util.write_tmp_file(finally, [=[local macro (emit)!(expr: Expression): Operator<prefix, unary>
+   return `print($expr)`
+end
+local value = emit []]=])
+      local process = io.popen(util.tl_cmd('check', source) .. ' 2>&1', 'r')
+      local report = process:read('*a')
+      util.assert_popen_close(1, process:close())
+      assert.matches(':4:20:', report, 1, true)
+      local _, occurrences = report:gsub(':%d+:%d+:[^\n]*syntax error', '')
+      assert.equals(1, occurrences)
+      assert.not_matches('expected an operand', report, 1, true)
+      assert.not_matches('unknown type', report, 1, true)
+      assert.not_matches('cannot determine type', report, 1, true)
+   end)
+
    it('checks and lowers operator macros for a standard Lua target', function()
       local source = util.write_tmp_file(finally, [[
          local function multiply(a: integer, b: integer): integer return a * b end
