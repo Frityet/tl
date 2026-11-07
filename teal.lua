@@ -16504,20 +16504,22 @@ end
 local function search_tl_module(module_name)
    local path = os.getenv("TL_PATH") or package.path
    local slash_name = module_name:gsub("%.", "/")
-   for entry in path:gmatch("[^;]+") do
-      if not entry:match("%?[/\\]init%.lua$") then
-         local filename = entry:gsub("?", slash_name)
-         local tl_filename = filename:gsub("%.lua$", ".tl")
-         local fd = io.open(tl_filename, "rb")
-         if not fd then
-            tl_filename = filename:gsub("%.lua$", "/init.tl")
-            fd = io.open(tl_filename, "rb")
-         end
-         if fd then
-            local code = fd:read("*a")
-            fd:close()
-            if code then
-               return tl_filename, code
+   for _, suffix in ipairs({ ".tl", ".d.tl" }) do
+      for entry in path:gmatch("[^;]+") do
+         if not entry:match("%?[/\\]init%.lua$") then
+            local filename = entry:gsub("?", slash_name)
+            local tl_filename = filename:gsub("%.lua$", suffix)
+            local fd = io.open(tl_filename, "rb")
+            if not fd then
+               tl_filename = filename:gsub("%.lua$", "/init" .. suffix)
+               fd = io.open(tl_filename, "rb")
+            end
+            if fd then
+               local code = fd:read("*a")
+               fd:close()
+               if code then
+                  return tl_filename, code
+               end
             end
          end
       end
