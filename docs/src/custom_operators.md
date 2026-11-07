@@ -188,12 +188,17 @@ rejected; put the spelling in `(symbol)` and remove it from `Operator<...>`.
 
 ## Utility operators
 
-The `extra.macros.utilities` module provides three operators that expand entirely at
-compile time.
+The `extra.macros.utilities` module provides operators for pipelines and imports
+alongside typed table functions. The table operators `||>`, `+=>`, and `?>`
+call the module's runtime functions, so compiled programs using them load
+`extra/macros/utilities.lua`.
 
 ```lua
 local utilities = require("extra.macros.utilities")
 local macro (|>)! = utilities.(|>)!
+local macro (||>)! = utilities.(||>)!
+local macro (+=>)! = utilities.(+=>)!
+local macro (?>)! = utilities.(?>)!
 local macro (from)! = utilities.(from)!
 local macro (import)! = utilities.(import)!
 ```
@@ -209,6 +214,76 @@ Pipes bind more tightly than comparisons.
 | `x \|> f(y)` | `f(x, y)` |
 | `x \|> (f)` | `(f)(x)` |
 | `x \|> (f())` | `(f())(x)` |
+
+`||>` maps a table's entries into a new table. It takes a `{K:V}` and a callback
+of type `function(K, V): (UK, UV)`, returning a `{UK:UV}`. The callback receives
+the original key and value and returns the new key and value.
+
+```lua
+local scores: {string:integer} = { ada = 10, grace = 20 }
+local by_score: {integer:string} = scores ||> |name, score| -> do
+   return score, name:upper()
+end
+print(by_score[10]) -- ADA
+```
+
+The source and callback expressions are each evaluated once. Entries are visited
+with `pairs`, so when several entries produce the same key, the last one visited
+wins.
+
+`+=>` reduces a `{K:V}` to a single value. A callback of type
+`function(K, V): number` projects entries to numbers and sums them. For a
+different accumulator type `U`, pass `{ initial, reducer }` with a reducer of
+type `function(U, K, V): U`.
+
+```lua
+local scores: {string:integer} = { ada = 10, grace = 20 }
+local total = scores +=> |_, score| -> score
+local winner = scores +=> {"", |best, name, score| -> do
+   if best == "" or score > scores[best] then return name end
+   return best
+end}
+```
+
+Both forms iterate with `pairs`. An empty table yields zero in the sum form
+and the initial value in the seeded form.
+
+### Filtering, searching, and grouping
+
+```lua
+local scores: {string:integer} = { ada = 10, grace = 20 }
+local high = scores ?> |_, score| -> score >= 20
+local has_perfect = scores |> utilities.any(|_, score| -> score == 100)
+local all_positive = utilities.all(scores, |_, score| -> score > 0)
+local grace_score = utilities.find(scores, |name, _| -> name == "grace")
+local buckets = utilities.group_by(scores, |_, score| -> math.floor(score / 10))
+local names = utilities.keys(scores)
+local amounts = utilities.values(scores)
+```
+
+| Utility | Result |
+| --- | --- |
+| `?>`, `filter` | A new table containing matching entries at their original keys. |
+| `any` | Whether at least one entry matches. Returns `false` for an empty table. |
+| `all` | Whether every entry matches. Returns `true` for an empty table. |
+| `find` | The first matching value in iteration order, or `nil`. |
+| `group_by` | A table of groups. Each group preserves the original entry keys. |
+| `keys`, `values` | Arrays of the table's keys or values. |
+
+These utilities use `pairs`, so iteration order is unspecified. `any`, `all`,
+and `find` stop as soon as they can determine the result.
+
+### Inspecting a pipeline
+
+`utilities.tap` calls a function with the input and returns the input itself.
+
+```lua
+local function double(value: integer): integer return value * 2 end
+
+local answer = 21 |> utilities.tap(print) |> double -- prints 21, returns 42
+```
+
+### Destructuring and imports
 
 `from` takes a list of bare field names and declares them as locals in the
 surrounding scope. It evaluates the source once and reads the fields in order.
