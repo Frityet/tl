@@ -13,6 +13,9 @@ local teal = require("teal.init")
 local driver = require("tlcli.driver")
 local configuration = require("tlcli.configuration")
 local lexer = require("teal.lexer")
+local reader = require("teal.reader")
+
+local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
 
 
@@ -605,7 +608,19 @@ local COMPLETION_KEYWORDS = {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 local ensure_workspace_index
+local document_for
 
 local function remove_text_hints(server, document)
    for name in pairs(document.type_hints or {}) do
@@ -825,49 +840,80 @@ local function macro_invocation(document, index)
    return table.concat(parts, "") .. "!"
 end
 
+
 local function render_tealdoc(lines)
    local rendered = {}
+   local fence
    for _, line in ipairs(lines) do
-      local tag, parameter, description = line:match("^@([%w_]+)%s+([^%s]+)%s*(.*)$")
-      if tag == "param" then
-         table.insert(rendered, "**Parameter `" .. parameter .. "`:** " .. description)
-      elseif tag == "typearg" then
-         table.insert(rendered, "**Type parameter `" .. parameter .. "`:** " .. description)
-      elseif tag == "return" then
-         table.insert(rendered, "**Returns:** " .. (description ~= "" and (parameter .. " " .. description) or parameter))
-      elseif tag then
-         table.insert(rendered, "**@" .. tag .. " `" .. parameter .. "`:** " .. description)
+      local marker = line:match("^%s*(```+)") or line:match("^%s*(~~~+)")
+      if marker then
+         if not fence then fence = marker
+         elseif marker:sub(1, 1) == fence:sub(1, 1) and #marker >= #fence then fence = nil end
+         table.insert(rendered, line)
+      elseif fence then
+         table.insert(rendered, line)
       else
-         local bare_tag, bare_description = line:match("^@([%w_]+)%s*(.*)$")
-         if bare_tag then
-            table.insert(rendered, "**@" .. bare_tag .. ":** " .. bare_description)
+         local tag, body = line:match("^@([%w_]+)%s*(.*)$")
+         if tag then
+            if #rendered > 0 and rendered[#rendered] ~= "" then table.insert(rendered, "") end
+            local parameter, description = body:match("^(%S+)%s*(.*)$")
+            if tag == "param" or tag == "typearg" or tag == "field" then
+               local label = tag == "param" and "Parameter" or (tag == "typearg" and "Type parameter" or "Field")
+               table.insert(rendered, "**" .. label .. (parameter and (" `" .. parameter .. "`") or "") .. ":** " .. (description or ""))
+            elseif tag == "return" then
+               table.insert(rendered, "**Returns:** " .. body)
+            else
+               table.insert(rendered, "**@" .. tag .. ":** " .. body)
+            end
          else
             table.insert(rendered, line)
          end
       end
    end
-   return table.concat(rendered, "\n\n")
+   return table.concat(rendered, "\n")
+end
+
+local function comment_end_line(comment)
+   local _, count = comment.text:gsub("\n", "")
+   return comment.y + count
 end
 
 local function tealdoc_for_token(token)
    if not token or not token.comments or #token.comments == 0 then return nil end
+   local comments = token.comments
+   local last = comments[#comments]
+   if token.y - comment_end_line(last) > 1 then return nil end
+
+   local first = #comments
+   while first > 1 do
+      local previous = comments[first - 1]
+      if comments[first].y - comment_end_line(previous) > 1 then break end
+      first = first - 1
+      if previous.text:match("^%-%-%[(=*)%[") then break end
+   end
    local lines = {}
    local documenting = false
-   for _, comment in ipairs(token.comments) do
-      local text = comment.text
-      if text:match("^%-%-%-") or text:match("^%-%-%[%[%-%-") then
+   for index = first, #comments do
+      local text = comments[index].text
+      local equals = text:match("^%-%-%[(=*)%[%-%-")
+      if equals then
          documenting = true
-      elseif not documenting then
-         break
-      end
-      if documenting then
-         text = text:gsub("^%-%-%[%[%-%-?%s*", ""):gsub("%s*%]%]%-%-$", "")
-         text = text:gsub("^%-%-%-?%s?", "")
-         for line in (text .. "\n"):gmatch("(.-)\r?\n") do
-            local cleaned = line:gsub("^%s+", "")
-            cleaned = cleaned:gsub("%s+$", "")
-            table.insert(lines, cleaned)
+         text = text:sub(7 + #equals):gsub("%]" .. equals .. "%]%s*$", "")
+         local block_lines = split_lines(text)
+         while block_lines[1] == "" do table.remove(block_lines, 1) end
+         while block_lines[#block_lines] and block_lines[#block_lines]:match("^%s*$") do table.remove(block_lines) end
+         local indent
+         for _, line in ipairs(block_lines) do
+            if line:match("%S") then
+               local whitespace = #(line:match("^%s*") or "")
+               indent = indent and math.min(indent, whitespace) or whitespace
+            end
          end
+         for _, line in ipairs(block_lines) do table.insert(lines, line:sub((indent or 0) + 1)) end
+      elseif text:match("^%-%-%-") or documenting then
+         documenting = true
+         text = text:gsub("^%-%-%-? ?", ""):gsub("%s+$", "")
+         table.insert(lines, text)
       end
    end
    while lines[1] == "" do table.remove(lines, 1) end
@@ -1017,6 +1063,7 @@ local function analyze_document(server, document)
    end
    document.generated = nil
    document.semantic_full = nil
+   document.macro_hover_version = nil
 
    local compiler = server.compiler
    if not compiler then
@@ -1662,15 +1709,156 @@ local function prettify_macro_expansion(code)
    return table.concat(formatted, "\n")
 end
 
+local function macro_path(node)
+   if not node then return nil end
+   if node.kind == "identifier" then return node.tk end
+   if node.kind == "paren" then return macro_path(node[B.PAREN.EXP]) end
+   if node.kind == "op_dot" then
+      local owner, name = macro_path(node[B.OP.E1]), macro_path(node[B.OP.E2])
+      if owner and name then return owner .. "." .. name end
+   end
+end
+
+local function macro_hover_at(document, position)
+   if document.macro_hover_version ~= document.version then
+      document.macro_hovers = {}
+      document.macro_hover_version = document.version
+
+
+      local ok, tree = pcall(function()
+         local tree = reader.read(document.text, document.path, "tl", false, true)
+         return tree
+      end)
+      if not ok or not tree then return nil end
+      local declarations = {}
+      local aliases = {}
+      local uses = {}
+      local seen = {}
+      local function collect(node)
+         if seen[node] then return end
+         seen[node] = true
+         if node.kind == "local_macro" then
+            local name = node[B.LOCAL_MACRO.NAME]
+            local owner = macro_path(node[B.LOCAL_MACRO.OWNER])
+            if name then
+               declarations[(owner and (owner .. ".") or "") .. name.tk] = node
+               if node.custom_operator then declarations[node.custom_operator.binding] = node end
+               table.insert(aliases, node)
+            end
+            return
+         elseif node.kind == "macro_invocation" then
+            table.insert(uses, node)
+         elseif node.kind == "macro_quote" then
+            return
+         end
+         for index = 1, math.max(5, #node) do
+            if node[index] then collect(node[index]) end
+         end
+      end
+      collect(tree)
+      local function resolve(node, visited)
+         if not node or visited[node] then return nil end
+         visited[node] = true
+         local target = node[B.LOCAL_MACRO.TARGET]
+         if target then return resolve(declarations[macro_path(target)], visited) end
+         return node
+      end
+      local function add(site, definition, name, width, is_invocation)
+         if not site or not definition then return end
+         table.insert(document.macro_hovers, {
+            y = site.y, x = site.x, width = width or (#site.tk + 1),
+            name = name, definition = definition, is_invocation = is_invocation or false,
+         })
+      end
+      for _, declaration in ipairs(aliases) do
+         if declaration.f == document.path then
+            local definition = resolve(declaration, {})
+            local name = declaration[B.LOCAL_MACRO.NAME]
+            add(name, definition, name.tk .. "!")
+            local target = declaration[B.LOCAL_MACRO.TARGET]
+            if target then
+
+
+               for index, token in ipairs(document.tokens) do
+                  if token.y == declaration.y and token.x >= name.x and token.tk == "=" then
+                     local target_name, last = macro_name_at(document.tokens, index + 1)
+                     local first_token, last_token = document.tokens[index + 1], document.tokens[last]
+                     if target_name and first_token.y == last_token.y then
+                        local site = { kind = "identifier", f = document.path,
+                        tk = target_name, y = first_token.y, x = first_token.x, }
+                        add(site, definition, target_name, last_token.x + #last_token.tk - first_token.x)
+                     end
+                     break
+                  end
+               end
+            end
+         end
+      end
+      for _, use in ipairs(uses) do
+         local target = use[B.MACRO_INVOCATION.MACRO]
+         local definition = resolve(declarations[macro_path(target)], {})
+         if use.operator_use then
+            add(use, definition, use.tk, #use.tk, true)
+         else
+            local leaf = target
+            while leaf and leaf.kind == "op_dot" do leaf = leaf[B.OP.E2] end
+            add(leaf, definition, (macro_path(target) or use.tk) .. "!", nil, true)
+         end
+      end
+   end
+   local line = document.lines[(position.line or 0) + 1] or ""
+   local x = utf16_to_byte(line, position.character or 0) + 1
+   for _, reference in ipairs(document.macro_hovers or {}) do
+      if reference.y == (position.line or 0) + 1 and x >= reference.x and x < reference.x + reference.width then
+         return reference
+      end
+   end
+end
+
+local function macro_documentation(server, reference)
+   local definition = reference.definition
+   local path = definition.f
+   if path:sub(1, 1) ~= "/" and not path:match("^%a:[/\\]") then path = server.root .. "/" .. path end
+   local absolute = path:sub(1, 1) == "/"
+   local parts = {}
+   for part in path:gsub("\\", "/"):gmatch("[^/]+") do
+      if part == ".." and #parts > 0 then table.remove(parts)
+      elseif part ~= "." then table.insert(parts, part) end
+   end
+   path = (absolute and "/" or "") .. table.concat(parts, "/")
+   local origin = document_for(server, path_to_uri(path))
+   analyze_syntax(origin)
+   local y = definition.y
+
+   local name = definition[B.LOCAL_MACRO.NAME].tk .. "!"
+   local closest
+   for _, macro in ipairs(origin.macros) do
+      if macro.name == name or macro.name:sub(-(#name + 1)) == "." .. name then
+         if not closest or math.abs(macro.y - y) < math.abs(closest.y - y) then closest = macro end
+      end
+   end
+   if closest and (closest.y == y or origin.is_open) then y = closest.y end
+   local signature = (origin.lines[y] or ""):match("^%s*(.-)%s*$")
+   signature = signature:gsub("%s+return%s.*$", "")
+   return documentation_in_tokens(origin.tokens, y, definition.x), signature
+end
+
 local function hover(server, document, position)
    analyze_document(server, document)
    local token = token_at(document, position)
    if not token then return nil end
+   local reference = macro_hover_at(document, position)
    local info = type_info(document, position, token)
    local macro_detail
+   local macro_docs, macro_signature
+   if reference then
+      macro_detail = reference.is_invocation and "Teal macro invocation" or "Teal macro declaration"
+      macro_docs, macro_signature = macro_documentation(server, reference)
+      token = { kind = "op", tk = reference.name, y = reference.y, x = reference.x }
+   end
    local _, token_index = token_at(document, position)
    local following = next_token(document, token_index)
-   if following and following.tk == "!" then
+   if not reference and following and following.tk == "!" then
       macro_detail = "Teal macro invocation"
    end
    local syntax_field
@@ -1679,11 +1867,12 @@ local function hover(server, document, position)
    if not info and not macro_detail and not syntax_field then return nil end
    local text = "`" .. token.tk .. "`"
    if info then text = text .. "\n\n```teal\n" .. info.str .. "\n```" end
+   if macro_signature and macro_signature ~= "" then text = text .. "\n\n```teal\n" .. macro_signature .. "\n```" end
    if syntax_field then
       local detail = syntax_field.detail:match("^function%f[%A]") and syntax_field.detail or (token.tk .. ": " .. syntax_field.detail)
       text = text .. "\n\n```teal\n" .. detail .. "\n```"
    end
-   if macro_detail then
+   if macro_detail and (not reference or reference.is_invocation) then
       local expansion
       local by_line = document.macro_expansions[token.y]
       if by_line then
@@ -1703,7 +1892,7 @@ local function hover(server, document, position)
       text = text .. "\n\n**Macro expansion**"
       if expansion then text = text .. "\n\n```lua\n" .. prettify_macro_expansion(expansion) .. "\n```" end
    end
-   local documentation = documentation_in_tokens(document.tokens, token.y, token.x, token.tk)
+   local documentation = macro_docs or documentation_in_tokens(document.tokens, token.y, token.x, token.tk)
    if not documentation and info and info.file and info.file ~= "" then
       local target_path = info.file
       if target_path:sub(1, 1) ~= "/" and not target_path:match("^%a:[/\\]") then target_path = server.root .. "/" .. target_path end
@@ -1770,10 +1959,13 @@ local function hover(server, document, position)
          text = text .. "\n\n**Type definition**\n\n```teal\n" .. record_definition .. "\n```"
       end
    end
-   if macro_detail then text = text .. "\n\n" .. macro_detail .. ". Expanded by the compiler before type checking." end
+   if macro_detail then
+      text = text .. "\n\n" .. macro_detail .. "."
+      if not reference or reference.is_invocation then text = text .. " Expanded by the compiler before type checking." end
+   end
    return {
       contents = { kind = "markdown", value = text },
-      range = make_range(document.lines, token.y, token.x, #token.tk),
+      range = make_range(document.lines, token.y, token.x, reference and reference.width or #token.tk),
    }
 end
 
@@ -2170,7 +2362,7 @@ local function server_capabilities(server)
    return capabilities
 end
 
-local function document_for(server, uri)
+document_for = function(server, uri)
    local document = server.documents[uri]
    if document then return document end
    local path = uri_to_path(uri)

@@ -195,7 +195,7 @@ end
 util.lua_interpreter = arg[first_arg]
 
 vars_prefix = table.concat(vars_prefix)
-local lua_prefix = util.lua_interpreter .. " " .. tl_executable
+local lua_prefix = util.lua_interpreter .. " " .. string.format("%q", tl_executable)
 local cmd_prefix = vars_prefix .. " " .. lua_prefix
 
 function util.tl_pipe_cmd(piped, name, ...)

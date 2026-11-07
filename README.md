@@ -71,6 +71,16 @@ Once `tl` is in your path, there are a few subcommands:
   workspace root supplied by the editor and caches its workspace file manifest
   in `.cache/tl-lsp/workspace-index.paths`.
 
+Hover documentation uses [TealDoc-style comments](https://github.com/teal-language/tealdoc#tealdoc-comments)
+attached directly to declarations: start with `---`, continue with `--` or `---`,
+or use a `--[[-- ... ]]--` block. Markdown paragraphs, lists and fenced examples
+retain their layout; `@param`, `@typearg`, `@field`, `@return` and other tags are
+rendered as readable documentation. The LSP renders this itself and does not
+require TealDoc. Macro and operator hovers follow imported aliases back to their
+definition, so usage documentation also appears when hovering `+=>`, `?>` and
+other activated operators, including every character of a multi-character symbol.
+Open, unsaved documentation buffers take precedence over the file on disk.
+
 LSP features can be disabled per project in `tlconfig.lua`:
 
 ```lua
