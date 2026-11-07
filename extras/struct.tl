@@ -1,7 +1,135 @@
--- Import with:
--- local structs = require("extras.struct")
--- local macro (struct)! = structs.(struct)!
-local record Struct end
+--#pragma strict_nil on
+-- Import with require("extras.struct") and alias its (struct)! operator.
+
+local type Object = {any:any}
+
+local record Struct
+   record Field
+      name: string
+      required: boolean
+      readonly: boolean
+      default: (function(): any) | nil
+      get: (function(any): any) | nil
+      set: (function(any, any): any) | nil
+      invariant: (function(any): boolean) | nil
+      message: string | nil
+   end
+
+   record Descriptor
+      name: string
+      fields: {Field}
+      positional: {string}
+      auto: boolean
+      invariant: (function(any): boolean) | nil
+      by_name: {string:Field | nil}
+      mt: {string:any}
+   end
+
+   define: function(any, any)
+end
+
+local type Field = Struct.Field
+local type Descriptor = Struct.Descriptor
+
+local function fail(desc: Descriptor, field: Field, message: string)
+   error(desc.name .. "." .. field.name .. ": " .. message, 0)
+end
+
+local function validate_field(desc: Descriptor, field: Field, value: any)
+   if field.required and value == nil then fail(desc, field, "a value is required") end
+   local invariant = field.invariant
+   if invariant and not invariant(value) then
+      fail(desc, field, field.message or "invariant failed")
+   end
+end
+
+local function backing(field: Field): string
+   return "_" .. field.name
+end
+
+local function transformed(desc: Descriptor, field: Field, current: any, value: any): any
+   if field.required and value == nil then fail(desc, field, "a value is required") end
+   local setter = field.set
+   if setter then value = setter(current, value) end
+   validate_field(desc, field, value)
+   return value
+end
+
+local function validate_invariant(desc: Descriptor, instance: any)
+   local invariant = desc.invariant
+   if invariant and not invariant(instance) then error(desc.name .. ": struct invariant failed", 0) end
+end
+
+local function validate(desc: Descriptor, value: any)
+   local object = value as Object
+   if getmetatable(value) ~= desc.mt then error(desc.name .. ": expected a struct instance", 0) end
+   for _, field in ipairs(desc.fields) do validate_field(desc, field, rawget(object, backing(field))) end
+   validate_invariant(desc, value)
+end
+
+local function construct(desc: Descriptor, values: {string:any}): any
+   for key in pairs(values) do
+      if not desc.by_name[key] then error(desc.name .. ": unknown constructor field '" .. key .. "'", 0) end
+   end
+   local out: {string:any} = {}
+   for _, field in ipairs(desc.fields) do
+      local value = values[field.name]
+      if value == nil then
+         if field.required then fail(desc, field, "a value is required") end
+         local default = assert(field.default, "struct default callback is missing")
+         value = default()
+      end
+      -- A required field has no previous value. Its initial candidate is also
+      -- the initial `field` binding in a setter.
+      out[backing(field)] = transformed(desc, field, value, value)
+   end
+   local instance = setmetatable(out, desc.mt as metatable<{string:any}>)
+   validate_invariant(desc, instance)
+   return instance
+end
+
+function Struct.define(class_value: any, description: any)
+   local class = class_value as {string:any}
+   local desc = description as Descriptor
+   desc.by_name = {}
+   for _, field in ipairs(desc.fields) do desc.by_name[field.name] = field end
+   desc.mt = {
+      __index = function(self: Object, key: string): any
+         local field = desc.by_name[key]
+         if field then
+            local value = rawget(self, backing(field))
+            local getter = field.get
+            if getter then return getter(value) end
+            return value
+         end
+         return class[key]
+      end,
+      __newindex = function(self: any, key: string, value: any)
+         local field = desc.by_name[key]
+         if not field then return error(desc.name .. ": unknown property '" .. tostring(key) .. "'", 0) end
+         if field.readonly then fail(desc, field, "property is readonly") end
+         local candidate = transformed(desc, field, rawget(self as Object, backing(field)), value)
+         if desc.invariant then
+            local staged: {string:any} = {}
+            for _, member in ipairs(desc.fields) do staged[backing(member)] = rawget(self as Object, backing(member)) end
+            staged[backing(field)] = candidate
+            local view = setmetatable(staged, desc.mt as metatable<{string:any}>)
+            validate_invariant(desc, view)
+         end
+         rawset(self, backing(field), candidate)
+      end,
+   }
+   class.from = function(_class: any, values: {string:any}): any return construct(desc, values) end
+   class.validate = function(self: any): any validate(desc, self); return self end
+   if desc.auto then
+      class.create = function(_class: any, ...: any): any
+         if select("#", ...) > #desc.positional then error(desc.name .. ": too many constructor arguments", 0) end
+         local values: {string:any} = {}
+         for i, name in ipairs(desc.positional) do values[name] = select(i, ...) end
+         return construct(desc, values)
+      end
+   end
+end
 
 macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local B = BLOCK_INDEXES
@@ -134,12 +262,11 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    assert(schema.kind == "literal_table", "struct: expected a field table")
    local type_name = name.tk
    local self_type = nominal(name)
-   local fields, by_name, traits, interfaces = {}, {}, {}, {}
+   local fields, by_name, interfaces = {}, {}, {}
    local auto = false
    local whole_invariant
    local header_seen = {}
    local reserved = {Init = true, from = true, validate = true}
-   local builtin_methods = {Equal = "equal", Copy = "copy", Show = "show", Json = "to_json"}
 
    for _, item in ipairs(schema) do
       local typ = item[B.LITERAL_TABLE_ITEM.VALUE]
@@ -170,16 +297,13 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
       else
          assert(item[B.LITERAL_TABLE_ITEM.KEY].kind == "integer", "struct: fields require a type annotation and default")
          local target, args = call(typ)
-         assert(target and target.kind == "identifier", "struct: expected implements(...), deriving {...}, constructor(auto), or invariant(...)")
+         assert(target and target.kind == "identifier", "struct: expected implements(...), constructor(auto), or invariant(...)")
          local header = target.tk
          assert(not header_seen[header], "struct: duplicate header '" .. header .. "'")
          header_seen[header] = true
          if header == "implements" then
             local implemented = #args == 1 and args[1].kind == "literal_table" and list(args[1]) or args
             for _, interface in ipairs(implemented) do table.insert(interfaces, interface) end
-         elseif header == "deriving" then
-            assert(#args == 1, "struct: deriving expects one table")
-            traits = list(args[1])
          elseif header == "constructor" then
             assert(#args == 1 and args[1].kind == "identifier" and args[1].tk == "auto", "struct: constructor only accepts auto")
             auto = true; reserved.create = true
@@ -190,74 +314,6 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
       end
    end
 
-   local derives, custom_traits, derive_seen = {}, {}, {}
-   local function field_set(value)
-      local result, seen = {}, {}
-      for _, entry in ipairs(list(value)) do
-         local key = name_value(entry)
-         assert(by_name[key], "struct: unknown field '" .. key .. "' in deriving options")
-         assert(not seen[key], "struct: duplicate field '" .. key .. "' in deriving options")
-         seen[key] = true; table.insert(result, {key, boolean(true)})
-      end
-      return object(result)
-   end
-   for _, trait in ipairs(traits) do
-      local provider, args = call(trait)
-      local options = {}
-      if provider then
-         assert(#args == 1, "struct: a deriving trait expects one options table")
-         options = entries(args[1])
-      else provider = trait end
-      local builtin = provider.kind == "identifier" and builtin_methods[provider.tk]
-      if builtin then
-         assert(not derive_seen[provider.tk], "struct: duplicate deriving trait '" .. provider.tk .. "'")
-         derive_seen[provider.tk] = true; reserved[builtin] = true
-         local result = {}
-         for key, value in pairs(options) do
-            local allowed = (provider.tk == "Equal" and key == "ignore") or
-               (provider.tk == "Copy" and key == "deep") or
-               (provider.tk == "Show" and (key == "redact" or key == "omit")) or
-               (provider.tk == "Json" and (key == "omit" or key == "rename"))
-            assert(allowed, "struct: unknown " .. provider.tk .. " option '" .. key .. "'")
-            if key == "rename" then
-               local renamed, used = {}, {}
-               for original, alias in pairs(entries(value)) do
-                  assert(by_name[original], "struct: unknown renamed field '" .. original .. "'")
-                  local text = name_value(alias)
-                  assert(not used[text], "struct: duplicate Json output name '" .. text .. "'")
-                  used[text] = true; table.insert(renamed, {original, str(text)})
-               end
-               table.sort(renamed, function(a, b) return a[1] < b[1] end)
-               table.insert(result, {key, object(renamed)})
-            elseif key == "deep" and value.kind == "boolean" then table.insert(result, {key, value})
-            else table.insert(result, {key, field_set(value)}) end
-         end
-         if provider.tk == "Json" then
-            local omitted, renamed, output_names = {}, {}, {}
-            if options.omit then for _, entry in ipairs(list(options.omit)) do omitted[name_value(entry)] = true end end
-            if options.rename then for key, value in pairs(entries(options.rename)) do renamed[key] = name_value(value) end end
-            for _, field in ipairs(fields) do
-               if not omitted[field.name] then
-                  local key = renamed[field.name] or field.name
-                  assert(not output_names[key], "struct: duplicate Json output name '" .. key .. "'")
-                  output_names[key] = true
-               end
-            end
-         end
-         table.sort(result, function(a, b) return a[1] < b[1] end)
-         table.insert(derives, {provider.tk, object(result)})
-      else
-         nominal(provider)
-         for key in pairs(options) do assert(key == "implements" or key == "methods", "struct: unknown custom trait option '" .. key .. "'") end
-         assert(options.methods, "struct: custom traits need an explicit methods list and an interface contract")
-         assert(options.implements or #interfaces > 0, "struct: custom traits need an interface contract")
-         if options.implements then
-            for _, interface in ipairs(list(options.implements)) do table.insert(interfaces, interface) end
-         end
-         table.insert(custom_traits, {provider = provider, methods = list(options.methods)})
-      end
-   end
-   table.sort(derives, function(a, b) return a[1] < b[1] end)
    for _, field in ipairs(fields) do
       assert(not reserved[field.name], "struct: reserved/generated member '" .. field.name .. "'")
       assert(not by_name["_" .. field.name], "struct: backing field collision for '" .. field.name .. "'")
@@ -289,6 +345,7 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
          local union = node("union_type")
          union[1] = input_type; union[2] = nominal(ident("nil")); input_type = union
       end
+      field.input_type = input_type
       add_member(input_members, field.name, input_type)
    end
    table.insert(members, input)
@@ -299,31 +356,22 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    for _, required in ipairs({true, false}) do
       for _, field in ipairs(fields) do
          if field.required == required then
-            table.insert(positional, str(field.name)); table.insert(constructor_types, field.typ)
+            table.insert(positional, str(field.name)); table.insert(constructor_types, field.input_type)
             optional[#constructor_types] = not field.required
          end
       end
    end
    if auto then add_member(members, "create", function_type(constructor_types, {self_type}, optional)) end
-   for _, trait in ipairs({"Equal", "Copy", "Show", "Json"}) do
-      local method = builtin_methods[trait]
-      if derive_seen[trait] then
-         local args, returns = {self_type}, {self_type}
-         if trait == "Equal" then table.insert(args, self_type); returns = {(nominal(ident("boolean")))}
-         elseif trait == "Show" or trait == "Json" then returns = {(nominal(ident("string")))} end
-         add_member(members, method, function_type(args, returns))
-      end
-   end
    table.insert(out, declaration)
 
    local setup = (```do end```)[1]
    local statements = setup[B.DO.BODY]
-   local runtime = fresh("__struct_runtime")
-   table.insert(statements, local_value(runtime, `require("extras.struct_runtime")`))
+   local runtime = fresh("__struct_module")
+   table.insert(statements, local_value(runtime, `require("extras.struct")`))
    local runtime_fields = {}
    for i, field in ipairs(fields) do
       local metadata = {{"name", str(field.name)}, {"required", boolean(field.required)},
-         {"readonly", field.options.readonly or boolean(false)}, {"array", boolean(field.typ.kind == "array_type")}}
+         {"readonly", field.options.readonly or boolean(false)}}
       if not field.required then
          local expression = field.default
          local callback = `|| -> $expression`
@@ -362,7 +410,7 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
       table.insert(runtime_fields, object(metadata))
    end
    local descriptor = {{"name", str(type_name)}, {"fields", array(runtime_fields)},
-      {"positional", array(positional)}, {"auto", boolean(auto)}, {"derives", object(derives)}}
+      {"positional", array(positional)}, {"auto", boolean(auto)}}
    if whole_invariant then
       assert(whole_invariant.kind == "function", "struct: invariant needs a function literal")
       local callback_name = fresh("__struct_invariant")
@@ -372,17 +420,6 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local description = object(descriptor)
    table.insert(statements, (`$runtime.define($name, $description)`))
    table.insert(out, setup)
-   local supplied_methods, backing_names = {}, {}
-   for _, field in ipairs(fields) do backing_names["_" .. field.name] = true end
-   for _, trait in ipairs(custom_traits) do
-      for _, method in ipairs(trait.methods) do
-         local key = name_value(method)
-         assert(not by_name[key] and not reserved[key] and not supplied_methods[key] and not backing_names[key], "struct: duplicate/reserved trait method '" .. key .. "'")
-         supplied_methods[key] = true
-         local provider, member = trait.provider, ident(key)
-         table.insert(out, (```$name.$member = $provider.$member```)[1])
-      end
-   end
    return out
 end
 

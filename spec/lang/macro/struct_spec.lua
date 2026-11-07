@@ -7,7 +7,7 @@ local macro (struct)! = structs.(struct)!
    local function compile(source)
       local ast, errors = tl.parse(imports .. source, 'struct-fixture.tl')
       assert.same({}, errors)
-      return tl.check(ast, 'struct-fixture.tl', {gen_target = '5.1', gen_compat = 'off'})
+      return tl.check(ast, 'struct-fixture.tl', {gen_target = '5.1', gen_compat = 'off', feat_strict_nil = 'on'})
    end
    local function run(source)
       local checked = compile(source)
@@ -73,7 +73,7 @@ local macro (struct)! = structs.(struct)!
    end)
 
    it('supports nullable properties with strict nil enabled', function()
-      assert.equals(0, run([[--#pragma strict_nil on
+      assert.equals(0, run([[
          struct Sample {
             value: string | nil = property {default = "hello", get = x -> x};
             tags: {string} = {};
@@ -87,12 +87,12 @@ local macro (struct)! = structs.(struct)!
 
    it('preserves names captured by defaults and setters', function()
       assert.equals(8, run([[
-         local __struct_runtime = 5
+         local __struct_module = 5
          local __struct_current = 3
          struct Sample {
             constructor(auto);
             value: integer = property {
-               default = __struct_runtime;
+               default = __struct_module;
                set = new -> do field = new + __struct_current end;
             };
          }
@@ -149,7 +149,7 @@ local macro (struct)! = structs.(struct)!
             serial: integer = next_value();
             tags: {integer} = {};
          }
-         local a, b, c = Sample:create(), Sample:create(), Sample:create(7)
+         local a, b, c = Sample:create(), Sample:create(nil), Sample:create(7)
          a.tags[1] = 9
          return a.serial, b.serial, calls, #b.tags, c.serial
       ]])})
@@ -212,73 +212,19 @@ local macro (struct)! = structs.(struct)!
       assert.has_error(function() value.unknown = 1 end, "Sample: unknown property 'unknown'")
    end)
 
-   it('derives equality, selective deep copy, redacted display and JSON', function()
-      local a, b, shown, encoded = run([[
-         struct Sample {
-            constructor(auto), deriving {
-               Equal {ignore = {"stamp"}}, Copy {deep = {"tags"}},
-               Show {redact = {"secret"}}, Json {omit = {"secret"}, rename = {id = "identifier"}},
-            };
-            id: integer = required;
-            tags: {string} = {};
-            secret: string = "hidden";
-            stamp: integer = 1;
-         }
-         local a = Sample:create(7)
-         a.tags[1] = "first"
-         local b = a:copy()
-         b.stamp = 2
-         assert(a:equal(b))
-         return a, b, a:show(), a:to_json()
-      ]])
-      assert.is_true(a == b)
-      assert.equals(shown, tostring(a))
-      b.tags[1] = 'changed'
-      assert.equals('first', a.tags[1])
-      assert.is_false(a == b)
-      assert.not_matches('hidden', shown, 1, true)
-      assert.matches('<redacted>', shown, 1, true)
-      assert.equals('{"identifier":7,"tags":["first"],"stamp":1}', encoded)
-   end)
-
-   it('encodes empty arrays and optional nil values correctly', function()
-      assert.equals('{"tags":[],"value":null}', run([[
-         struct Sample {
-            constructor(auto), deriving {Json};
-            tags: {string} = {}; value: string | nil = nil;
-         }
-         return Sample:create():to_json()
-      ]]))
-   end)
-
-   it('supports cyclic deep copies and diagnoses cyclic JSON', function()
-      local value = run([[
-         struct Sample {
-            constructor(auto), deriving {Copy {deep = true}, Json};
-            links: {string:any} = {};
-         }
-         return Sample:create()
-      ]])
-      value.links.self = value.links
-      local copy = value:copy()
-      assert.not_equals(value.links, copy.links)
-      assert.equals(copy.links, copy.links.self)
-      assert.has_error(function() value:to_json() end, 'Json: cyclic value')
-   end)
-
-   it('checks and installs custom trait providers through native interfaces', function()
+   it('supports handwritten methods through native interfaces', function()
       assert.equals('item:7', run([[
          local interface Labelled
             id: integer
-            label: function(Labelled): string
+            label: function(self: Labelled): string
          end
-         local record Labels end
-         function Labels.label(value: Labelled): string return "item:" .. tostring(value.id) end
          struct Sample {
-            constructor(auto), deriving {Labels {implements = {Labelled}, methods = {label}}};
+            implements(Labelled), constructor(auto);
             id: integer = required;
          }
-         return Sample:create(7):label()
+         function Sample:label(): string return "item:" .. tostring(self.id) end
+         local value: Labelled = Sample:create(7)
+         return value:label()
       ]]))
    end)
 
@@ -287,15 +233,6 @@ local macro (struct)! = structs.(struct)!
          local interface HasId id: integer end
          struct Sample {implements(HasId); id: string = required;}
       ]], 'does not match definition in interface')
-   end)
-
-   it('type-checks custom trait method assignments against their interface', function()
-      type_error([[
-         local interface Labelled label: function(Labelled): string end
-         local record Labels end
-         function Labels.label(_value: Labelled): integer return 42 end
-         struct Sample {deriving {Labels {implements = {Labelled}, methods = {label}}};}
-      ]], 'string')
    end)
 
    it('type-checks getter, invariant and setter contracts', function()
@@ -314,13 +251,15 @@ local macro (struct)! = structs.(struct)!
       type_error('struct Sample {constructor(auto); id: integer = required;}\nlocal x = Sample:create(1); print(x._id)', '_id')
    end)
 
+   it('rejects the removed deriving header', function()
+      rejects('struct Sample {deriving {Equal}; value: integer = 0;}', "unknown header 'deriving'")
+   end)
+
    it('diagnoses malformed metadata and naming conflicts', function()
       rejects('struct Sample(T) {value: T = required;}', 'generic parameters are deferred')
       rejects('struct Sample {constructor(manual); value: integer = 0;}', 'constructor only accepts auto')
       rejects('struct Sample {value: integer = 0; _value: integer = 1;}', 'backing field collision')
       rejects('struct Sample {value: integer = 0; value: integer = 1;}', 'duplicate field')
-      rejects('struct Sample {deriving {Equal {ignore = {"missing"}}}; value: integer = 0;}', 'unknown field')
-      rejects('struct Sample {deriving {Json {rename = {x = "y"}}}; x: integer = 0; y: integer = 1;}', 'duplicate Json output name')
       rejects('struct Sample {value: integer = required {set = |field, new| -> do field = new end};}', 'exactly one value parameter')
       rejects('struct Sample {value: integer = required {set = field -> field};}', 'cannot shadow')
       rejects('struct Sample {value: integer = required {typo = true};}', 'unknown property option')

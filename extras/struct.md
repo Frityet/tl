@@ -1,17 +1,16 @@
 # Struct operator
 
 Run the example from the repository root with `./tl run extras/struct_example.tl`.
-Import the operator explicitly:
+Import the operator explicitly.
 
 ```lua
 local structs = require("extras.struct")
 local macro (struct)! = structs.(struct)!
 ```
 
-The declaration module is [`struct.d.tl`](struct.d.tl). It emits a native Teal
-record and typed callbacks, plus a call to the [`struct_runtime`](struct_runtime.tl)
-helper. The generated program needs `extras/struct_runtime.lua` on its Lua
-module path. The declaration module itself is used at compile time.
+The macro and runtime live in [`struct.tl`](struct.tl), with strict nil checking
+enabled. The macro emits a native Teal record and typed callbacks. Generated
+programs load `extras/struct.lua` from their Lua module path.
 
 ```lua
 struct Counter {
@@ -43,7 +42,7 @@ print(counter.value) -- 30
   `constructor(auto)` for that form. There is no `constructor(manual)` mode.
 - `implements(Interface, OtherInterface)` emits native interface conformance.
   List the data fields in the struct body, and supply ordinary record methods
-  after the declaration or through deriving.
+  after the declaration.
 - Generic struct declarations are deferred.
 
 ## Hooks and storage
@@ -68,53 +67,8 @@ assignments to the property itself; in-place edits inside a table field are
 ordinary table operations. Use validation hooks as predicates, since their
 side effects are not rolled back.
 
-## Deriving
-
-```lua
-deriving {
-   Equal {ignore = {"created_at"}},
-   Copy {deep = {"tags"}},
-   Show {redact = {"access_token"}},
-   Json {omit = {"access_token"}, rename = {id = "employee_id"}},
-};
-```
-
-| Trait | Generated API | Behavior |
-| --- | --- | --- |
-| `Equal` | `a:equal(b)`, `a == b` | Compares stored values structurally, skipping ignored fields. |
-| `Copy` | `a:copy()` | Copies backing slots without rerunning setters. `deep = true` copies all nested tables; a list selects fields. |
-| `Show` | `a:show()`, `tostring(a)` | Formats public values in declaration order. Supports `omit` and `redact`. |
-| `Json` | `a:to_json()` | Encodes public values, with field omission and renaming. Direct array annotations preserve empty arrays. |
-
-Custom traits are ordinary typed method providers. This keeps them reusable
-with native interface polymorphism and avoids macro calls inside another macro:
-
-```lua
-local interface Labelled
-   id: integer
-   label: function(self: Labelled): string
-end
-
-local record Labels end
-function Labels.label(self: Labelled): string
-   return "item:" .. tostring(self.id)
-end
-
-struct Item {
-   deriving {Labels {implements = {Labelled}, methods = {label}}};
-   id: integer = required;
-}
-
-print(Item:from {id = 7}:label()) -- item:7
-```
-
-The expansion adds `Labelled` to the record's interfaces and assigns
-`Item.label = Labels.label`. Teal checks that assignment against the interface.
-If the interface is already listed in the main `implements` header, the provider
-can specify just `methods`. A provider can also be a qualified module field.
-
-To regenerate the runtime after editing it:
+To regenerate the Lua runtime, run this command from the repository root.
 
 ```sh
-./tl gen --check --gen-target=5.1 --gen-compat=off extras/struct_runtime.tl -o extras/struct_runtime.lua
+./tl gen --gen-target=5.1 --gen-compat=off -o extras/struct.lua extras/struct.tl
 ```
