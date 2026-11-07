@@ -102,6 +102,23 @@ macro Utilities.(||>)!(source: Expression, transform: Expression): Operator<infi
    return `require("extras.macros.utilities").map($source, $transform)`
 end
 
+--- Sum projected entries, or reduce a table from an initial accumulator.
+---
+--- ```teal
+--- local utilities = require("extras.macros.utilities")
+--- local macro (+=>)! = utilities.(+=>)!
+--- local scores: {string:integer} = {red = 4, blue = 6}
+--- local total = scores +=> |_, value| -> value -- 10
+--- local product = scores +=> {1, |acc, _, value| -> acc * value} -- 24
+--- ```
+---
+--- A sum callback receives `(key, value)` and returns a number; an empty table
+--- sums to zero. With `{initial, reducer}`, the reducer receives
+--- `(accumulator, key, value)` and returns the next accumulator; an empty table
+--- returns `initial`. Traversal uses `pairs`, so iteration order is unspecified.
+--- @param source Table to traverse without modifying it.
+--- @param reduction Sum callback, or `{initial, reducer}` for a general reduction.
+--- @return The numeric sum, or the final accumulator.
 macro Utilities.(+=>)!(source: Expression, reduction: Expression): Operator<infix, shift>
    if reduction.kind == "literal_table" then
       local item = BLOCK_INDEXES.LITERAL_TABLE_ITEM
@@ -116,6 +133,21 @@ macro Utilities.(+=>)!(source: Expression, reduction: Expression): Operator<infi
    return `require("extras.macros.utilities").sum($source, $reduction)`
 end
 
+--- Filter a table while preserving the original keys and values.
+---
+--- ```teal
+--- local utilities = require("extras.macros.utilities")
+--- local macro (?>)! = utilities.(?>)!
+--- local scores: {string:integer} = {red = 4, blue = 6}
+--- local selected = scores ?> |_, value| -> value >= 5 -- {blue = 6}
+--- ```
+---
+--- The predicate receives `(key, value)` for each entry. Entries with a true
+--- result are copied to a new table; the source is unchanged. Array keys are
+--- preserved rather than compacted, so filtering an array can leave gaps.
+--- @param source Table to filter.
+--- @param predicate Function `(key, value): boolean` deciding which entries to keep.
+--- @return A new table containing the matching entries under their original keys.
 macro Utilities.(?>)!(source: Expression, predicate: Expression): Operator<infix, shift>
    return `require("extras.macros.utilities").filter($source, $predicate)`
 end
