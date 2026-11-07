@@ -322,7 +322,11 @@ local values: {integer} = {1, 2}
 ]] .. case[3]
          local value = text(hover(source, {['tlconfig.lua'] = 'return {include_dir = {"extras"}}', extras = {auxlib = {['tables.tl'] = module}}}))
          assert.matches(case[2], value, 1, true)
-         assert.matches('local tables = require("auxlib.tables")', value, 1, true)
+         if case[1] == '||>' then
+            assert.matches('local tables = require("auxlib.tables")', value, 1, true)
+         else
+            assert.matches('local scores: {string:integer} = { red = 4, blue = 6 }', value, 1, true)
+         end
          assert.matches('**Parameter `source`:**', value, 1, true)
       end)
    end
