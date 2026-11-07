@@ -1,4 +1,4 @@
-local structs = require("extra.macros.struct")
+local structs = require("extras.macros.struct")
 local macro (struct)! = structs.(struct)!
 
 local interface Identifiable

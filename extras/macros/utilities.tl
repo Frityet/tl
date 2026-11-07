@@ -99,7 +99,7 @@ function Utilities.tap<T>(value: T, inspect: function(T)): T
 end
 
 macro Utilities.(||>)!(source: Expression, transform: Expression): Operator<infix, shift>
-   return `require("extra.macros.utilities").map($source, $transform)`
+   return `require("extras.macros.utilities").map($source, $transform)`
 end
 
 macro Utilities.(+=>)!(source: Expression, reduction: Expression): Operator<infix, shift>
@@ -111,13 +111,13 @@ macro Utilities.(+=>)!(source: Expression, reduction: Expression): Operator<infi
          assert(entry.implicit_table_key, message)
       end
       local initial, reducer = reduction[1][item.VALUE], reduction[2][item.VALUE]
-      return `require("extra.macros.utilities").reduce($source, $initial, $reducer)`
+      return `require("extras.macros.utilities").reduce($source, $initial, $reducer)`
    end
-   return `require("extra.macros.utilities").sum($source, $reduction)`
+   return `require("extras.macros.utilities").sum($source, $reduction)`
 end
 
 macro Utilities.(?>)!(source: Expression, predicate: Expression): Operator<infix, shift>
-   return `require("extra.macros.utilities").filter($source, $predicate)`
+   return `require("extras.macros.utilities").filter($source, $predicate)`
 end
 
 macro Utilities.(import)!(fields: Expression): Operator<prefix, unary>

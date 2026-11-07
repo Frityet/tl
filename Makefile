@@ -113,7 +113,7 @@ suite:
 	fi
 
 suite-strict:
-	${BUSTED} -v $(TESTFLAGS) spec/lang extra/macros
+	${BUSTED} -v $(TESTFLAGS) spec/lang extras/macros
 	${BUSTED} -v $(TESTFLAGS) spec/api
 	${BUSTED} -v $(TESTFLAGS) spec/cli
 

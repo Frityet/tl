@@ -189,13 +189,13 @@ rejected; put the spelling in `(symbol)` and remove it from `Operator<...>`.
 
 ## Utility operators
 
-The `extra.macros.utilities` module provides operators for pipelines and imports
+The `extras.macros.utilities` module provides operators for pipelines and imports
 alongside typed table functions. The table operators `||>`, `+=>`, and `?>`
 call the module's runtime functions, so compiled programs using them load
-`extra/macros/utilities.lua`.
+`extras/macros/utilities.lua`.
 
 ```lua
-local utilities = require("extra.macros.utilities")
+local utilities = require("extras.macros.utilities")
 local macro (|>)! = utilities.(|>)!
 local macro (||>)! = utilities.(||>)!
 local macro (+=>)! = utilities.(+=>)!

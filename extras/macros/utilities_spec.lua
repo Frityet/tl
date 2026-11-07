@@ -3,7 +3,7 @@ local util = require('spec.util')
 
 describe('extras utilities operators', function()
    local imports = [[
-local utilities = require("extra.macros.utilities")
+local utilities = require("extras.macros.utilities")
 local macro (|>)! = utilities.(|>)!
 local macro (||>)! = utilities.(||>)!
 local macro (+=>)! = utilities.(+=>)!
@@ -21,7 +21,7 @@ local macro (import)! = utilities.(import)!
       assert.same({}, result.type_errors)
       local output = assert(tl.generate(result.ast, '5.1'))
       if macro_only then
-         assert.not_matches('extra.macros.utilities', output, 1, true)
+         assert.not_matches('extras.macros.utilities', output, 1, true)
       end
       return assert(loadstring(output), output)()
    end

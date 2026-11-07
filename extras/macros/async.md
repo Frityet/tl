@@ -4,7 +4,7 @@ Add the repository root to your Teal and Lua module search paths. Import the
 runtime and the two macros in each Teal module that uses the syntax.
 
 ```lua
-local tasks = require("extra.macros.async")
+local tasks = require("extras.macros.async")
 local macro (async)! = tasks.(async)!
 local macro (await)! = tasks.(await)!
 local type Scope = tasks.Scope

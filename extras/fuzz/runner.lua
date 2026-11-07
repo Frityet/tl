@@ -291,7 +291,7 @@ function runner.main(argv, source_here)
    local directories = { here .. "/corpus" }
    if opts.profile == "tl-ng" then
       directories[#directories + 1] = here .. "/profiles/tl-ng"
-      directories[#directories + 1] = here .. "/../../extra/macros/struct_fuzz.tl"
+      directories[#directories + 1] = here .. "/../../extras/macros/struct_fuzz.tl"
    end
    for _, path in ipairs(opts.corpus) do directories[#directories + 1] = path end
    for _, directory in ipairs(directories) do
