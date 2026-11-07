@@ -547,6 +547,55 @@ function TypeReporter:get_report()
 end
 
 
+function TypeReporter:discard_unused_types()
+   local tr = self.tr
+   local live = {}
+   local pending = {}
+   local function keep(id)
+      local info = id and tr.types[id]
+      if info and not live[id] then
+         live[id] = info
+         table.insert(pending, info)
+      end
+   end
+   for _, id in pairs(self.typename_to_num) do keep(id) end
+   for _, id in pairs(tr.globals) do keep(id) end
+   for _, positions in ipairs({ tr.by_pos, tr.member_receivers }) do
+      for _, lines in pairs(positions) do
+         for _, row in pairs(lines) do
+            for _, id in pairs(row) do keep(id) end
+         end
+      end
+   end
+   local function keep_symbols(symbols)
+      for _, symbol in ipairs(symbols or {}) do
+         if symbol[3] ~= "@{" and symbol[3] ~= "@}" then keep(symbol[4]) end
+      end
+   end
+   for _, symbols in pairs(tr.symbols_by_file) do keep_symbols(symbols) end
+   keep_symbols(tr.symbols)
+   while #pending > 0 do
+      local info = table.remove(pending)
+      keep(info.ref)
+      keep(info.keys)
+      keep(info.values)
+      keep(info.elements)
+      for _, id in pairs(info.fields or {}) do keep(id) end
+      for _, id in pairs(info.meta_fields or {}) do keep(id) end
+      for _, id in ipairs(info.types or {}) do keep(id) end
+      for _, parameter in ipairs(info.args or {}) do keep(parameter[1]) end
+      for _, ret in ipairs(info.rets or {}) do keep(ret[1]) end
+      for _, type_parameter in ipairs(info.typeargs or {}) do keep(type_parameter[2]) end
+   end
+   local numbers = {}
+   for typeid, id in pairs(self.typeid_to_num) do
+      if live[id] then numbers[typeid] = id end
+   end
+   tr.types = live
+   self.typeid_to_num = numbers
+end
+
+
 
 
 

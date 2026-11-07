@@ -559,8 +559,10 @@ local record Document
    path: string
    text: string
    version: integer
+   is_open: boolean
    lines: {string}
    analysis_version: integer
+   syntax_version: integer
    tokens: {Token}
    tokens_by_line: {integer: {Token}}
    token_indices: {Token: integer}
@@ -571,6 +573,8 @@ local record Document
    type_declarations: {string: Token}
    fields_by_name: {string: {SyntaxField}}
    fields_by_type: {string: {string: {SyntaxField}}}
+   type_hints: {string:boolean}
+   field_hints: {string:boolean}
    diagnostics: AnyArray
    macros: {MacroInfo}
    macros_by_name: {string: MacroInfo}
@@ -594,13 +598,36 @@ local record Server
    shutdown: boolean
    workspace_indexed: boolean
    compiler: Compiler
+   completion_compiler: Compiler
+   completion_document: Document
+   type_report_checkpoint: integer
    pending_diagnostics: {Document:boolean}
    diagnostics_due: number
 end
 
 local ensure_workspace_index: function(Server)
 
+local function remove_text_hints(server: Server, document: Document)
+   for name in pairs(document.type_hints or {}) do
+      local documents = server.type_documents[name]
+      if documents then
+         documents[document] = nil
+         if not next(documents) then server.type_documents[name] = nil end
+      end
+   end
+   for name in pairs(document.field_hints or {}) do
+      local documents = server.field_documents[name]
+      if documents then
+         documents[document] = nil
+         if not next(documents) then server.field_documents[name] = nil end
+      end
+   end
+end
+
 local function index_text_hints(server: Server, document: Document)
+   remove_text_hints(server, document)
+   document.type_hints = {}
+   document.field_hints = {}
    for _, line in ipairs(document.lines) do
       local type_name = line:match("%f[%a]record%s+([%a_][%w_]*)") or
          line:match("%f[%a]interface%s+([%a_][%w_]*)") or line:match("%f[%a]enum%s+([%a_][%w_]*)")
@@ -608,12 +635,14 @@ local function index_text_hints(server: Server, document: Document)
          local documents = server.type_documents[type_name]
          if not documents then documents = {}; server.type_documents[type_name] = documents end
          documents[document] = true
+         document.type_hints[type_name] = true
       end
       local field_name = line:match("^%s*([%a_][%w_]*)%s*:")
       if field_name then
          local documents = server.field_documents[field_name]
          if not documents then documents = {}; server.field_documents[field_name] = documents end
          documents[document] = true
+         document.field_hints[field_name] = true
       end
    end
 end
@@ -635,6 +664,7 @@ local function load_workspace_config(server: Server)
    config.quiet = true
    server.tlconfig = config
    server.compiler = nil
+   server.type_report_checkpoint = nil
 end
 
 local function lsp_enabled(server: Server, feature: string): boolean
@@ -649,6 +679,7 @@ local function document_new(uri: string, text: string, version: integer): Docume
       version = version or 0,
       lines = split_lines(text),
       analysis_version = -1,
+      syntax_version = -1,
       tokens = {},
       tokens_by_line = {},
       token_indices = {},
@@ -899,64 +930,16 @@ local function append_diagnostics(document: Document, out: AnyArray, errors: {Te
    end
 end
 
-local function analyze_document(server: Server, document: Document): Document
-   if document.analysis_version == document.version then
-      return document
-   end
-   document.generated = nil
-   document.semantic_full = nil
+-- Workspace queries can use the token index without running the type checker.
+local function analyze_syntax(document: Document, tokens?: {Token})
+   if document.syntax_version == document.version then return end
+   if not tokens then tokens = lexer.lex(document.text, document.path) end
    document.document_symbols_cache = nil
    document.folding_ranges_cache = nil
-
-   local compiler = server.compiler
-   if not compiler then
-      compiler = driver.setup_compiler(server.tlconfig)
-      compiler:enable_type_reporting(true)
-      server.compiler = compiler
-   end
-   local input, input_err = compiler:input(document.text, document.path)
-   local diagnostics = array()
-   local tokens: {Token} = {}
-   local module: Module
-   local check_error: CheckError
-
-   if input == nil then
-      table.insert(diagnostics, {
-         range = make_range(document.lines, 1, 1, 1), severity = 1,
-         source = "tl", message = input_err or "could not read document",
-      })
-   else
-      local ok, checked_module, checked_errors = pcall(function(): Module, CheckError
-         local token_list = input:lex()
-         tokens = token_list.tokens
-         local parse_tree = token_list:parse()
-         return parse_tree:check(module_name_from_path(document.path, server.root))
-      end)
-      if ok then
-         module = checked_module
-         check_error = checked_errors
-      else
-         table.insert(diagnostics, {
-            range = make_range(document.lines, 1, 1, 1), severity = 1,
-            source = "tl", code = "compiler-crash",
-            message = "compiler recovery: " .. tostring(checked_module),
-         })
-      end
-   end
-
-   if check_error then
-      append_diagnostics(document, diagnostics, check_error.syntax_errors, 1, "syntax", server)
-      append_diagnostics(document, diagnostics, check_error.type_errors, 1, "type", server)
-      append_diagnostics(document, diagnostics, check_error.warnings, 2, "warning", server)
-   end
-
    document.tokens = tokens
    document.tokens_by_line = {}
    document.token_indices = {}
    document.tokens_by_name = {}
-   document.type_info_cache = {}
-   document.type_id_cache = {}
-   document.type_info_resolved = {}
    document.type_declarations = {}
    document.fields_by_name = {}
    document.fields_by_type = {}
@@ -1022,13 +1005,69 @@ local function analyze_document(server: Server, document: Document): Document
       end
       if current_type and line_text:match("^%s*end%f[%A]") then current_type = nil end
    end
+   document.macros = collect_macros(tokens)
+   document.macros_by_name = {}
+   for _, macro in ipairs(document.macros) do document.macros_by_name[macro.name] = macro end
+   document.syntax_version = document.version
+end
+
+local function analyze_document(server: Server, document: Document): Document
+   if document.analysis_version == document.version then
+      return document
+   end
+   document.generated = nil
+   document.semantic_full = nil
+
+   local compiler = server.compiler
+   if not compiler then
+      compiler = driver.setup_compiler(server.tlconfig)
+      compiler:enable_type_reporting(true)
+      server.compiler = compiler
+   end
+   local input, input_err = compiler:input(document.text, document.path)
+   local diagnostics = array()
+   local tokens: {Token} = {}
+   local module: Module
+   local check_error: CheckError
+
+   if input == nil then
+      table.insert(diagnostics, {
+         range = make_range(document.lines, 1, 1, 1), severity = 1,
+         source = "tl", message = input_err or "could not read document",
+      })
+   else
+      local ok, checked_module, checked_errors = pcall(function(): Module, CheckError
+         local token_list = input:lex()
+         tokens = token_list.tokens
+         local parse_tree = token_list:parse()
+         return parse_tree:check(module_name_from_path(document.path, server.root))
+      end)
+      if ok then
+         module = checked_module
+         check_error = checked_errors
+      else
+         table.insert(diagnostics, {
+            range = make_range(document.lines, 1, 1, 1), severity = 1,
+            source = "tl", code = "compiler-crash",
+            message = "compiler recovery: " .. tostring(checked_module),
+         })
+      end
+   end
+
+   if check_error then
+      append_diagnostics(document, diagnostics, check_error.syntax_errors, 1, "syntax", server)
+      append_diagnostics(document, diagnostics, check_error.type_errors, 1, "type", server)
+      append_diagnostics(document, diagnostics, check_error.warnings, 2, "warning", server)
+   end
+
+   analyze_syntax(document, tokens)
+   document.type_info_cache = {}
+   document.type_id_cache = {}
+   document.type_info_resolved = {}
    document.diagnostics = diagnostics
    document.module = module
    document.type_report = compiler:get_type_report()
    document.symbols = document.type_report and document.type_report.symbols_by_file[document.path] or {}
-   document.macros = collect_macros(tokens)
-   document.macros_by_name = {}
-   for _, macro in ipairs(document.macros) do document.macros_by_name[macro.name] = macro end
    document.macro_expansions = {}
    document.analysis_version = document.version
    return document
@@ -1230,7 +1269,7 @@ local function syntax_member(server: Server, document: Document, token: Token): 
    ensure_workspace_index(server)
    local candidates = receiver_type and server.type_documents[receiver_type] or server.field_documents[token.tk]
    for candidate in pairs(candidates or {}) do
-      analyze_document(server, candidate)
+      analyze_syntax(candidate)
       if not receiver_type or candidate.type_declarations[receiver_type] then
          local typed_fields = receiver_type and candidate.fields_by_type[receiver_type]
          local matches = typed_fields and typed_fields[token.tk]
@@ -1243,7 +1282,8 @@ end
 local function find_definition(server: Server, document: Document, name: string, position?: Position): AnyObject
    if position then
       local token, token_index = token_at(document, position)
-      if token and is_declaration(document, token_index) then
+      if not token or token.kind ~= "identifier" then return nil end
+      if is_declaration(document, token_index) then
          return { uri = document.uri, range = make_range(document.lines, token.y, token.x, #token.tk) }
       end
       local macro_name = token and macro_invocation(document, token_index)
@@ -1252,7 +1292,7 @@ local function find_definition(server: Server, document: Document, name: string,
          if macro_info then return { uri = document.uri, range = make_range(document.lines, macro_info.y, macro_info.x, #token.tk) } end
          ensure_workspace_index(server)
          for _, candidate in pairs(server.documents) do
-            analyze_document(server, candidate)
+            analyze_syntax(candidate)
             macro_info = candidate.macros_by_name[macro_name]
             if macro_info then return { uri = candidate.uri, range = make_range(candidate.lines, macro_info.y, macro_info.x, #token.tk) } end
          end
@@ -1273,7 +1313,7 @@ local function find_definition(server: Server, document: Document, name: string,
          if type_location then return type_location end
          ensure_workspace_index(server)
          for candidate in pairs(server.type_documents[token.tk] or {}) do
-            analyze_document(server, candidate)
+            analyze_syntax(candidate)
             type_location = type_declaration_location(candidate, token.tk)
             if type_location then return type_location end
          end
@@ -1301,9 +1341,16 @@ local function find_definition(server: Server, document: Document, name: string,
    if local_location then return local_location end
    ensure_workspace_index(server)
    for _, candidate in pairs(server.documents) do
-      analyze_document(server, candidate)
-      local location = symbol_location(candidate, name, nil)
-      if location then return location end
+      if candidate.text:find(name, 1, true) then
+         analyze_syntax(candidate)
+         local named = candidate.tokens_by_name[name] or {}
+         for i = #named, 1, -1 do
+            local token = named[i]
+            if is_declaration(candidate, candidate.token_indices[token]) then
+               return { uri = candidate.uri, range = make_range(candidate.lines, token.y, token.x, #name) }
+            end
+         end
+      end
    end
 end
 
@@ -1366,9 +1413,12 @@ local function all_locations(server: Server, name: string, identity?: string): A
    local result = array()
    for _, document in pairs(server.documents) do
       if document.text:find(name, 1, true) then
-         analyze_document(server, document)
-         for _, range in ipairs(all_word_ranges(document, name, identity)) do
-            table.insert(result, { uri = document.uri, range = range })
+         analyze_syntax(document)
+         if document.tokens_by_name[name] then
+            if identity then analyze_document(server, document) end
+            for _, range in ipairs(all_word_ranges(document, name, identity)) do
+               table.insert(result, { uri = document.uri, range = range })
+            end
          end
       end
    end
@@ -1391,21 +1441,27 @@ local function completion_probe_report(server: Server, document: Document, posit
    local offset = lsp_position_to_offset(document.text, document.lines, position)
    local placeholder = "__teal_completion_probe" .. (separator.tk == ":" and "()" or "")
    local source = document.text:sub(1, offset - 1) .. placeholder .. document.text:sub(offset)
-   local config: TlConfig = {}
-   for key, value in pairs(server.tlconfig as AnyObject) do (config as AnyObject)[key] = value end
-   config._init_env_modules = {}
-   for _, name in ipairs(server.tlconfig._init_env_modules or {}) do table.insert(config._init_env_modules, name) end
    local ok, report = pcall(function(): TypeReport
-      -- Completing a dangling member must not prevent otherwise valid macros
-      -- from expanding. Check a private, repaired snapshot without publishing
-      -- its placeholder diagnostics or replacing the real document analysis.
-      local compiler = driver.setup_compiler(config)
-      compiler:enable_type_reporting(true)
+      -- Reuse checked dependencies while keeping repaired source and type IDs
+      -- separate from the editor document's analysis.
+      if server.completion_document ~= document or not server.completion_compiler then
+         local config: TlConfig = {}
+         for key, value in pairs(server.tlconfig as AnyObject) do (config as AnyObject)[key] = value end
+         config._init_env_modules = {}
+         for _, name in ipairs(server.tlconfig._init_env_modules or {}) do table.insert(config._init_env_modules, name) end
+         local compiler = driver.setup_compiler(config)
+         compiler:enable_type_reporting(true)
+         server.completion_compiler = compiler
+         server.completion_document = document
+      end
+      local compiler = server.completion_compiler
+      compiler.env.reporter = nil
       local input = compiler:input(source, document.path)
       if not input then return nil end
       input:lex():parse():check()
       return compiler:get_type_report()
    end)
+   if not ok then server.completion_compiler = nil end
    return ok and report or nil
 end
 
@@ -1485,7 +1541,7 @@ local function completion_items(server: Server, document: Document, position: Po
          if receiver_type and not candidates then ensure_workspace_index(server); candidates = server.type_documents[receiver_type] end
          if receiver_type and not candidates then candidates = { [document] = true } end
          for candidate in pairs(candidates or {}) do
-            analyze_document(server, candidate)
+            analyze_syntax(candidate)
             local available = candidate.fields_by_type[receiver_type]
             for name, fields in pairs(available or {}) do
                local field = fields[1]
@@ -1702,9 +1758,11 @@ local function hover(server: Server, document: Document, position: Position): An
       if not type_location and type_name then
          ensure_workspace_index(server)
          for _, candidate in pairs(server.documents) do
-            analyze_document(server, candidate)
-            type_location = type_declaration_location(candidate, type_name)
-            if type_location then break end
+            if candidate.text:find(type_name, 1, true) then
+               analyze_syntax(candidate)
+               type_location = type_declaration_location(candidate, type_name)
+               if type_location then break end
+            end
          end
       end
       local record_definition = declaration_preview(server, type_location)
@@ -1735,8 +1793,8 @@ local function signature_help(server: Server, document: Document, position: Posi
    }
 end
 
-local function document_symbols(server: Server, document: Document): AnyArray
-   analyze_document(server, document)
+local function document_symbols(document: Document): AnyArray
+   analyze_syntax(document)
    if document.document_symbols_cache then return document.document_symbols_cache end
    local result = array()
    local declaration_kinds: {string: integer} = {
@@ -1768,7 +1826,7 @@ local function workspace_symbols(server: Server, query: string): AnyArray
    local result = array()
    local needle = (query or ""):lower()
    for _, document in pairs(server.documents) do
-      for _, raw_symbol in ipairs(document_symbols(server, document)) do
+      for _, raw_symbol in ipairs(document_symbols(document)) do
          local symbol = raw_symbol as AnyObject
          local symbol_name = symbol.name as string
          if needle == "" or symbol_name:lower():find(needle, 1, true) then
@@ -2010,9 +2068,9 @@ local function linked_editing(document: Document, position: Position): AnyObject
    return { ranges = all_word_ranges(document, token.tk), wordPattern = "[A-Za-z_][A-Za-z0-9_]*" }
 end
 
-local function code_lenses(server: Server, document: Document): AnyArray
+local function code_lenses(document: Document): AnyArray
    local result = array()
-   for _, raw_symbol in ipairs(document_symbols(server, document)) do
+   for _, raw_symbol in ipairs(document_symbols(document)) do
       local symbol = raw_symbol as AnyObject
       if symbol.kind == 12 then
          local selection = symbol.selectionRange as Range
@@ -2095,7 +2153,13 @@ local function server_capabilities(server: Server): AnyObject
    if lsp_enabled(server, "type_hierarchy") then capabilities.typeHierarchyProvider = true end
    if lsp_enabled(server, "document_colors") then capabilities.colorProvider = true end
    if lsp_enabled(server, "monikers") then capabilities.monikerProvider = true end
-   if lsp_enabled(server, "diagnostics") then capabilities.diagnosticProvider = { identifier = "teal", interFileDependencies = true, workspaceDiagnostics = true } end
+   if lsp_enabled(server, "diagnostics") then
+      capabilities.diagnosticProvider = {
+         identifier = "teal",
+         interFileDependencies = true,
+         workspaceDiagnostics = server.tlconfig.lsp and server.tlconfig.lsp.workspace_diagnostics == true or false,
+      }
+   end
    if lsp_enabled(server, "code_actions") then capabilities.codeActionProvider = { codeActionKinds = mark_array({ "quickfix", "source" } as AnyArray) } end
    if lsp_enabled(server, "semantic_highlighting") then
       capabilities.semanticTokensProvider = {
@@ -2217,9 +2281,22 @@ local function handle_notification(server: Server, method: string, params: AnyOb
    elseif method == "workspace/didChangeConfiguration" or method == "workspace/didChangeWorkspaceFolders" or method == "workspace/didChangeWatchedFiles" then
       server.workspace_indexed = false
       server.compiler = nil
-      for _, document in pairs(server.documents) do
-         document.analysis_version = -1
-         publish_diagnostics(server, document)
+      server.type_report_checkpoint = nil
+      server.completion_compiler = nil
+      server.completion_document = nil
+      server.type_documents = {}
+      server.field_documents = {}
+      for uri, document in pairs(server.documents) do
+         if document.is_open then
+            document.analysis_version = -1
+            document.module = nil
+            document.type_report = nil
+            document.type_info_cache = {}
+            index_text_hints(server, document)
+            schedule_diagnostics(server, document)
+         else
+            server.documents[uri] = nil
+         end
       end
       return true
    elseif method == "exit" then
@@ -2227,7 +2304,13 @@ local function handle_notification(server: Server, method: string, params: AnyOb
    elseif method == "textDocument/didOpen" then
       local item = params.textDocument as AnyObject
       local uri = item.uri as string
+      local previous = server.documents[uri]
+      if previous then
+         remove_text_hints(server, previous)
+         server.pending_diagnostics[previous] = nil
+      end
       local document = document_new(uri, item.text as string or "", item.version as integer or 0)
+      document.is_open = true
       server.documents[uri] = document
       index_text_hints(server, document)
       schedule_diagnostics(server, document)
@@ -2240,9 +2323,12 @@ local function handle_notification(server: Server, method: string, params: AnyOb
       end
       document.version = text_document.version as integer or document.version + 1
       document.analysis_version = -1
+      document.syntax_version = -1
       index_text_hints(server, document)
       schedule_diagnostics(server, document)
    elseif method == "textDocument/didSave" then
+      server.completion_compiler = nil
+      server.completion_document = nil
       local text_document = params.textDocument as AnyObject
       local uri = text_document.uri as string
       local document = document_for(server, uri)
@@ -2250,6 +2336,7 @@ local function handle_notification(server: Server, method: string, params: AnyOb
          document.text = params.text as string
          document.lines = split_lines(document.text)
          document.analysis_version = -1
+         document.syntax_version = -1
          index_text_hints(server, document)
       end
       server.pending_diagnostics[document] = nil
@@ -2258,7 +2345,15 @@ local function handle_notification(server: Server, method: string, params: AnyOb
       local text_document = params.textDocument as AnyObject
       local uri = text_document.uri as string
       local document = server.documents[uri]
-      if document then server.pending_diagnostics[document] = nil end
+      if document then
+         remove_text_hints(server, document)
+         server.pending_diagnostics[document] = nil
+         server.workspace_indexed = false
+      end
+      if document and server.completion_document == document then
+         server.completion_compiler = nil
+         server.completion_document = nil
+      end
       server.documents[uri] = nil
       notification("textDocument/publishDiagnostics", { uri = uri, diagnostics = array() })
    end
@@ -2370,7 +2465,7 @@ local function handle_request(server: Server, method: string, params: AnyObject)
       return { changes = changes }
    elseif method == "textDocument/documentSymbol" then
       local uri = request_uri(params)
-      return document_symbols(server, document_for(server, uri))
+      return document_symbols(document_for(server, uri))
    elseif method == "workspace/symbol" then
       return workspace_symbols(server, params.query as string)
    elseif method == "textDocument/semanticTokens/full" then
@@ -2411,7 +2506,7 @@ local function handle_request(server: Server, method: string, params: AnyObject)
       return linked_editing(document, params.position as Position) or JSON_NULL
    elseif method == "textDocument/codeLens" then
       local uri = request_uri(params)
-      return code_lenses(server, document_for(server, uri))
+      return code_lenses(document_for(server, uri))
    elseif method == "codeLens/resolve" then
       local data = params.data as AnyObject
       local uri = data.uri as string
@@ -2559,6 +2654,11 @@ return function(tlconfig: TlConfig, args: Args)
    }
 
    while true do
+      local reporter = server.compiler and server.compiler.env.reporter
+      if reporter and reporter.next_num - (server.type_report_checkpoint or 0) >= 8192 then
+         reporter:discard_unused_types()
+         server.type_report_checkpoint = reporter.next_num
+      end
       if next(server.pending_diagnostics) then
          -- Other requests do not restart the pending diagnostic batch's wait.
          local now = server.diagnostics_due and monotonic_ms()
