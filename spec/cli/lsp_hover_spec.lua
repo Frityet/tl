@@ -163,6 +163,18 @@ return @H@identity(2)
       assert.matches('Multiline function summary.', value, 1, true)
    end)
 
+   it('shows interpolation and format-spec documentation for the bundled f macro', function()
+      local value = text(hover([[
+local format = require('auxlib.format')
+local macro f! = format.f!
+local price = 12.345
+return @H@f!"Price {price:.2f}"
+]]))
+      assert.matches('Interpolate a literal string', value, 1, true)
+      assert.matches('price:.2f', value, 1, true)
+      assert.matches('**Parameter `template`:**', value, 1, true)
+   end)
+
    local fixture = [[
 local record API end
 --- Imported operator summary.

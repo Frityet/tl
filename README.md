@@ -52,7 +52,7 @@ JavaScript, so everything runs on the client.
 ### Bundled auxiliary library
 
 The strict-nil library lives in `extras/auxlib`: require `auxlib.tables`,
-`auxlib.async` or `auxlib.struct`. The checkout's `tl` launcher adds `extras/`
+`auxlib.async`, `auxlib.struct` or `auxlib.format`. The checkout's `tl` launcher adds `extras/`
 to the module search path. When embedding the compiler or running generated Lua
 separately, add `<tl>/extras/?.lua` and `<tl>/extras/?/init.lua` to `package.path`.
 Public APIs and macros carry TealDoc comments in their `.tl` sources; library
@@ -62,6 +62,23 @@ tests live in `extras/auxlib/tests/`.
 `(value, idx)` with a one-based index and returns one mapped value.
 Other table projections and predicates receive `(value, key)`; reducers receive
 `(accumulator, value, key)`.
+
+`auxlib.format` supplies `f!` interpolation with printf-style field specs:
+
+```teal
+local format = require("auxlib.format")
+local macro f! = format.f!
+local name = "Ada"
+local price = 12.345
+print(f!"Hello {name}, price {price:.2f}")
+```
+
+Escape literal braces as `{{` and `}}`. Plain fields use `tostring`; specs such
+as `04d`, `08x`, `+8.2f`, `10s`, `-10s` and `q` select numeric/string formatting.
+The macro emits concatenation for plain templates and a single `string.format`
+call when a field has a format spec. The reproducible benchmark is
+`extras/auxlib/tests/format_bench.lua`; run it with the target LuaJIT executable
+and `LUA_PATH='./?.lua;./?/init.lua;./extras/?.lua;;'`.
 
 ### Using the compiler directly
 

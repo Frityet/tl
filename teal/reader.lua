@@ -3982,7 +3982,17 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
 
 
    if not skip_macro_expand and #errs == 0 then
-      node = macro_eval.compile_all_and_expand(node, filename, lang, errs)
+      local function parse_expression(source)
+         local program, parse_errors = reader.read("return " .. source, filename, lang, false, true)
+         if #parse_errors > 0 then error("invalid expression: " .. parse_errors[1].msg, 0) end
+         if #program ~= 1 or program[1].kind ~= "return" then
+            error("expected a single expression", 0)
+         end
+         local expressions = program[1][BLOCK_INDEXES.RETURN.EXPS]
+         if not expressions or #expressions ~= 1 then error("expected a single expression", 0) end
+         return expressions[1]
+      end
+      node = macro_eval.compile_all_and_expand(node, filename, lang, errs, parse_expression)
    elseif not skip_macro_expand then
 
 

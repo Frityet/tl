@@ -176,7 +176,7 @@ local function require_call_module_name(n)
    return nil
 end
 
-function macro_eval.new_env(errs)
+function macro_eval.new_env(errs, parse_expression)
    local env = {
       macros = {},
       signatures = {},
@@ -255,6 +255,14 @@ function macro_eval.new_env(errs)
       end
       table.insert(errs, { filename = env.where.f, y = env.where.y, x = env.where.x, msg = "expected " .. k .. ", got " .. (b and b.kind or "nil") })
       return nil
+   end
+
+
+   env.sandbox.parse_expression = function(source)
+      assert(parse_expression, "expression parsing is unavailable in this macro environment")
+      local expression = parse_expression(source)
+      reanchor_block_positions(expression, env.where.y, env.where.x, {})
+      return expression
    end
 
    return env
@@ -657,8 +665,11 @@ local function block_uses_name(b, name, skip)
       if not visited[current] then
          visited[current] = true
          if current.kind == "identifier" and current.tk == name then return true end
-         for _, child in children(current) do
-            if not visited[child] then table.insert(pending, child) end
+         for index, child in children(current) do
+
+
+            local member_name = (current.kind == "op_dot" or current.kind == "op_colon") and index == BLOCK_INDEXES.OP.E2
+            if not member_name and not visited[child] then table.insert(pending, child) end
          end
       end
    end
@@ -675,9 +686,9 @@ local function remove_macro_only_requires(node, imported_aliases)
    end
 end
 
-function macro_eval.compile_all_and_expand(node, filename, read_lang, errs)
+function macro_eval.compile_all_and_expand(node, filename, read_lang, errs, parse_expression)
    seen = setmetatable({}, { __mode = "k" })
-   local env = macro_eval.new_env(errs)
+   local env = macro_eval.new_env(errs, parse_expression)
    local aliases = {}
 
    local collected_operators = {}

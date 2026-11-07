@@ -80,8 +80,8 @@ Macros that you import from another module are attached to the record, just as `
 Use a local macro alias when an imported macro is used frequently:
 
 ```lua
-local utilities = require("utilities")
-local macro f! = utilities.f!
+local format = require("auxlib.format")
+local macro f! = format.f!
 
 local message = f!"Hello, {name}!"
 ```
@@ -181,6 +181,10 @@ The macro sandbox provides helpers for manual AST construction:
 - `block(kind)` creates a block of a given kind
 - `BLOCK_INDEXES` gives numeric indices for block fields
 - `clone(b)` makes a deep copy of a block
+- `parse_expression(source)` parses exactly one Teal expression from a string,
+  without executing it; its names are resolved and type-checked when the block
+  is spliced into the caller. Invalid expressions, expression lists and statement
+  sequences are rejected.
 
 Example:
 

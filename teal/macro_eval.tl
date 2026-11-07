@@ -15,8 +15,8 @@ local type GenTarget = require("teal.gen.targets").GenTarget
 local macro_gen_target: GenTarget = ((_G as {string:any}).jit and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
 
 local record macro_eval
-   new_env: function(errs: {Error}): MacroEnv
-   compile_all_and_expand: function(node: Block, filename: string, read_lang: BlockLang, errs: {Error}): Block
+   new_env: function(errs: {Error}, parse_expression?: function(string): Block): MacroEnv
+   compile_all_and_expand: function(node: Block, filename: string, read_lang: BlockLang, errs: {Error}, parse_expression?: function(string): Block): Block
 end
 
 local record MacroSig
@@ -176,7 +176,7 @@ local function require_call_module_name(n: Block): string
    return nil
 end
 
-function macro_eval.new_env(errs: {Error}): MacroEnv
+function macro_eval.new_env(errs: {Error}, parse_expression?: function(string): Block): MacroEnv
    local env: MacroEnv = {
       macros = {},
       signatures = {},
@@ -255,6 +255,14 @@ function macro_eval.new_env(errs: {Error}): MacroEnv
       end
       table.insert(errs, { filename = env.where.f, y = env.where.y, x = env.where.x, msg = "expected " .. k .. ", got " .. (b and b.kind or "nil") })
       return nil
+   end
+
+   -- The reader supplies pure parsing; the macro sandbox never executes source.
+   env.sandbox.parse_expression = function(source: string): Block
+      assert(parse_expression, "expression parsing is unavailable in this macro environment")
+      local expression = parse_expression(source)
+      reanchor_block_positions(expression, env.where.y, env.where.x, {})
+      return expression
    end
 
    return env
@@ -657,8 +665,11 @@ local function block_uses_name(b: Block, name: string, skip: Block): boolean
       if not visited[current] then
          visited[current] = true
          if current.kind == "identifier" and current.tk == name then return true end
-         for _, child in children(current) do
-            if not visited[child] then table.insert(pending, child) end
+         for index, child in children(current) do
+            -- A member spelling such as string.format is not a reference to a
+            -- local require alias named format.
+            local member_name = (current.kind == "op_dot" or current.kind == "op_colon") and index == BLOCK_INDEXES.OP.E2
+            if not member_name and not visited[child] then table.insert(pending, child) end
          end
       end
    end
@@ -675,9 +686,9 @@ local function remove_macro_only_requires(node: Block, imported_aliases: {string
    end
 end
 
-function macro_eval.compile_all_and_expand(node: Block, filename: string, read_lang: BlockLang, errs: {Error}): Block
+function macro_eval.compile_all_and_expand(node: Block, filename: string, read_lang: BlockLang, errs: {Error}, parse_expression?: function(string): Block): Block
    seen = setmetatable({}, { __mode = "k" })
-   local env = macro_eval.new_env(errs)
+   local env = macro_eval.new_env(errs, parse_expression)
    local aliases: {Block} = {}
 
    local collected_operators: {Block: boolean} = {}

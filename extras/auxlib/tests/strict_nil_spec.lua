@@ -12,7 +12,7 @@ local function check(source)
 end
 
 describe('auxlib strict nil contracts', function()
-   for _, name in ipairs({'async', 'struct', 'tables'}) do
+   for _, name in ipairs({'async', 'struct', 'tables', 'format'}) do
       it('type-checks ' .. name .. ' with strict nil enabled', function()
          local root = assert(util.tl_executable:match('^(.*)[/\\]tl$'))
          local path = root .. '/extras/auxlib/' .. name .. '.tl'
