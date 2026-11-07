@@ -87,6 +87,21 @@ local invalid = []]=])
       assert.same({}, errors.warnings)
    end)
 
+   it('recovers from forbidden quoted invocations without executing macros', function()
+      local errors = check([[local macro inner!()
+   error("executed forbidden invocation")
+end
+local macro outer!() return `inner!()` end
+outer!()
+local after: integer = "wrong"
+print(after)]])
+      assert.equals(1, #errors.syntax_errors)
+      assert.matches('macro invocations cannot appear inside macro quotes', errors.syntax_errors[1].msg, 1, true)
+      assert.equals(1, #errors.type_errors)
+      assert.equals(6, errors.type_errors[1].y)
+      assert.same({}, errors.warnings)
+   end)
+
    it('keeps macro bodies out of runtime checking after lexical errors', function()
       local errors = check([[local macro echo!(expr: Expression) return `$expr` end
 local invalid = 2.e + 1]])

@@ -33,8 +33,8 @@ local record reader
    type BlockLang = BlockLang
 
    BLOCK_INDEXES: {string : {string : integer}}
-   read: function(input: string, filename: string, read_lang?: BlockLang, allow_macro_vars?: boolean, allow_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}): Block, {Error}
-   read_program: function(tokens: {Token}, errs: {Error}, filename?: string, read_lang?: BlockLang, allow_macro_vars?: boolean, allow_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}): Block
+   read: function(input: string, filename: string, read_lang?: BlockLang, allow_macro_vars?: boolean, allow_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}, in_macro_quote?: boolean): Block, {Error}
+   read_program: function(tokens: {Token}, errs: {Error}, filename?: string, read_lang?: BlockLang, allow_macro_vars?: boolean, allow_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}, in_macro_quote?: boolean): Block
 end
 
 local BLOCK_INDEXES <const> = block.BLOCK_INDEXES
@@ -178,6 +178,7 @@ local record ReadState
    read_lang: BlockLang
    allow_macro_vars: boolean
    in_local_macro: boolean
+   in_macro_quote: boolean
    ternary_middle: boolean
    custom_operators: {string: {string: OperatorSpec}}
    local_operators: {string: boolean}
@@ -678,7 +679,21 @@ local function find_operator(ps: ReadState, at: integer, fixity: string): Operat
    return best, width
 end
 
+local function forbidden_macro_invocation(ps: ReadState, y: integer, x: integer): boolean
+   if ps.in_local_macro or ps.in_macro_quote then
+      table.insert(ps.errs, {
+         filename = ps.filename, y = y, x = x,
+         msg = "macro invocations cannot appear inside " .. (ps.in_macro_quote and "macro quotes" or "macro bodies"),
+      })
+      return true
+   end
+   return false
+end
+
 local function operator_invocation(ps: ReadState, token: Token, spec: OperatorSpec, lhs: Block, rhs?: Block): Block
+   if forbidden_macro_invocation(ps, token.y, token.x) then
+      return { kind = "error_block", f = ps.filename, y = token.y, x = token.x, tk = token.tk }
+   end
    local target: Block = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
    local args: Block = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
    return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
@@ -768,6 +783,7 @@ local function skip(ps: ReadState, i: integer, skip_fn: SkipFunction): integer, 
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
@@ -1070,6 +1086,7 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
             read_lang = ps.read_lang,
             allow_macro_vars = ps.allow_macro_vars,
             in_local_macro = ps.in_local_macro,
+            in_macro_quote = ps.in_macro_quote,
             custom_operators = ps.custom_operators,
             local_operators = ps.local_operators,
             macro_sigs = ps.macro_sigs,
@@ -1348,6 +1365,7 @@ local function read_trying_list<T>(ps: ReadState, i: integer, list: {T}, read_it
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
@@ -1759,7 +1777,7 @@ read_macro_quote = function(ps: ReadState, i: integer): integer, Block
 
       local kept_code = table.concat(kept_lines, "\n")
       local parsed_block: Block
-      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
+      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
 
       -- splices gotta be merge with parsed statements
       if #splices > 0 and parsed_block and parsed_block.kind == "statements" then
@@ -1776,7 +1794,7 @@ read_macro_quote = function(ps: ReadState, i: integer): integer, Block
       end
    else
       -- Single backtick: treat content strictly as an expression
-      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
+      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
       if #werrs == 0 then
          local ret = wrapped[1]
          if ret and ret.kind == "return" and ret[BLOCK_INDEXES.RETURN.EXPS] then
@@ -2173,6 +2191,9 @@ do
                return i, failstore(ps, tkop, e1)
             end
 
+            if forbidden_macro_invocation(ps, e1.y, e1.x) then
+               return i, { kind = "error_block", f = ps.filename, y = e1.y, x = e1.x, tk = tkop.tk }
+            end
             local inv: Block = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
             local signature = mname and ps.macro_sigs[mname]
             if signature and signature.operator then
@@ -3845,7 +3866,7 @@ read_statements = function(ps: ReadState, i: integer, toplevel?: boolean): integ
    return i, node
 end
 
-function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, read_lang?: BlockLang, allow_macro_vars?: boolean, skip_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}): Block
+function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, read_lang?: BlockLang, allow_macro_vars?: boolean, skip_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}, in_macro_quote?: boolean): Block
    if read_program_depth == 0 then
       module_macro_cache = {}
       module_macro_missing = {}
@@ -3866,6 +3887,7 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       read_lang = read_lang,
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
+      in_macro_quote = in_macro_quote or false,
       custom_operators = operator_context or { prefix = {}, infix = {}, postfix = {} },
       local_operators = {},
       macro_sigs = {},
@@ -4021,11 +4043,11 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    return node
 end
 
-function reader.read(input: string, filename: string, read_lang?: BlockLang, allow_macro_vars?: boolean, skip_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}): Block, {Error}
+function reader.read(input: string, filename: string, read_lang?: BlockLang, allow_macro_vars?: boolean, skip_macro_expand?: boolean, operator_context?: {string: {string: OperatorSpec}}, in_macro_quote?: boolean): Block, {Error}
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename, input)
    local tokens, errs = lexer.lex(input, filename)
-   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
+   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
    return node, errs
 end
 

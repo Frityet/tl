@@ -135,10 +135,14 @@ shadowed in an inner block. Duplicate declarations in the same scope are
 errors. Bindings do not leak between files. Explicit `(@)!(a, b)` calls
 remain available, and retain the same lexical binding as the operator.
 
-Operators can appear in macro arguments and quotes. Quoted operator uses
-retain the bindings visible when the quote is parsed. The usual macro rules
-control operand evaluation: the returned syntax determines evaluation order,
-duplication, and short-circuiting. For example, the call expansion in the
+Operator invocations can be supplied as arguments at an ordinary macro call
+site. Macro bodies and quotes cannot invoke other macros, including custom
+operators or explicit `(operator)!(...)` calls. Use ordinary helper functions
+within a macro body and build the resulting AST directly or quote built-in
+expressions. Supplied arguments can still be forwarded or spliced.
+
+The usual macro rules control operand evaluation: the returned syntax determines
+evaluation order, duplication, and short-circuiting. For example, the call expansion in the
 first example evaluates each operand once, while the illustrative `squared`
 expansion duplicates its operand.
 

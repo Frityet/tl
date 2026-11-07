@@ -334,7 +334,7 @@ print(z) -- prints 14
 | Restricted environment | Macro bodies run in a sandbox with a limited standard library (no `require`, file I/O, or OS access beyond basic timing functions). |
 | Argument types are fixed | Every parameter must be annotated as `Statement` or `Expression` (varargs allowed). Other annotations are errors. |
 | Quotes are only valid inside macros | Backtick quotes and `$name` splices are rejected outside `local macro` bodies. |
-| No nested macro invocations | You cannot use `other!()` inside a macro body to expand another macro; build the block directly or with quotes. |
+| No macro calls inside macros | Macro bodies and both quote forms cannot invoke another macro, including custom operators and explicit operator macro calls. Use ordinary helper functions and construct the AST directly or quote built-in syntax. |
 | Invocation style | Use `owner.macro!()`. Method-style `owner:macro!()` is rejected. |
 | Statement args with top-level commas need a wrapper | When passing a statement argument like `local a, b = 1, 2`, wrap it in `do ... end` to avoid parsing ambiguity. |
 

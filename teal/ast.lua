@@ -917,7 +917,7 @@ parse_expression = function(state, block)
       node.body = parse_statements(state, block[reader.BLOCK_INDEXES.FUNCTION.BODY])
    elseif kind == "macro_invocation" then
       if state.in_local_macro then
-         fail(state, block, "macro invocations cannot appear inside local macros")
+         fail(state, block, "macro invocations cannot appear inside macro bodies")
       end
 
 
@@ -1361,6 +1361,11 @@ end
 
 function block_to_constructor(state, block)
    if not block then return nil end
+
+   if block.kind == "macro_invocation" then
+      fail(state, block, "macro invocations cannot appear inside macro quotes")
+      return new_node(state, block, "error_node")
+   end
 
    if block.kind == "macro_var" then
       local call = new_node(state, block, "op")

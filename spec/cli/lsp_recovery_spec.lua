@@ -5,6 +5,31 @@ describe('LSP parser recovery', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
 
+   it('diagnoses forbidden quoted macro calls and recovers after edits', function()
+      local source = [[local macro inner!(value: Expression) return `$value` end
+local macro outer!() return `inner!(1)` end
+local value = outer!()
+print(value)]]
+      local document = lsp.document(finally, source)
+      local repaired = source:gsub('`inner!%(1%)`', '`1`')
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic', params = {textDocument = {uri = document.uri}}},
+         {jsonrpc = '2.0', method = 'textDocument/didChange', params = {
+            textDocument = {uri = document.uri, version = 2}, contentChanges = {{text = repaired}},
+         }},
+         {jsonrpc = '2.0', id = 3, method = 'textDocument/diagnostic', params = {textDocument = {uri = document.uri}}},
+         {jsonrpc = '2.0', id = 4, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      assert.equals(1, #responses[2].items)
+      assert.equals('syntax', responses[2].items[1].code)
+      assert.matches('macro invocations cannot appear inside macro quotes', responses[2].items[1].message, 1, true)
+      assert.equals(1, responses[2].items[1].range.start.line)
+      assert.same({}, responses[3].items)
+   end)
+
    for _, body in ipairs({'', 'return `print($expr)`'}) do
       it('reports syntax without macro implementation errors: ' .. body, function()
          local dir = util.write_tmp_dir(finally, {

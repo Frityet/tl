@@ -360,13 +360,13 @@ describe('custom operators declared by macros', function()
       ]])})
    end)
 
-   it('supports declared operators inside macro quotes', function()
-      assert.equals(6, run(declaration('@') .. [[
+   it('rejects declared operators inside macro quotes', function()
+      rejects(declaration('@') .. [[
          local macro multiply!(a: Expression, b: Expression)
             return `$a @ $b`
          end
          return multiply!(2, 3)
-      ]]))
+      ]], 'inside macro quotes')
    end)
 
    it('supports operator expressions inside ordinary macro arguments', function()
@@ -376,14 +376,14 @@ describe('custom operators declared by macros', function()
       ]]))
    end)
 
-   it('preserves explicit named operator calls inside quotes', function()
-      assert.equals(5, run(declaration('combine', '$lhs + $rhs') .. [[
+   it('rejects explicit named operator calls inside quotes', function()
+      rejects(declaration('combine', '$lhs + $rhs') .. [[
          local macro quoted!(): Expression return `(combine)!(2, 3)` end
          do
       ]] .. declaration('combine', '$lhs * $rhs') .. [[
             return quoted!()
          end
-      ]]))
+      ]], 'inside macro quotes')
    end)
 
    it('honors exponentiation precedence with built-in and custom unary operators', function()

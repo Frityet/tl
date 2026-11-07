@@ -919,7 +919,7 @@ parse_expression = function(state, block)
       node.body = parse_statements(state, block[reader.BLOCK_INDEXES.FUNCTION.BODY])
    elseif kind == "macro_invocation" then
       if state.in_local_macro then
-         fail(state, block, "macro invocations cannot appear inside local macros")
+         fail(state, block, "macro invocations cannot appear inside macro bodies")
       end
 
 
@@ -1363,6 +1363,11 @@ end
 
 function block_to_constructor(state, block)
    if not block then return nil end
+
+   if block.kind == "macro_invocation" then
+      fail(state, block, "macro invocations cannot appear inside macro quotes")
+      return new_node(state, block, "error_node")
+   end
 
    if block.kind == "macro_var" then
       local call = new_node(state, block, "op")
@@ -15889,6 +15894,7 @@ end
 
 
 
+
 local read_type_list
 local read_typeargs_if_any
 local read_expression
@@ -16373,7 +16379,21 @@ local function find_operator(ps, at, fixity)
    return best, width
 end
 
+local function forbidden_macro_invocation(ps, y, x)
+   if ps.in_local_macro or ps.in_macro_quote then
+      table.insert(ps.errs, {
+         filename = ps.filename, y = y, x = x,
+         msg = "macro invocations cannot appear inside " .. (ps.in_macro_quote and "macro quotes" or "macro bodies"),
+      })
+      return true
+   end
+   return false
+end
+
 local function operator_invocation(ps, token, spec, lhs, rhs)
+   if forbidden_macro_invocation(ps, token.y, token.x) then
+      return { kind = "error_block", f = ps.filename, y = token.y, x = token.x, tk = token.tk }
+   end
    local target = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
    local args = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
    return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
@@ -16463,6 +16483,7 @@ local function skip(ps, i, skip_fn)
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
@@ -16765,6 +16786,7 @@ local function read_table_item(ps, i, n)
             read_lang = ps.read_lang,
             allow_macro_vars = ps.allow_macro_vars,
             in_local_macro = ps.in_local_macro,
+            in_macro_quote = ps.in_macro_quote,
             custom_operators = ps.custom_operators,
             local_operators = ps.local_operators,
             macro_sigs = ps.macro_sigs,
@@ -17043,6 +17065,7 @@ local function read_trying_list(ps, i, list, read_item, ret_lookahead)
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
       in_local_macro = ps.in_local_macro,
+      in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
@@ -17454,7 +17477,7 @@ read_macro_quote = function(ps, i)
 
       local kept_code = table.concat(kept_lines, "\n")
       local parsed_block
-      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
+      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
 
 
       if #splices > 0 and parsed_block and parsed_block.kind == "statements" then
@@ -17471,7 +17494,7 @@ read_macro_quote = function(ps, i)
       end
    else
 
-      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators)
+      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
       if #werrs == 0 then
          local ret = wrapped[1]
          if ret and ret.kind == "return" and ret[BLOCK_INDEXES.RETURN.EXPS] then
@@ -17868,6 +17891,9 @@ do
                return i, failstore(ps, tkop, e1)
             end
 
+            if forbidden_macro_invocation(ps, e1.y, e1.x) then
+               return i, { kind = "error_block", f = ps.filename, y = e1.y, x = e1.x, tk = tkop.tk }
+            end
             local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
             local signature = mname and ps.macro_sigs[mname]
             if signature and signature.operator then
@@ -19540,7 +19566,7 @@ read_statements = function(ps, i, toplevel)
    return i, node
 end
 
-function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
+function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
    if read_program_depth == 0 then
       module_macro_cache = {}
       module_macro_missing = {}
@@ -19561,6 +19587,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       read_lang = read_lang,
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
+      in_macro_quote = in_macro_quote or false,
       custom_operators = operator_context or { prefix = {}, infix = {}, postfix = {} },
       local_operators = {},
       macro_sigs = {},
@@ -19716,11 +19743,11 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    return node
 end
 
-function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
+function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename, input)
    local tokens, errs = lexer.lex(input, filename)
-   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context)
+   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
    return node, errs
 end
 
