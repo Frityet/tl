@@ -1,7 +1,7 @@
 local tl = require('teal.api.v2')
 
 describe('extras struct macro', function()
-   local imports = [[local structs = require('extras.struct')
+   local imports = [[local structs = require('extra.macros.struct')
 local macro (struct)! = structs.(struct)!
 ]]
    local function compile(source)

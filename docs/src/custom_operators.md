@@ -185,3 +185,47 @@ local result = a times b
 
 Operator declarations using the old `name!: Operator<'symbol', ...>` syntax are
 rejected; put the spelling in `(symbol)` and remove it from `Operator<...>`.
+
+## Utility operators
+
+The `extra.macros.utilities` module provides three operators that expand entirely at
+compile time.
+
+```lua
+local utilities = require("extra.macros.utilities")
+local macro (|>)! = utilities.(|>)!
+local macro (from)! = utilities.(from)!
+local macro (import)! = utilities.(import)!
+```
+
+`|>` inserts the value as the first argument and chains from left to right.
+A parenthesized target is evaluated as written, then called with the value.
+Pipes bind more tightly than comparisons.
+
+| Usage | Equivalent call |
+| --- | --- |
+| `x \|> f` | `f(x)` |
+| `x \|> f()` | `f(x)` |
+| `x \|> f(y)` | `f(x, y)` |
+| `x \|> (f)` | `(f)(x)` |
+| `x \|> (f())` | `(f())(x)` |
+
+`from` takes a list of bare field names and declares them as locals in the
+surrounding scope. It evaluates the source once and reads the fields in order.
+
+```lua
+local row = { width = 3, height = 4 };
+{ width, height } from row
+print(width * height) -- 12
+```
+
+Use a semicolon after a preceding expression when its parser could consume
+the opening brace as a table argument.
+
+`import` uses `from` to select fields from a required module. The module name
+can be dotted or quoted, and `as` gives an imported field a different local name.
+
+```lua
+import { some_function as fn, version } from module.name
+import { load as load_file } from "module name"
+```

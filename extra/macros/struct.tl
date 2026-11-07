@@ -1,5 +1,5 @@
 --#pragma strict_nil on
--- Import with require("extras.struct") and alias its (struct)! operator.
+-- Import with require("extra.macros.struct") and alias its (struct)! operator.
 
 local type Object = {any:any}
 
@@ -367,7 +367,7 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local setup = (```do end```)[1]
    local statements = setup[B.DO.BODY]
    local runtime = fresh("__struct_module")
-   table.insert(statements, local_value(runtime, `require("extras.struct")`))
+   table.insert(statements, local_value(runtime, `require("extra.macros.struct")`))
    local runtime_fields = {}
    for i, field in ipairs(fields) do
       local metadata = {{"name", str(field.name)}, {"required", boolean(field.required)},

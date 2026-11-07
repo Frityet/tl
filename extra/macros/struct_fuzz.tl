@@ -1,4 +1,4 @@
-local structs = require("extras.struct")
+local structs = require("extra.macros.struct")
 local macro (struct)! = structs.(struct)!
 
 struct Counter {

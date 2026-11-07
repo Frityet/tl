@@ -1,16 +1,16 @@
 # Struct operator
 
-Run the example from the repository root with `./tl run extras/struct_example.tl`.
+Run the example from the repository root with `./tl run extra/macros/struct_example.tl`.
 Import the operator explicitly.
 
 ```lua
-local structs = require("extras.struct")
+local structs = require("extra.macros.struct")
 local macro (struct)! = structs.(struct)!
 ```
 
 The macro and runtime live in [`struct.tl`](struct.tl), with strict nil checking
 enabled. The macro emits a native Teal record and typed callbacks. Generated
-programs load `extras/struct.lua` from their Lua module path.
+programs load `extra/macros/struct.lua` from their Lua module path.
 
 ```lua
 struct Counter {
@@ -70,5 +70,5 @@ side effects are not rolled back.
 To regenerate the Lua runtime, run this command from the repository root.
 
 ```sh
-./tl gen --gen-target=5.1 --gen-compat=off -o extras/struct.lua extras/struct.tl
+./tl gen --gen-target=5.1 --gen-compat=off -o extra/macros/struct.lua extra/macros/struct.tl
 ```

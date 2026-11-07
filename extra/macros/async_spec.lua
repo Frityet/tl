@@ -1,8 +1,8 @@
 local tl = require('teal.api.v2')
-local async = require('extras.async')
+local async = require('extra.macros.async')
 
 local imports = [[
-local tasks = require("extras.async")
+local tasks = require("extra.macros.async")
 local macro (async)! = tasks.(async)!
 local macro (await)! = tasks.(await)!
 local type Scope = tasks.Scope

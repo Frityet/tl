@@ -424,7 +424,7 @@ macro Async.(async)!(fn: Expression): Operator<prefix, unary>
       end
       void = not returns_value(inner[F.BODY])
    end
-   local start = void and `require("extras.async").start_void($inner)` or `require("extras.async").start($inner)`
+   local start = void and `require("extra.macros.async").start_void($inner)` or `require("extra.macros.async").start($inner)`
    local wrapper = `|| -> $start`
    wrapper[F.ARGS] = clone(fn[F.ARGS])
    return wrapper
