@@ -16,9 +16,9 @@ local record generator
    mutate: function(RNG, string): string
    case_for: function(integer, integer, {string}, ? integer, ? string, ? boolean): Case
 end
-generator.version = 4
-generator.features = 24
-generator.portable = {0,1,6,7,8,9,10,11,13,16,17,18,19,20,21,22,23}
+generator.version = 5
+generator.features = 27
+generator.portable = {0,1,6,7,8,9,10,11,13,16,17,18,19,20,21,22,23,24,25,26}
 function generator.rng(seed: integer, index: integer): generator.RNG
    local rng: generator.RNG = {state = ((seed % 2147483646) * 65537 + (index % 2147483646) * 104729) % 2147483646 + 1}
    rng.next = function(self: generator.RNG, n: integer): integer
@@ -135,6 +135,12 @@ function generator.tlng_program(rng: generator.RNG, feature?: integer, native?: 
       return string.format("local function use(f: (function(number, number, number): number) | nil): number\n if f then return f(%s, 2, 3) end\n return 0\nend\nreturn use(|value, _, _| -> value + 3)",expr), value+3
    elseif feature == 23 then
       return string.format("local add: function(number): (function(number): number) = outer -> inner -> outer + inner\nreturn add(%s)(2)",expr), value+2
+   elseif feature == 24 then
+      return string.format("local macro (declare)!(name: Expression): Operator<prefix, unary>\n return ```local $name = %s```\nend\ndeclare result\nreturn result",expr), value
+   elseif feature == 25 then
+      return string.format("local macro (initialized)!(name: Expression, value: Expression): Operator<infix, additive>\n return ```local $name = $value```\nend\nresult initialized (%s)\nreturn result",expr), value
+   elseif feature == 26 then
+      return string.format("local macro (initialized)!(name: Expression): Operator<postfix, postfix>\n return ```local $name = %s```\nend\nresult initialized\nreturn result",expr), value
    end
    error("unknown tl-ng feature: " .. tostring(feature))
 end

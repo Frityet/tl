@@ -566,29 +566,19 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    if #errs > previous_errors then
       return b
    end
-   if b.operator_use then
-      if is_statement_kind(expanded.kind) then
-         table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "operator macro must return an Expression" })
-         return b
-      end
-      if context == "stmt" then
-         while expanded.kind == "paren" do expanded = expanded[BLOCK_INDEXES.PAREN.EXP] end
-         if expanded.kind ~= "op_funcall" then
-            table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "operator expression cannot be used as a statement" })
-            return b
-         end
-         return expanded
-      end
-      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, [BLOCK_INDEXES.PAREN.EXP] = expanded }
-   end
    if context == "expr" and not is_expression_kind(expanded.kind) then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = display_name .. " returned statements in an expression context; invoke it as a standalone statement" })
       return b
    end
    local checked = validate_statement_positions(expanded, context == "stmt")
    if not checked then
-      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = display_name .. " returned an expression that cannot be used as a statement; assign or return its value" })
+      local message = b.operator_use and "operator expression cannot be used as a statement" or
+      (display_name .. " returned an expression that cannot be used as a statement; assign or return its value")
+      table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = message })
       return b
+   end
+   if b.operator_use and context == "expr" then
+      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, [BLOCK_INDEXES.PAREN.EXP] = checked }
    end
    return checked
 end

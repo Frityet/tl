@@ -63,6 +63,17 @@ describe('LSP member completion', function()
       assert.same({}, completions('local value: any = {}\nlocal result = value.'))
    end)
 
+   it('resolves types introduced by statement operator expansions', function()
+      assert.same({'generated'}, completions([[
+         local macro (declare)!(name: Expression): Operator<prefix, unary>
+            return ```local record $name generated: integer end```
+         end
+         declare Item
+         local value: Item = {generated = 42}
+         local result = value.
+      ]]))
+   end)
+
    it('lists parenthesized local and attached operator macros', function()
       local labels = completions([[
          local macro (@)!(a: Expression, b: Expression): Operator<infix, additive> return `$a + $b` end

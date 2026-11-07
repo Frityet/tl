@@ -96,11 +96,35 @@ local n = 2 ** 3 ** 2 -- 2 ** (3 ** 2)
 A symbol may have both prefix and infix declarations. Infix and postfix
 bindings for the same spelling are ambiguous and are rejected.
 
-The expanded expression is parenthesized, preserving its grouping even when
-the expansion uses a different built-in precedence. An operator produces one
-value, including when its expansion is a call returning multiple values.
-A standalone operator expression is allowed when it expands to a function
-call, just as ordinary Lua call statements can discard their results.
+In expression position, the expanded expression is parenthesized, preserving
+its grouping even when the expansion uses a different built-in precedence.
+An operator produces one value, including when its expansion is a call
+returning multiple values.
+
+In statement position, an operator macro may return a statement or a
+`statements` block, including an empty block. Statements are inserted directly
+into the surrounding block, so generated locals and types are available to
+following code. The `Operator` annotation describes the operator's parsing;
+no additional annotation is needed to return statements.
+
+````lua
+local macro (declare)!(name: Expression): Operator<prefix, unary>
+   return ```local record $name value: integer end```
+end
+
+declare Item
+local item: Item = {value = 42}
+````
+
+Prefix, infix, postfix and explicit `(declare)!(Item)` invocations all support
+statement expansion. Generated statements receive normal Teal type checking.
+An invocation in an assignment value, argument, or other expression position
+must expand to an expression. A standalone expression expansion must be a
+function call, just as ordinary Lua call statements can discard their results.
+
+If a spelling has both prefix and infix meanings, it can continue an
+expression on the preceding line. Use a semicolon to establish a new statement
+boundary when needed; newlines do not terminate expressions.
 
 ## Scope and macros
 
