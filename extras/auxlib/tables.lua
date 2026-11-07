@@ -38,7 +38,7 @@ end
 function Tables.sum(source, project)
    local total = 0
    for key, value in pairs(source) do
-      total = total + project(key, value)
+      total = total + project(value, key)
    end
    return total
 end
@@ -51,7 +51,7 @@ end
 
 function Tables.reduce(source, accumulator, step)
    for key, value in pairs(source) do
-      accumulator = step(accumulator, key, value)
+      accumulator = step(accumulator, value, key)
    end
    return accumulator
 end
@@ -63,7 +63,7 @@ end
 function Tables.filter(source, predicate)
    local output = {}
    for key, value in pairs(source) do
-      if predicate(key, value) then output[key] = value end
+      if predicate(value, key) then output[key] = value end
    end
    return output
 end
@@ -74,7 +74,7 @@ end
 
 function Tables.any(source, predicate)
    for key, value in pairs(source) do
-      if predicate(key, value) then return true end
+      if predicate(value, key) then return true end
    end
    return false
 end
@@ -85,7 +85,7 @@ end
 
 function Tables.all(source, predicate)
    for key, value in pairs(source) do
-      if not predicate(key, value) then return false end
+      if not predicate(value, key) then return false end
    end
    return true
 end
@@ -97,7 +97,7 @@ end
 
 function Tables.find(source, predicate)
    for key, value in pairs(source) do
-      if predicate(key, value) then return value end
+      if predicate(value, key) then return value end
    end
    return nil
 end
@@ -109,7 +109,7 @@ end
 function Tables.group_by(source, select_group)
    local groups = {}
    for key, value in pairs(source) do
-      local group_key = select_group(key, value)
+      local group_key = select_group(value, key)
       local group = groups[group_key]
       if not group then
          group = {}

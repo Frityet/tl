@@ -33,7 +33,7 @@ describe('auxlib strict nil contracts', function()
    it('requires a nil check before using a possibly missing table value', function()
       local prefix = [[local tables = require('auxlib.tables')
 local values: {integer} = {1, 2}
-local found = tables.find(values, |_, value| -> value > 3)
+local found = tables.find(values, |value, _| -> value > 3)
 ]]
       assert.is_true(#check(prefix .. 'local value: integer = found') > 0)
       assert.same({}, check(prefix .. 'if found ~= nil then local value: integer = found end'))

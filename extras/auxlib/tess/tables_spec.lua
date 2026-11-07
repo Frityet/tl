@@ -110,11 +110,37 @@ local macro (from)! = tables.(from)!
       end
    end)
 
+   it('passes value before key consistently across every table callback', function()
+      assert.same({10, 'key:10', {key = 10}, true, true, 10, {group = {key = 10}}}, {run([[
+         local entries: {string:integer} = {key = 10}
+         local function matches(value: integer, key: string): boolean
+            assert(value == 10 and key == "key")
+            return true
+         end
+         local total = tables.sum(entries, function(value: integer, key: string): number
+            assert(key == "key")
+            return value
+         end)
+         local reduced = tables.reduce(entries, "", function(acc: string, value: integer, key: string): string
+            return acc .. key .. ":" .. tostring(value)
+         end)
+         local filtered = tables.filter(entries, matches)
+         local any_match = tables.any(entries, matches)
+         local all_match = tables.all(entries, matches)
+         local found = tables.find(entries, matches)
+         local grouped = tables.group_by(entries, function(value: integer, key: string): string
+            assert(value == 10 and key == "key")
+            return "group"
+         end)
+         return total, reduced, filtered, any_match, all_match, found, grouped
+      ]])})
+   end)
+
    it('sums numeric projections of table entries and returns zero for empty tables', function()
       assert.same({6.5, 0}, {run([[
          local input: {string:integer} = {abc = 3, de = 2}
          local empty: {string:integer} = {}
-         return input +=> |k, v| -> #k * v / 2, empty +=> |k, v| -> #k * v
+         return input +=> |v, k| -> #k * v / 2, empty +=> |v, k| -> #k * v
       ]])})
    end)
 
@@ -127,8 +153,8 @@ local macro (from)! = tables.(from)!
             calls = calls + 1
             return ""
          end
-         local longest = input +=> {seed(), |acc, k, v| -> #acc < v and k or acc}
-         local unchanged = empty +=> {"seed", |acc, k, v| -> acc .. k .. tostring(v)}
+         local longest = input +=> {seed(), |acc, v, k| -> #acc < v and k or acc}
+         local unchanged = empty +=> {"seed", |acc, v, k| -> acc .. k .. tostring(v)}
          local typed: string = longest
          return typed, unchanged, calls
       ]])})
@@ -141,7 +167,7 @@ local macro (from)! = tables.(from)!
 
       local ast, type_syntax = tl.parse(imports .. [[
          local input: {integer} = {2}
-         return input +=> {0, |acc, k, v| -> tostring(acc + k + v)}
+         return input +=> {0, |acc, v, k| -> tostring(acc + k + v)}
       ]], 'tables-fixture.tl')
       assert.same({}, type_syntax)
       local result = tl.check(ast, 'tables-fixture.tl')
@@ -152,9 +178,9 @@ local macro (from)! = tables.(from)!
    it('filters and groups entries while preserving their original keys', function()
       assert.same({{[2] = 20, [4] = 40}, {small = {[2] = 20}, large = {[4] = 40}}}, {run([[
          local items: {integer} = {10, 20, 30, 40}
-         local selected: {integer:integer} = items ?> |k, v| -> k % 2 == 0 and v >= 20
+         local selected: {integer:integer} = items ?> |v, k| -> k % 2 == 0 and v >= 20
          local grouped: {string:{integer:integer}} =
-            tables.group_by(selected, |_, v| -> v < 30 and "small" or "large")
+            tables.group_by(selected, |v, _| -> v < 30 and "small" or "large")
          return selected, grouped
       ]])})
    end)
@@ -164,12 +190,12 @@ local macro (from)! = tables.(from)!
          local entries: {string:boolean} = {a = false, b = false, c = false}
          local empty: {string:boolean} = {}
          local calls = 0
-         local function count(_: string, v: boolean): boolean
+         local function count(v: boolean, _: string): boolean
             calls = calls + 1
             return not v
          end
          local first = entries |> tables.any(count)
-         local every = tables.all(entries, |k, v| -> not count(k, v))
+         local every = tables.all(entries, |v, k| -> not count(v, k))
          local match: boolean | nil = tables.find(entries, count)
          assert(not tables.any(empty, count) and tables.all(empty, count) and tables.find(empty, count) == nil)
          return first, every, match, calls

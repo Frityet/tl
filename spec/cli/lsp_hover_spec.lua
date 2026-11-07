@@ -304,8 +304,8 @@ return 1 +=> 2
    end)
 
    for _, case in ipairs({
-      {'+=>', 'Sum projected entries', 'return values @H@+=> |_, value| -> value'},
-      {'?>', 'Filter a table', 'return values @H@?> |_, value| -> value > 1'},
+      {'+=>', 'Sum projected entries', 'return values @H@+=> |value, _| -> value'},
+      {'?>', 'Filter a table', 'return values @H@?> |value, _| -> value > 1'},
       {'||>', 'Map an array', 'return values @H@||> |value, idx| -> tostring(value + idx)'},
    }) do
       it('shows the bundled ' .. case[1] .. ' usage documentation at an operator use', function()

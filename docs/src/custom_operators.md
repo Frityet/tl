@@ -230,14 +230,14 @@ The source and callback expressions are each evaluated once. Dense array entries
 are visited with `ipairs`, in index order, and output indices match the input.
 
 `+=>` reduces a `{K:V}` to a single value. A callback of type
-`function(K, V): number` projects entries to numbers and sums them. For a
+`function(V, K): number` projects entries to numbers and sums them. For a
 different accumulator type `U`, pass `{ initial, reducer }` with a reducer of
-type `function(U, K, V): U`.
+type `function(U, V, K): U`.
 
 ```lua
 local scores: {string:integer} = { ada = 10, grace = 20 }
-local total = scores +=> |_, score| -> score
-local winner = scores +=> {"", |best, name, score| -> do
+local total = scores +=> |score, _| -> score
+local winner = scores +=> {"", |best, score, name| -> do
    if best == "" or score > scores[best] then return name end
    return best
 end}
@@ -250,11 +250,11 @@ and the initial value in the seeded form.
 
 ```lua
 local scores: {string:integer} = { ada = 10, grace = 20 }
-local high = scores ?> |_, score| -> score >= 20
-local has_perfect = scores |> tables.any(|_, score| -> score == 100)
-local all_positive = tables.all(scores, |_, score| -> score > 0)
-local grace_score = tables.find(scores, |name, _| -> name == "grace")
-local buckets = tables.group_by(scores, |_, score| -> math.floor(score / 10))
+local high = scores ?> |score, _| -> score >= 20
+local has_perfect = scores |> tables.any(|score, _| -> score == 100)
+local all_positive = tables.all(scores, |score, _| -> score > 0)
+local grace_score = tables.find(scores, |_, name| -> name == "grace")
+local buckets = tables.group_by(scores, |score, _| -> math.floor(score / 10))
 local names = tables.keys(scores)
 local amounts = tables.values(scores)
 ```
@@ -268,6 +268,8 @@ local amounts = tables.values(scores)
 | `group_by` | A table of groups. Each group preserves the original entry keys. |
 | `keys`, `values` | Arrays of the table's keys or values. |
 
+Table projections and predicates receive `(value, key)`, consistent with the
+array mapper's `(value, idx)`. Seeded reducers receive `(accumulator, value, key)`.
 These tables use `pairs`, so iteration order is unspecified. `any`, `all`,
 and `find` stop as soon as they can determine the result.
 

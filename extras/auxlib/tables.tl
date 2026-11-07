@@ -33,12 +33,12 @@ end
 
 --- Sum numeric projections of table entries without modifying the source.
 --- @param source Table to traverse with pairs; iteration order is unspecified.
---- @param project Function `(key, value): number` evaluated once per entry.
+--- @param project Function `(value, key): number` evaluated once per entry.
 --- @return The total projection, or zero for an empty table.
-function Tables.sum<K, V>(source: {K:V}, project: function(K, V): number): number
+function Tables.sum<K, V>(source: {K:V}, project: function(V, K): number): number
    local total: number = 0
    for key, value in pairs(source) do
-      total = total + project(key, value)
+      total = total + project(value, key)
    end
    return total
 end
@@ -47,45 +47,45 @@ end
 --- Traversal uses pairs, so reduction order is unspecified.
 --- @param source Table to traverse without changing it.
 --- @param accumulator Initial accumulator value.
---- @param step Function `(accumulator, key, value)` returning the next accumulator.
+--- @param step Function `(accumulator, value, key)` returning the next accumulator.
 --- @return The final accumulator, or the initial value for an empty table.
-function Tables.reduce<K, V, U>(source: {K:V}, accumulator: U, step: function(U, K, V): U): U
+function Tables.reduce<K, V, U>(source: {K:V}, accumulator: U, step: function(U, V, K): U): U
    for key, value in pairs(source) do
-      accumulator = step(accumulator, key, value)
+      accumulator = step(accumulator, value, key)
    end
    return accumulator
 end
 
 --- Copy matching entries into a new table without changing the source.
 --- @param source Table to filter. Original keys are preserved, so array results may have gaps.
---- @param predicate Function `(key, value): boolean` deciding which entries to retain.
+--- @param predicate Function `(value, key): boolean` deciding which entries to retain.
 --- @return A new table containing matching entries under their original keys.
-function Tables.filter<K, V>(source: {K:V}, predicate: function(K, V): boolean): {K:V}
+function Tables.filter<K, V>(source: {K:V}, predicate: function(V, K): boolean): {K:V}
    local output: {K:V} = {}
    for key, value in pairs(source) do
-      if predicate(key, value) then output[key] = value end
+      if predicate(value, key) then output[key] = value end
    end
    return output
 end
 
 --- Test whether any entry matches, stopping at the first match.
 --- @param source Table to traverse with pairs.
---- @param predicate Function `(key, value): boolean` deciding whether an entry matches.
+--- @param predicate Function `(value, key): boolean` deciding whether an entry matches.
 --- @return True if any entry matches; false for an empty table.
-function Tables.any<K, V>(source: {K:V}, predicate: function(K, V): boolean): boolean
+function Tables.any<K, V>(source: {K:V}, predicate: function(V, K): boolean): boolean
    for key, value in pairs(source) do
-      if predicate(key, value) then return true end
+      if predicate(value, key) then return true end
    end
    return false
 end
 
 --- Test whether every entry matches, stopping at the first failure.
 --- @param source Table to traverse with pairs.
---- @param predicate Function `(key, value): boolean` deciding whether an entry matches.
+--- @param predicate Function `(value, key): boolean` deciding whether an entry matches.
 --- @return True if every entry matches, including an empty table; otherwise false.
-function Tables.all<K, V>(source: {K:V}, predicate: function(K, V): boolean): boolean
+function Tables.all<K, V>(source: {K:V}, predicate: function(V, K): boolean): boolean
    for key, value in pairs(source) do
-      if not predicate(key, value) then return false end
+      if not predicate(value, key) then return false end
    end
    return true
 end
@@ -93,23 +93,23 @@ end
 --- Find the first matching value in pairs traversal order.
 --- The result is explicitly nullable; test for nil rather than truthiness when V can be boolean.
 --- @param source Table to search without changing it. Iteration order is unspecified.
---- @param predicate Function `(key, value): boolean` deciding which value to return.
+--- @param predicate Function `(value, key): boolean` deciding which value to return.
 --- @return A matching value of type `V`, or nil when no entry matches.
-function Tables.find<K, V>(source: {K:V}, predicate: function(K, V): boolean): V | nil
+function Tables.find<K, V>(source: {K:V}, predicate: function(V, K): boolean): V | nil
    for key, value in pairs(source) do
-      if predicate(key, value) then return value end
+      if predicate(value, key) then return value end
    end
    return nil
 end
 
 --- Group entries while retaining each original key inside its group.
 --- @param source Table to group without changing it.
---- @param select_group Function `(key, value)` returning the group key.
+--- @param select_group Function `(value, key)` returning the group key.
 --- @return A new table of groups, each containing the original keys and values.
-function Tables.group_by<K, V, G>(source: {K:V}, select_group: function(K, V): G): {G:{K:V}}
+function Tables.group_by<K, V, G>(source: {K:V}, select_group: function(V, K): G): {G:{K:V}}
    local groups: {G:{K:V}} = {}
    for key, value in pairs(source) do
-      local group_key = select_group(key, value)
+      local group_key = select_group(value, key)
       local group: {K:V} | nil = groups[group_key]
       if not group then
          group = {}
@@ -175,13 +175,13 @@ end
 ---
 --- ```teal
 --- local scores: {string:integer} = { red = 4, blue = 6 }
---- local total = scores +=> |_, value| -> value -- 10
---- local product = scores +=> { 1, |acc, _, value| -> acc * value } -- 24
+--- local total = scores +=> |value, _| -> value -- 10
+--- local product = scores +=> { 1, |acc, value, _| -> acc * value } -- 24
 --- ```
 ---
---- A sum callback receives `(key, value)` and returns a number; an empty table
+--- A sum callback receives `(value, key)` and returns a number; an empty table
 --- sums to zero. With `{ initial, reducer }`, the reducer receives
---- `(accumulator, key, value)` and returns the next accumulator; an empty table
+--- `(accumulator, value, key)` and returns the next accumulator; an empty table
 --- returns `initial`. Traversal uses `pairs`, so iteration order is unspecified.
 --- @param source Table to traverse without modifying it.
 --- @param reduction Sum callback, or `{ initial, reducer }` for a general reduction.
@@ -204,14 +204,14 @@ end
 ---
 --- ```teal
 --- local scores: {string:integer} = { red = 4, blue = 6 }
---- local selected = scores ?> |_, value| -> value >= 5 -- { blue = 6 }
+--- local selected = scores ?> |value, _| -> value >= 5 -- { blue = 6 }
 --- ```
 ---
---- The predicate receives `(key, value)` for each entry. Entries with a true
+--- The predicate receives `(value, key)` for each entry. Entries with a true
 --- result are copied to a new table; the source is unchanged. Array keys are
 --- preserved rather than compacted, so filtering an array can leave gaps.
 --- @param source Table to filter.
---- @param predicate Function `(key, value): boolean` deciding which entries to keep.
+--- @param predicate Function `(value, key): boolean` deciding which entries to keep.
 --- @return A new table containing the matching entries under their original keys.
 macro Tables.(?>)!(source: Expression, predicate: Expression): Operator<infix, shift>
    return `require("auxlib.tables").filter($source, $predicate)`

@@ -60,6 +60,8 @@ tests live in `extras/auxlib/tess/`.
 
 `tables.map` and `||>` map arrays `{TFrom}` to `{TTo}`. Their callback receives
 `(value, idx)` with a one-based index and returns one mapped value.
+Other table projections and predicates receive `(value, key)`; reducers receive
+`(accumulator, value, key)`.
 
 ### Using the compiler directly
 
