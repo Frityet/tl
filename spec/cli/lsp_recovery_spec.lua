@@ -5,6 +5,124 @@ describe('LSP parser recovery', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
 
+   it('keeps document highlights local without indexing unopened files', function()
+      local dir = util.write_tmp_dir(finally, {
+         ['tlconfig.lua'] = 'return { include_dir = {"types"} }',
+         types = { ['unopened.tl'] = 'local marker = 2\nprint(marker)' },
+      })
+      util.do_in(dir, function()
+         local document = lsp.document(finally, 'local marker = 11\nprint(marker)')
+         local responses = lsp.exchange(finally, {
+            {jsonrpc = '2.0', id = 1, method = 'initialize',
+               params = {rootUri = 'file://' .. require('lfs').currentdir()}},
+            {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+            {jsonrpc = '2.0', method = 'textDocument/didChange', params = {
+               textDocument = {uri = document.uri, version = 2},
+               contentChanges = {{range = {start = {line = 0, character = 16},
+                  ['end'] = {line = 0, character = 17}}, text = ''}},
+            }},
+            {jsonrpc = '2.0', id = 2, method = 'textDocument/documentHighlight', params = {
+               textDocument = {uri = document.uri}, position = {line = 1, character = 6},
+            }},
+            {jsonrpc = '2.0', id = 3, method = 'workspace/diagnostic', params = {}},
+            {jsonrpc = '2.0', id = 4, method = 'shutdown', params = {}},
+            {jsonrpc = '2.0', method = 'exit', params = {}},
+         })
+         assert.equals(2, #responses[2])
+         assert.same({'.', ':', '<', '!'}, responses[1].capabilities.completionProvider.triggerCharacters)
+         assert.equals(1, #responses[3].items)
+         assert.equals(document.uri, responses[3].items[1].uri)
+         assert.equals(2, responses[3].items[1].version)
+      end)
+   end)
+
+   it('checks self-referencing interfaces alongside imported macros', function()
+      local dir = util.write_tmp_dir(finally, {
+         ['macro_fixture.tl'] = [[
+            local record Export end
+            macro Export.value!() return `7` end
+            return Export
+         ]],
+      })
+      util.do_in(dir, function()
+         local document = lsp.document(finally, [[
+            local fixture = require("macro_fixture")
+            local macro value! = fixture.value!
+            local interface Indexed where self.__index
+               __index: self
+            end
+            local function read(_value: Indexed): integer
+               return value!()
+            end
+            return read
+         ]])
+         local responses = lsp.exchange(finally, {
+            {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+            {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+            {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic',
+               params = {textDocument = {uri = document.uri}}},
+            {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+            {jsonrpc = '2.0', method = 'exit', params = {}},
+         })
+         assert.same({}, responses[2].items)
+      end)
+   end)
+
+   it('reports syntax errors when deleting a numeric for bound separator', function()
+      local document = lsp.document(finally, 'for i = 1, 3 do\n   print(i)\nend')
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         {jsonrpc = '2.0', method = 'textDocument/didChange', params = {
+            textDocument = {uri = document.uri, version = 2},
+            contentChanges = {{range = {start = {line = 0, character = 9},
+               ['end'] = {line = 0, character = 10}}, text = ''}},
+         }},
+         {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic',
+            params = {textDocument = {uri = document.uri}}},
+         {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      assert.is_true(#responses[2].items > 0)
+      for _, item in ipairs(responses[2].items) do
+         assert.equals('syntax', item.code)
+      end
+   end)
+
+   it('reuses a complete workspace manifest and rebuilds a partial one', function()
+      local lfs = require('lfs')
+      local dir = util.write_tmp_dir(finally, {
+         ['tlconfig.lua'] = 'return { include_dir = {"types"} }',
+         types = { ['cache entry.tl'] = 'local record CacheEntry end\nreturn CacheEntry' },
+      })
+      util.do_in(dir, function()
+         local function search()
+            local responses = lsp.exchange(finally, {
+               {jsonrpc = '2.0', id = 1, method = 'initialize',
+                  params = {rootUri = 'file://' .. lfs.currentdir()}},
+               {jsonrpc = '2.0', id = 2, method = 'workspace/symbol', params = {query = 'CacheEntry'}},
+               {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+               {jsonrpc = '2.0', method = 'exit', params = {}},
+            })
+            assert.equals('CacheEntry', responses[2][1].name)
+         end
+         local path = '.cache/tl-lsp/workspace-index.paths'
+         search()
+         local earlier = os.time() - 10
+         assert(lfs.touch(path, earlier, earlier))
+         search()
+         assert.equals(earlier, lfs.attributes(path, 'modification'))
+
+         local file = assert(io.open(path, 'wb'))
+         file:write('partial manifest')
+         file:close()
+         search()
+         file = assert(io.open(path, 'rb'))
+         assert.matches('cache entry.tl\0\0', file:read('*a'), 1, true)
+         file:close()
+      end)
+   end)
+
    it('diagnoses forbidden quoted macro calls and recovers after edits', function()
       local source = [[local macro inner!(value: Expression) return `$value` end
 local macro outer!() return `inner!(1)` end

@@ -1190,8 +1190,8 @@ parse_fns.fornum = function(state, block)
 
    node.var = new_node(state, block[reader.BLOCK_INDEXES.FORNUM.VAR], "identifier")
 
-   node.from = parse_expression(state, block[reader.BLOCK_INDEXES.FORNUM.FROM])
-   node.to = parse_expression(state, block[reader.BLOCK_INDEXES.FORNUM.TO])
+   node.from = parse_expression(state, block[reader.BLOCK_INDEXES.FORNUM.FROM]) or new_node(state, block, "error_node")
+   node.to = parse_expression(state, block[reader.BLOCK_INDEXES.FORNUM.TO]) or new_node(state, block, "error_node")
 
    if block[reader.BLOCK_INDEXES.FORNUM.STEP] then
       node.step = parse_expression(state, block[reader.BLOCK_INDEXES.FORNUM.STEP])

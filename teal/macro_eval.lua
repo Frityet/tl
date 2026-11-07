@@ -649,15 +649,17 @@ local function local_require_alias(stmt)
 end
 
 local function block_uses_name(b, name, skip)
-   if not b or b == skip then
-      return false
-   end
-   if b.kind == "identifier" and b.tk == name then
-      return true
-   end
-   for _, child in children(b) do
-      if block_uses_name(child, name, skip) then
-         return true
+   local pending = { b }
+   local visited = { [skip] = true }
+
+   while #pending > 0 do
+      local current = table.remove(pending)
+      if not visited[current] then
+         visited[current] = true
+         if current.kind == "identifier" and current.tk == name then return true end
+         for _, child in children(current) do
+            if not visited[child] then table.insert(pending, child) end
+         end
       end
    end
    return false

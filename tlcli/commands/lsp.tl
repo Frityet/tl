@@ -59,6 +59,27 @@ local function stdin_ready(timeout_ms: integer): boolean
    return (ffi.C.poll as function(ffi.Array<Pollfd>, integer, integer): integer)(stdin_pollfd, 1, timeout_ms) > 0
 end
 
+local MONOTONIC_CLOCK = ffi.os == "OSX" and 6 or (ffi.os == "Linux" and 1 or nil)
+if MONOTONIC_CLOCK then
+   ffi.cdef [[
+      struct tl_lsp_timespec { long tv_sec; long tv_nsec; };
+      int clock_gettime(int clock_id, struct tl_lsp_timespec *time);
+   ]]
+end
+
+local record Timespec is ffi.CData where ffi.istype(self, "struct tl_lsp_timespec")
+   tv_sec: integer
+   tv_nsec: integer
+end
+
+local diagnostic_clock: ffi.Array<Timespec> = MONOTONIC_CLOCK and ffi.new("struct tl_lsp_timespec[1]")
+local function monotonic_ms(): number
+   if diagnostic_clock and
+      (ffi.C.clock_gettime as function(integer, ffi.Array<Timespec>): integer)(MONOTONIC_CLOCK, diagnostic_clock) == 0 then
+      return tonumber(diagnostic_clock[0].tv_sec) * 1000 + tonumber(diagnostic_clock[0].tv_nsec) / 1000000
+   end
+end
+
 local type AnyArray = {any}
 local type AnyObject = {string: any}
 
@@ -66,7 +87,7 @@ local record NullValue
 end
 
 local JSON_NULL: NullValue = setmetatable({}, { __tostring = function(): string return "null" end })
-local JSON_ARRAYS: {AnyArray: boolean} = {}
+local JSON_ARRAYS: {AnyArray: boolean} = setmetatable({}, { __mode = "k" })
 
 local function array(): AnyArray
    local result: AnyArray = {}
@@ -574,6 +595,7 @@ local record Server
    workspace_indexed: boolean
    compiler: Compiler
    pending_diagnostics: {Document:boolean}
+   diagnostics_due: number
 end
 
 local ensure_workspace_index: function(Server)
@@ -1024,9 +1046,23 @@ end
 local function flush_pending_diagnostics(server: Server)
    local pending = server.pending_diagnostics
    server.pending_diagnostics = {}
+   server.diagnostics_due = nil
    for document in pairs(pending) do
       if server.documents[document.uri] == document then publish_diagnostics(server, document) end
    end
+end
+
+local function diagnostics_delay(server: Server): integer
+   local debounce = server.tlconfig.lsp and server.tlconfig.lsp.diagnostics_debounce_ms
+   return debounce is number and math.max(0, math.floor(debounce)) or 35
+end
+
+local function schedule_diagnostics(server: Server, document: Document)
+   if not next(server.pending_diagnostics) then
+      local now = monotonic_ms()
+      server.diagnostics_due = now and now + diagnostics_delay(server)
+   end
+   server.pending_diagnostics[document] = true
 end
 
 local function apply_change(document: Document, change: AnyObject)
@@ -1309,21 +1345,29 @@ local function symbol_at(server: Server, document: Document, position: Position)
    }
 end
 
-local function all_word_ranges(document: Document, name: string): AnyArray
+local function type_identity(info: TypeInfo): string
+   if not info or not info.file or info.file == "" then return nil end
+   return info.file .. ":" .. tostring(info.y) .. ":" .. tostring(info.x)
+end
+
+local function all_word_ranges(document: Document, name: string, identity?: string): AnyArray
    local result = array()
    for _, token in ipairs(document.tokens_by_name[name] or {}) do
-      table.insert(result, make_range(document.lines, token.y, token.x, #token.tk))
+      local range = make_range(document.lines, token.y, token.x, #name)
+      if not identity or type_identity((type_info(document, range.start, token))) == identity then
+         table.insert(result, range)
+      end
    end
    return result
 end
 
-local function all_locations(server: Server, name: string): AnyArray
+local function all_locations(server: Server, name: string, identity?: string): AnyArray
    ensure_workspace_index(server)
    local result = array()
    for _, document in pairs(server.documents) do
       if document.text:find(name, 1, true) then
          analyze_document(server, document)
-         for _, range in ipairs(all_word_ranges(document, name)) do
+         for _, range in ipairs(all_word_ranges(document, name, identity)) do
             table.insert(result, { uri = document.uri, range = range })
          end
       end
@@ -1331,34 +1375,8 @@ local function all_locations(server: Server, name: string): AnyArray
    return result
 end
 
-local function type_identity(info: TypeInfo): string
-   if not info or not info.file or info.file == "" then return nil end
-   return info.file .. ":" .. tostring(info.y) .. ":" .. tostring(info.x)
-end
-
 local function resolved_locations(server: Server, origin: Document, token: Token, position: Position): AnyArray
-   ensure_workspace_index(server)
-   local origin_info: TypeInfo = type_info(origin, position, token)
-   local identity = type_identity(origin_info)
-   if not identity then return all_locations(server, token.tk) end
-   local result = array()
-   for _, document in pairs(server.documents) do
-      if document.text:find(token.tk, 1, true) then
-         analyze_document(server, document)
-         for _, candidate in ipairs(document.tokens_by_name[token.tk] or {}) do
-            local line = document.lines[candidate.y] or ""
-            local candidate_position: Position = {
-               line = candidate.y - 1,
-               character = byte_to_utf16(line:sub(1, candidate.x - 1), candidate.x - 1),
-            }
-            local info: TypeInfo = type_info(document, candidate_position, candidate)
-               if type_identity(info) == identity then
-                  table.insert(result, { uri = document.uri, range = make_range(document.lines, candidate.y, candidate.x, #candidate.tk) })
-               end
-         end
-      end
-   end
-   return result
+   return all_locations(server, token.tk, type_identity((type_info(origin, position, token))))
 end
 
 local function completion_kind_for_type(info: TypeInfo): integer
@@ -2060,7 +2078,7 @@ local function server_capabilities(server: Server): AnyObject
    if lsp_enabled(server, "symbols") then capabilities.documentSymbolProvider = true; capabilities.workspaceSymbolProvider = true end
    if lsp_enabled(server, "rename") then capabilities.renameProvider = { prepareProvider = true } end
    if lsp_enabled(server, "completion") then
-      capabilities.completionProvider = { triggerCharacters = mark_array({ ".", ":", "<", "!", "\n" } as AnyArray), resolveProvider = true }
+      capabilities.completionProvider = { triggerCharacters = mark_array({ ".", ":", "<", "!" } as AnyArray), resolveProvider = true }
       capabilities.signatureHelpProvider = { triggerCharacters = mark_array({ "(", "," } as AnyArray) }
    end
    if lsp_enabled(server, "formatting") then
@@ -2117,6 +2135,37 @@ local function index_directory(directory: string, files: {string})
    end
 end
 
+local function workspace_index_header(roots: {string}): string
+   local parts = { "tl-lsp-index-v1", teal.version() }
+   for _, root in ipairs(roots) do
+      table.insert(parts, root)
+      table.insert(parts, tostring(lfs.attributes(root, "modification") as integer or 0))
+   end
+   return table.concat(parts, "\0") .. "\0"
+end
+
+local function read_workspace_index(path: string, header: string): {string}
+   local modified = lfs.attributes(path, "modification") as integer
+   if not modified or os.time() - modified > 60 then return nil end
+   local cache = io.open(path, "rb")
+   if not cache then return nil end
+   local data = cache:read("*a") or ""
+   cache:close()
+
+   -- A double terminator distinguishes a complete manifest from a partial write.
+   if #data < #header + 2 or data:sub(1, #header) ~= header or data:sub(-2) ~= "\0\0" then return nil end
+   local files: {string} = {}
+   local start = #header + 1
+   if start == #data - 1 then return files end
+   while start < #data do
+      local stop = data:find("\0", start, true)
+      if stop == start then return nil end
+      files[#files + 1] = data:sub(start, stop - 1)
+      start = stop + 1
+   end
+   return files
+end
+
 ensure_workspace_index = function(server: Server)
    if not lsp_enabled(server, "workspace_index") then return end
    if server.workspace_indexed then return end
@@ -2132,41 +2181,23 @@ ensure_workspace_index = function(server: Server)
 
    local cache_dir = server.root .. "/.cache"
    local cache_subdir = cache_dir .. "/tl-lsp"
-   local cache_path = cache_subdir .. "/workspace-index.json"
-   local files: {string} = {}
-   local use_cache = lsp_enabled(server, "cache")
-   local cache = use_cache and io.open(cache_path, "rb")
-   if cache then
-      local decoded = json_decode(cache:read("*a") or "")
-      cache:close()
-      if decoded and decoded.version == teal.version() and os.time() - (decoded.generated as integer or 0) <= 60 then
-         local cached_roots = decoded.roots as AnyArray
-         local cached_files = decoded.files as AnyArray
-         local valid = #cached_roots == #root_list
-         for index, root in ipairs(root_list) do
-            local cached = cached_roots[index] as AnyObject
-            local modified = lfs.attributes(root, "modification") as integer or 0
-            if not cached or cached.path ~= root or cached.modified ~= modified then valid = false; break end
-         end
-         if valid then
-            for _, path in ipairs(cached_files) do table.insert(files, path as string) end
-         end
-      end
-   end
-   if #files == 0 then
-      local encoded_roots = array()
+   local cache_path = cache_subdir .. "/workspace-index.paths"
+   local header = lsp_enabled(server, "cache") and workspace_index_header(root_list)
+   local files = header and read_workspace_index(cache_path, header)
+   if not files then
+      files = {}
       for _, root in ipairs(root_list) do
          index_directory(root, files)
-         table.insert(encoded_roots, { path = root, modified = lfs.attributes(root, "modification") as integer or 0 })
       end
       table.sort(files)
-      if use_cache then lfs.mkdir(cache_dir); lfs.mkdir(cache_subdir) end
-      local output = use_cache and io.open(cache_path, "wb")
-      if output then
-         local encoded_files = array()
-         for _, path in ipairs(files) do table.insert(encoded_files, path) end
-         output:write(json_encode({ version = teal.version(), generated = os.time(), roots = encoded_roots, files = encoded_files } as AnyObject))
-         output:close()
+      if header then
+         lfs.mkdir(cache_dir)
+         lfs.mkdir(cache_subdir)
+         local output = io.open(cache_path, "wb")
+         if output then
+            output:write(header, table.concat(files, "\0"), "\0\0")
+            output:close()
+         end
       end
    end
    for _, path in ipairs(files) do
@@ -2199,7 +2230,7 @@ local function handle_notification(server: Server, method: string, params: AnyOb
       local document = document_new(uri, item.text as string or "", item.version as integer or 0)
       server.documents[uri] = document
       index_text_hints(server, document)
-      server.pending_diagnostics[document] = true
+      schedule_diagnostics(server, document)
    elseif method == "textDocument/didChange" then
       local text_document = params.textDocument as AnyObject
       local uri = text_document.uri as string
@@ -2210,7 +2241,7 @@ local function handle_notification(server: Server, method: string, params: AnyOb
       document.version = text_document.version as integer or document.version + 1
       document.analysis_version = -1
       index_text_hints(server, document)
-      server.pending_diagnostics[document] = true
+      schedule_diagnostics(server, document)
    elseif method == "textDocument/didSave" then
       local text_document = params.textDocument as AnyObject
       local uri = text_document.uri as string
@@ -2221,10 +2252,13 @@ local function handle_notification(server: Server, method: string, params: AnyOb
          document.analysis_version = -1
          index_text_hints(server, document)
       end
+      server.pending_diagnostics[document] = nil
       publish_diagnostics(server, document)
    elseif method == "textDocument/didClose" then
       local text_document = params.textDocument as AnyObject
       local uri = text_document.uri as string
+      local document = server.documents[uri]
+      if document then server.pending_diagnostics[document] = nil end
       server.documents[uri] = nil
       notification("textDocument/publishDiagnostics", { uri = uri, diagnostics = array() })
    end
@@ -2304,9 +2338,9 @@ local function handle_request(server: Server, method: string, params: AnyObject)
       local token = token_at(document, position)
       local result = array()
       if token then
-         for _, raw_location in ipairs(resolved_locations(server, document, token, position)) do
-            local location = raw_location as AnyObject
-            if location.uri == uri then table.insert(result, { range = location.range, kind = 1 }) end
+         local identity = type_identity((type_info(document, position, token)))
+         for _, range in ipairs(all_word_ranges(document, token.tk, identity)) do
+            table.insert(result, { range = range, kind = 1 })
          end
       end
       return result
@@ -2525,10 +2559,13 @@ return function(tlconfig: TlConfig, args: Args)
    }
 
    while true do
-      local debounce = server.tlconfig.lsp and server.tlconfig.lsp.diagnostics_debounce_ms
-      local debounce_ms = debounce is number and math.max(0, math.floor(debounce)) or 75
-      if next(server.pending_diagnostics) and not stdin_ready(debounce_ms) then
-         flush_pending_diagnostics(server)
+      if next(server.pending_diagnostics) then
+         -- Other requests do not restart the pending diagnostic batch's wait.
+         local now = server.diagnostics_due and monotonic_ms()
+         local wait = now and math.ceil(server.diagnostics_due - now) or diagnostics_delay(server)
+         if not stdin_pollfd or (now and wait <= 0) or not stdin_ready(math.max(0, wait)) then
+            flush_pending_diagnostics(server)
+         end
       end
       local message, read_err = read_message()
       if message == nil then

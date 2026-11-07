@@ -649,15 +649,17 @@ local function local_require_alias(stmt: Block): string
 end
 
 local function block_uses_name(b: Block, name: string, skip: Block): boolean
-   if not b or b == skip then
-      return false
-   end
-   if b.kind == "identifier" and b.tk == name then
-      return true
-   end
-   for _, child in children(b) do
-      if block_uses_name(child, name, skip) then
-         return true
+   local pending = { b }
+   local visited: {Block: boolean} = { [skip] = true }
+   -- A synthesized where clause can refer back to its enclosing type.
+   while #pending > 0 do
+      local current = table.remove(pending)
+      if not visited[current] then
+         visited[current] = true
+         if current.kind == "identifier" and current.tk == name then return true end
+         for _, child in children(current) do
+            if not visited[child] then table.insert(pending, child) end
+         end
       end
    end
    return false

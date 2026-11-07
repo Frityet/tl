@@ -69,7 +69,7 @@ Once `tl` is in your path, there are a few subcommands:
   hover/completion/signature help, formatting and the
   `tl.check` / `tl.generate` editor commands. It reloads `tlconfig.lua` from the
   workspace root supplied by the editor and caches its workspace file manifest
-  in `.cache/tl-lsp/`.
+  in `.cache/tl-lsp/workspace-index.paths`.
 
 LSP features can be disabled per project in `tlconfig.lua`:
 
@@ -77,8 +77,8 @@ LSP features can be disabled per project in `tlconfig.lua`:
 return {
    lsp = {
       inlay_hints = false,
-      -- Coalesce rapid edits before re-running the type checker (default: 75).
-      diagnostics_debounce_ms = 75,
+      -- Coalesce edits for up to this many milliseconds per batch (default: 35).
+      diagnostics_debounce_ms = 35,
       semantic_highlighting = false,
       workspace_index = false,
       cache = false,
