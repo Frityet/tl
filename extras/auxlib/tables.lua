@@ -1,5 +1,5 @@
 
-local Utilities = {}
+local Tables = {}
 
 
 
@@ -10,16 +10,32 @@ local Utilities = {}
 
 
 
-function Utilities.map(source, transform)
+
+
+
+
+
+
+
+
+
+
+
+
+
+function Tables.map(source, transform)
    local output = {}
-   for key, value in pairs(source) do
-      local mapped_key, mapped_value = transform(key, value)
-      output[mapped_key] = mapped_value
+   for idx, value in ipairs(source) do
+      output[idx] = transform(value, idx)
    end
    return output
 end
 
-function Utilities.sum(source, project)
+
+
+
+
+function Tables.sum(source, project)
    local total = 0
    for key, value in pairs(source) do
       total = total + project(key, value)
@@ -27,14 +43,24 @@ function Utilities.sum(source, project)
    return total
 end
 
-function Utilities.reduce(source, accumulator, step)
+
+
+
+
+
+
+function Tables.reduce(source, accumulator, step)
    for key, value in pairs(source) do
       accumulator = step(accumulator, key, value)
    end
    return accumulator
 end
 
-function Utilities.filter(source, predicate)
+
+
+
+
+function Tables.filter(source, predicate)
    local output = {}
    for key, value in pairs(source) do
       if predicate(key, value) then output[key] = value end
@@ -42,28 +68,45 @@ function Utilities.filter(source, predicate)
    return output
 end
 
-function Utilities.any(source, predicate)
+
+
+
+
+function Tables.any(source, predicate)
    for key, value in pairs(source) do
       if predicate(key, value) then return true end
    end
    return false
 end
 
-function Utilities.all(source, predicate)
+
+
+
+
+function Tables.all(source, predicate)
    for key, value in pairs(source) do
       if not predicate(key, value) then return false end
    end
    return true
 end
 
-function Utilities.find(source, predicate)
+
+
+
+
+
+function Tables.find(source, predicate)
    for key, value in pairs(source) do
       if predicate(key, value) then return value end
    end
    return nil
 end
 
-function Utilities.group_by(source, select_group)
+
+
+
+
+function Tables.group_by(source, select_group)
    local groups = {}
    for key, value in pairs(source) do
       local group_key = select_group(key, value)
@@ -77,7 +120,10 @@ function Utilities.group_by(source, select_group)
    return groups
 end
 
-function Utilities.keys(source)
+
+
+
+function Tables.keys(source)
    local output = {}
    for key in pairs(source) do
       output[#output + 1] = key
@@ -85,7 +131,10 @@ function Utilities.keys(source)
    return output
 end
 
-function Utilities.values(source)
+
+
+
+function Tables.values(source)
    local output = {}
    for _, value in pairs(source) do
       output[#output + 1] = value
@@ -93,7 +142,11 @@ function Utilities.values(source)
    return output
 end
 
-function Utilities.tap(value, inspect)
+
+
+
+
+function Tables.tap(value, inspect)
    inspect(value)
    return value
 end
@@ -187,4 +240,64 @@ end
 
 
 
-return Utilities
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+return Tables

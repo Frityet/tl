@@ -1,27 +1,27 @@
 local tl = require('teal.api.v2')
 local util = require('spec.util')
 
-describe('extras utilities operators', function()
+describe('auxlib tables operators', function()
    local imports = [[
-local utilities = require("extras.macros.utilities")
-local macro (|>)! = utilities.(|>)!
-local macro (||>)! = utilities.(||>)!
-local macro (+=>)! = utilities.(+=>)!
-local macro (?>)! = utilities.(?>)!
-local macro (from)! = utilities.(from)!
-local macro (import)! = utilities.(import)!
+local tables = require("auxlib.tables")
+local macro (|>)! = tables.(|>)!
+local macro (||>)! = tables.(||>)!
+local macro (+=>)! = tables.(+=>)!
+local macro (?>)! = tables.(?>)!
+local macro (from)! = tables.(from)!
+local macro (import)! = tables.(import)!
 ]]
 
    local function run(source, macro_only)
-      local ast, errors = tl.parse(imports .. source, 'utilities-fixture.tl')
+      local ast, errors = tl.parse(imports .. source, 'tables-fixture.tl')
       assert.same({}, errors)
-      local result = tl.check(ast, 'utilities-fixture.tl', {
+      local result = tl.check(ast, 'tables-fixture.tl', {
          gen_target = '5.1', gen_compat = 'off', feat_strict_nil = 'on',
       })
       assert.same({}, result.type_errors)
       local output = assert(tl.generate(result.ast, '5.1'))
       if macro_only then
-         assert.not_matches('extras.macros.utilities', output, 1, true)
+         assert.not_matches('auxlib.tables', output, 1, true)
       end
       return assert(loadstring(output), output)()
    end
@@ -61,49 +61,61 @@ local macro (import)! = utilities.(import)!
       ]])})
    end)
 
-   it('infers both input and output types when remapping entries', function()
-      assert.same({[10] = 'one!', [20] = 'two!'}, run([[
-         local source: {string:integer} = {one = 1, two = 2}
-         local mapped = source ||> |k, v| -> do return v * 10, k .. "!" end
-         local typed: {integer:string} = mapped
-         assert(source.one == 1 and source.two == 2)
+   it('maps arrays to new element types in index order', function()
+      assert.same({'1:10', '2:20'}, run([[
+         local source: {integer} = {10, 20}
+         local mapped = source ||> |value, idx| -> tostring(idx) .. ":" .. tostring(value)
+         local typed: {string} = mapped
+         assert(source[1] == 10 and source[2] == 20)
          return typed
       ]]))
    end)
 
-   it('maps array indices and evaluates the source and callback once', function()
-      assert.same({{[2] = 10, [3] = 12}, 1, 1}, {run([[
+   it('passes value then index and evaluates the source and callback expressions once', function()
+      assert.same({{11, 14}, 1, 1}, {run([[
          local source_calls, callback_calls = 0, 0
          local function values(): {integer}
             source_calls = source_calls + 1
             return {5, 6}
          end
-         local function mapper(): function(integer, integer): (integer, integer)
+         local function mapper(): function(integer, integer): integer
             callback_calls = callback_calls + 1
-            return |k, v| -> do return k + 1, v * 2 end
+            return |value, idx| -> value * 2 + idx
          end
          local mapped = values() ||> mapper()
          return mapped, source_calls, callback_calls
       ]])})
    end)
 
-   it('requires a callback that returns a key and a value', function()
-      local ast, errors = tl.parse(imports .. [[
-         local source: {string:integer} = {one = 1}
-         local mapped = source ||> |k, v| -> k .. tostring(v)
-      ]], 'utilities-fixture.tl')
-      assert.same({}, errors)
-      local result = tl.check(ast, 'utilities-fixture.tl')
-      assert.equals(1, #result.type_errors)
-      assert.matches('incompatible number of returns', result.type_errors[1].msg, 1, true)
+   it('returns an empty array without invoking the callback for empty input', function()
+      assert.same({{}, 0}, {run([[
+         local source: {integer} = {}
+         local calls = 0
+         local mapped: {string} = source ||> |value, idx| -> do
+            calls = calls + 1
+            return tostring(value + idx)
+         end
+         return mapped, calls
+      ]])})
+   end)
+
+   it('rejects dictionaries and callbacks with incompatible element types', function()
+      for _, source in ipairs({
+         'local source: {string:integer} = {one = 1}\nlocal mapped = source ||> |value, idx| -> value + idx',
+         'local source: {integer} = {1}\nlocal mapped = source ||> function(value: string, idx: integer): string return value end',
+      }) do
+         local ast, errors = tl.parse(imports .. source, 'tables-fixture.tl')
+         assert.same({}, errors)
+         local result = tl.check(ast, 'tables-fixture.tl', {feat_strict_nil = 'on'})
+         assert.is_true(#result.type_errors > 0, source)
+      end
    end)
 
    it('sums numeric projections of table entries and returns zero for empty tables', function()
       assert.same({6.5, 0}, {run([[
          local input: {string:integer} = {abc = 3, de = 2}
-         local mapped = input ||> |k, v| -> do return k, v end
          local empty: {string:integer} = {}
-         return mapped +=> |k, v| -> #k * v / 2, empty +=> |k, v| -> #k * v
+         return input +=> |k, v| -> #k * v / 2, empty +=> |k, v| -> #k * v
       ]])})
    end)
 
@@ -124,16 +136,16 @@ local macro (import)! = utilities.(import)!
    end)
 
    it('rejects malformed reductions and checks the accumulator type', function()
-      local _, errors = tl.parse(imports .. 'return source +=> {initial = 0, step = reducer}', 'utilities-fixture.tl')
+      local _, errors = tl.parse(imports .. 'return source +=> {initial = 0, step = reducer}', 'tables-fixture.tl')
       assert.equals(1, #errors)
       assert.matches('expects a sum callback or { initial, reducer }', errors[1].msg, 1, true)
 
       local ast, type_syntax = tl.parse(imports .. [[
          local input: {integer} = {2}
          return input +=> {0, |acc, k, v| -> tostring(acc + k + v)}
-      ]], 'utilities-fixture.tl')
+      ]], 'tables-fixture.tl')
       assert.same({}, type_syntax)
-      local result = tl.check(ast, 'utilities-fixture.tl')
+      local result = tl.check(ast, 'tables-fixture.tl')
       assert.equals(1, #result.type_errors)
       assert.matches('expected integer', result.type_errors[1].msg, 1, true)
    end)
@@ -143,7 +155,7 @@ local macro (import)! = utilities.(import)!
          local items: {integer} = {10, 20, 30, 40}
          local selected: {integer:integer} = items ?> |k, v| -> k % 2 == 0 and v >= 20
          local grouped: {string:{integer:integer}} =
-            utilities.group_by(selected, |_, v| -> v < 30 and "small" or "large")
+            tables.group_by(selected, |_, v| -> v < 30 and "small" or "large")
          return selected, grouped
       ]])})
    end)
@@ -157,10 +169,10 @@ local macro (import)! = utilities.(import)!
             calls = calls + 1
             return not v
          end
-         local first = entries |> utilities.any(count)
-         local every = utilities.all(entries, |k, v| -> not count(k, v))
-         local match: boolean | nil = utilities.find(entries, count)
-         assert(not utilities.any(empty, count) and utilities.all(empty, count) and utilities.find(empty, count) == nil)
+         local first = entries |> tables.any(count)
+         local every = tables.all(entries, |k, v| -> not count(k, v))
+         local match: boolean | nil = tables.find(entries, count)
+         assert(not tables.any(empty, count) and tables.all(empty, count) and tables.find(empty, count) == nil)
          return first, every, match, calls
       ]])})
    end)
@@ -168,8 +180,8 @@ local macro (import)! = utilities.(import)!
    it('extracts typed arrays of keys and values', function()
       assert.same({{'a', 'b'}, {10, 20}}, {run([[
          local entries: {string:integer} = {a = 20, b = 10}
-         local names: {string} = utilities.keys(entries)
-         local amounts: {integer} = utilities.values(entries)
+         local names: {string} = tables.keys(entries)
+         local amounts: {integer} = tables.values(entries)
          table.sort(names)
          table.sort(amounts)
          return names, amounts
@@ -184,7 +196,7 @@ local macro (import)! = utilities.(import)!
             calls = calls + 1
          end
          local function double(value: integer): integer return value * 2 end
-         local result = 20 + 1 |> utilities.tap(observe) |> double
+         local result = 20 + 1 |> tables.tap(observe) |> double
          return result, seen, calls
       ]])})
    end)
@@ -262,7 +274,7 @@ local macro (import)! = utilities.(import)!
          {'import {a as other.name} from source', 'alias must be a bare name'},
       }
       for _, case in ipairs(cases) do
-         local _, errors = tl.parse(imports .. case[1], 'utilities-fixture.tl')
+         local _, errors = tl.parse(imports .. case[1], 'tables-fixture.tl')
          assert.equals(1, #errors, case[1])
          assert.matches(case[2], errors[1].msg, 1, true)
       end

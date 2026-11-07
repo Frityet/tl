@@ -1909,7 +1909,10 @@ local function hover(server: Server, document: Document, position: Position): An
       if location then
          local target_uri = location.uri as string
          local target_range = location.range as Range
-         local target = server.documents[target_uri]
+         -- Member locations can be more precise than a generic function type's
+         -- location, including when its declaring file has never been opened.
+         local target = document_for(server, target_uri)
+         analyze_syntax(target)
          if target then
             local y = target_range.start.line + 1
             local line = target.lines[y] or ""

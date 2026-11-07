@@ -189,19 +189,19 @@ rejected; put the spelling in `(symbol)` and remove it from `Operator<...>`.
 
 ## Utility operators
 
-The `extras.macros.utilities` module provides operators for pipelines and imports
+The `auxlib.tables` module provides operators for pipelines and imports
 alongside typed table functions. The table operators `||>`, `+=>`, and `?>`
 call the module's runtime functions, so compiled programs using them load
-`extras/macros/utilities.lua`.
+`extras/auxlib/tables.lua`.
 
 ```lua
-local utilities = require("extras.macros.utilities")
-local macro (|>)! = utilities.(|>)!
-local macro (||>)! = utilities.(||>)!
-local macro (+=>)! = utilities.(+=>)!
-local macro (?>)! = utilities.(?>)!
-local macro (from)! = utilities.(from)!
-local macro (import)! = utilities.(import)!
+local tables = require("auxlib.tables")
+local macro (|>)! = tables.(|>)!
+local macro (||>)! = tables.(||>)!
+local macro (+=>)! = tables.(+=>)!
+local macro (?>)! = tables.(?>)!
+local macro (from)! = tables.(from)!
+local macro (import)! = tables.(import)!
 ```
 
 `|>` inserts the value as the first argument and chains from left to right.
@@ -217,21 +217,18 @@ Pipes bind more tightly than comparisons.
 | `x \|> (f)` | `(f)(x)` |
 | `x \|> (f())` | `(f())(x)` |
 
-`||>` maps a table's entries into a new table. It takes a `{K:V}` and a callback
-of type `function(K, V): (UK, UV)`, returning a `{UK:UV}`. The callback receives
-the original key and value and returns the new key and value.
+`||>` maps an array `{TFrom}` into a new array `{TTo}`. Its callback has type
+`function(TFrom, integer): TTo`: it receives `(value, idx)` and returns one mapped
+value, with a one-based index. Dictionaries are not supported.
 
 ```lua
-local scores: {string:integer} = { ada = 10, grace = 20 }
-local by_score: {integer:string} = scores ||> |name, score| -> do
-   return score, name:upper()
-end
-print(by_score[10]) -- ADA
+local scores: {integer} = { 10, 20 }
+local labels: {string} = scores ||> |score, idx| -> tostring(idx) .. ":" .. tostring(score)
+print(labels[1]) -- 1:10
 ```
 
-The source and callback expressions are each evaluated once. Entries are visited
-with `pairs`, so when several entries produce the same key, the last one visited
-wins.
+The source and callback expressions are each evaluated once. Dense array entries
+are visited with `ipairs`, in index order, and output indices match the input.
 
 `+=>` reduces a `{K:V}` to a single value. A callback of type
 `function(K, V): number` projects entries to numbers and sums them. For a
@@ -255,12 +252,12 @@ and the initial value in the seeded form.
 ```lua
 local scores: {string:integer} = { ada = 10, grace = 20 }
 local high = scores ?> |_, score| -> score >= 20
-local has_perfect = scores |> utilities.any(|_, score| -> score == 100)
-local all_positive = utilities.all(scores, |_, score| -> score > 0)
-local grace_score = utilities.find(scores, |name, _| -> name == "grace")
-local buckets = utilities.group_by(scores, |_, score| -> math.floor(score / 10))
-local names = utilities.keys(scores)
-local amounts = utilities.values(scores)
+local has_perfect = scores |> tables.any(|_, score| -> score == 100)
+local all_positive = tables.all(scores, |_, score| -> score > 0)
+local grace_score = tables.find(scores, |name, _| -> name == "grace")
+local buckets = tables.group_by(scores, |_, score| -> math.floor(score / 10))
+local names = tables.keys(scores)
+local amounts = tables.values(scores)
 ```
 
 | Utility | Result |
@@ -272,17 +269,17 @@ local amounts = utilities.values(scores)
 | `group_by` | A table of groups. Each group preserves the original entry keys. |
 | `keys`, `values` | Arrays of the table's keys or values. |
 
-These utilities use `pairs`, so iteration order is unspecified. `any`, `all`,
+These tables use `pairs`, so iteration order is unspecified. `any`, `all`,
 and `find` stop as soon as they can determine the result.
 
 ### Inspecting a pipeline
 
-`utilities.tap` calls a function with the input and returns the input itself.
+`tables.tap` calls a function with the input and returns the input itself.
 
 ```lua
 local function double(value: integer): integer return value * 2 end
 
-local answer = 21 |> utilities.tap(print) |> double -- prints 21, returns 42
+local answer = 21 |> tables.tap(print) |> double -- prints 21, returns 42
 ```
 
 ### Destructuring and imports

@@ -49,6 +49,18 @@ JavaScript, so everything runs on the client.
 
 ## Running
 
+### Bundled auxiliary library
+
+The strict-nil library lives in `extras/auxlib`: require `auxlib.tables`,
+`auxlib.async` or `auxlib.struct`. The checkout's `tl` launcher adds `extras/`
+to the module search path. When embedding the compiler or running generated Lua
+separately, add `<tl>/extras/?.lua` and `<tl>/extras/?/init.lua` to `package.path`.
+Public APIs and macros carry TealDoc comments in their `.tl` sources; library
+tests live in `extras/auxlib/tess/`.
+
+`tables.map` and `||>` map arrays `{TFrom}` to `{TTo}`. Their callback receives
+`(value, idx)` with a one-based index and returns one mapped value.
+
 ### Using the compiler directly
 
 Once `tl` is in your path, there are a few subcommands:

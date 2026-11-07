@@ -1,5 +1,4 @@
 --#pragma strict_nil on
--- Import with require("extras.macros.struct") and alias its (struct)! operator.
 
 local type Object = {any:any}
 
@@ -8,9 +7,13 @@ local record Struct
       name: string
       required: boolean
       readonly: boolean
+      --- Compute a fresh default for an omitted optional field; nil is permitted when declared.
       default: (function(): any) | nil
+      --- Read the stored value and return the exposed value of the declared field type.
       get: (function(any): any) | nil
+      --- Receive current and incoming values and return the candidate stored value.
       set: (function(any, any): any) | nil
+      --- Validate a candidate field value and return whether it is acceptable.
       invariant: (function(any): boolean) | nil
       message: string | nil
    end
@@ -20,11 +23,13 @@ local record Struct
       fields: {Field}
       positional: {string}
       auto: boolean
+      --- Validate the complete instance or staged property-write view.
       invariant: (function(any): boolean) | nil
       by_name: {string:Field | nil}
       mt: {string:any}
    end
 
+   --- Install generated constructors and property hooks for a struct descriptor.
    define: function(any, any)
 end
 
@@ -88,6 +93,10 @@ local function construct(desc: Descriptor, values: {string:any}): any
    return instance
 end
 
+--- Install the runtime behavior emitted by the struct macro.
+--- Initializes constructors, validation, property accessors and backing storage on the class.
+--- @param class_value Generated struct class receiving from, validate and optional create methods.
+--- @param description Generated field descriptor, constructor metadata and optional record invariant.
 function Struct.define(class_value: any, description: any)
    local class = class_value as {string:any}
    local desc = description as Descriptor
@@ -131,6 +140,81 @@ function Struct.define(class_value: any, description: any)
    end
 end
 
+--- Declare typed structs with defaults, property hooks and invariants.
+---
+--- Import the operator explicitly.
+---
+--- ```teal
+--- local structs = require("auxlib.struct")
+--- local macro (struct)! = structs.(struct)!
+--- ```
+---
+--- The macro and runtime live in `struct.tl`, with strict nil checking
+--- enabled. The macro emits a native Teal record and typed callbacks. Generated
+--- programs load `extras/auxlib/struct.lua` from their Lua module path.
+---
+--- ```teal
+--- struct Counter {
+---    constructor(auto);
+---    value: integer = property {
+---       default = 1;
+---       invariant = x -> x > 0;
+---       get = x -> x * 10;
+---       set = new -> do field = new end;
+---    };
+--- }
+---
+--- local counter = Counter:create()
+--- counter.value = 3
+--- print(counter.value) -- 30
+--- ```
+---
+--- ## Fields and construction
+---
+--- - A typed field takes an ordinary default expression, `required`,
+---   `required { ... }`, or `property { default = value, ... }`.
+--- - `:from { ... }` is always generated. Its input type, `Name.Init`, has
+---   required fields and nullable entries for defaulted fields.
+--- - `constructor(auto)` also generates `:create(...)`. Its arguments are the
+---   required fields followed by optional defaulted fields, in declaration order
+---   within each group. Omitted or `nil` inputs use the default; required fields
+---   need a non-nil value. Defaults run separately for each instance.
+--- - A handwritten `Name:create(...)` can call `self:from { ... }`. Omit
+---   `constructor(auto)` for that form. There is no `constructor(manual)` mode.
+--- - `implements(Interface, OtherInterface)` emits native interface conformance.
+---   List the data fields in the struct body, and supply ordinary record methods
+---   after the declaration.
+--- - Generic struct declarations are deferred.
+---
+--- ## Hooks and storage
+---
+--- `get` and `invariant` each receive the stored field value. `set` takes the
+--- incoming value and can assign the implicit mutable `field` binding, initially
+--- the current stored value. During construction, its initial value is the input
+--- or evaluated default. The setter's result is checked before writing the slot.
+--- Callback parameters and results are checked against the declared field type;
+--- invariants must return a boolean. `message` can customize an invariant error.
+---
+--- Instances use `_name` backing slots. `__index` reads the slot and runs its
+--- getter, and `__newindex` runs the setter and checks before committing. Public
+--- keys stay absent, so this also works on repeated direct writes such as
+--- `employee.name = "ADA"`. Underscore backing slots are absent from the public
+--- record type. `readonly = true` rejects public writes at runtime after construction.
+---
+--- An optional header `invariant (x -> x.minimum <= x.maximum)` checks the whole
+--- record after construction and checks a staged view before a property write.
+--- `instance:validate()` reruns the checks and returns the instance. Hooks cover
+--- assignments to the property itself; in-place edits inside a table field are
+--- ordinary table operations. Use validation hooks as predicates, since their
+--- side effects are not rolled back.
+---
+--- To regenerate the Lua runtime, run this command from the repository root.
+---
+--- ```sh
+--- ./tl gen --gen-target=5.1 --gen-compat=off -o extras/auxlib/struct.lua extras/auxlib/struct.tl
+--- ```
+--- @param definition Struct name and field table, including optional construction and invariant headers.
+--- @return Statements declaring the typed record and initializing its runtime descriptor.
 macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local B = BLOCK_INDEXES
    local function node(kind, tk)
@@ -367,7 +451,7 @@ macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local setup = (```do end```)[1]
    local statements = setup[B.DO.BODY]
    local runtime = fresh("__struct_module")
-   table.insert(statements, local_value(runtime, `require("extras.macros.struct")`))
+   table.insert(statements, local_value(runtime, `require("auxlib.struct")`))
    local runtime_fields = {}
    for i, field in ipairs(fields) do
       local metadata = {{"name", str(field.name)}, {"required", boolean(field.required)},

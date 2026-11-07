@@ -134,6 +134,25 @@ return item.@H@value
       assert.matches('Field summary.', value, 1, true)
    end)
 
+   it('reads docs at the declaration of an unopened generic method field', function()
+      local value = text(hover([[
+local api = require('hover_fixture')
+local function inspect(scope: api.Scope)
+   return scope.@H@spawn
+end
+]], {['hover_fixture.tl'] = [[
+local record API
+   record Scope
+      --- Generic method field summary.
+      spawn: function<T>(self: Scope, factory: function(): T): T
+      _state: boolean
+   end
+end
+return API
+]]}))
+      assert.matches('Generic method field summary.', value, 1, true)
+   end)
+
    it('finds declaration comments across a split function header', function()
       local value = text(hover([[
 --- Multiline function summary.
@@ -284,22 +303,26 @@ return 1 +=> 2
       end)
    end)
 
-   for _, case in ipairs({{'+=>', 'Sum projected entries'}, {'?>', 'Filter a table'}}) do
+   for _, case in ipairs({
+      {'+=>', 'Sum projected entries', 'return values @H@+=> |_, value| -> value'},
+      {'?>', 'Filter a table', 'return values @H@?> |_, value| -> value > 1'},
+      {'||>', 'Map an array', 'return values @H@||> |value, idx| -> tostring(value + idx)'},
+   }) do
       it('shows the bundled ' .. case[1] .. ' usage documentation at an operator use', function()
          local root = assert(util.tl_executable:match('^(.*)[/\\]tl$'))
-         local file = assert(io.open(root .. '/extras/macros/utilities.tl', 'rb'))
+         local file = assert(io.open(root .. '/extras/auxlib/tables.tl', 'rb'))
          local module = file:read('*a')
          file:close()
          local source = [[
-local utilities = require('extras.macros.utilities')
-local macro (+=>)! = utilities.(+=>)!
-local macro (?>)! = utilities.(?>)!
+local tables = require('auxlib.tables')
+local macro (+=>)! = tables.(+=>)!
+local macro (?>)! = tables.(?>)!
+local macro (||>)! = tables.(||>)!
 local values: {integer} = {1, 2}
-]] .. (case[1] == '+=>' and 'return values @H@+=> |_, value| -> value' or
-            'return values @H@?> |_, value| -> value > 1')
-         local value = text(hover(source, {extras = {macros = {['utilities.tl'] = module}}}))
+]] .. case[3]
+         local value = text(hover(source, {['tlconfig.lua'] = 'return {include_dir = {"extras"}}', extras = {auxlib = {['tables.tl'] = module}}}))
          assert.matches(case[2], value, 1, true)
-         assert.matches('local utilities = require("extras.macros.utilities")', value, 1, true)
+         assert.matches('local tables = require("auxlib.tables")', value, 1, true)
          assert.matches('**Parameter `source`:**', value, 1, true)
       end)
    end

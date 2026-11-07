@@ -1,8 +1,8 @@
 local tl = require('teal.api.v2')
-local async = require('extras.macros.async')
+local async = require('auxlib.async')
 
 local imports = [[
-local tasks = require("extras.macros.async")
+local tasks = require("auxlib.async")
 local macro (async)! = tasks.(async)!
 local macro (await)! = tasks.(await)!
 local type Scope = tasks.Scope
@@ -31,7 +31,7 @@ local function drain(loop)
    error('scheduler did not go idle')
 end
 
-describe('extras async macros', function()
+describe('auxlib async macros', function()
    it('runs the dashboard nursery and starts both requests before either completes', function()
       assert.same({'profile:7', 'alert:7'}, {run([[
          local record Dashboard
@@ -112,7 +112,7 @@ describe('extras async macros', function()
    end)
 end)
 
-describe('extras async runtime', function()
+describe('auxlib async runtime', function()
    it('joins siblings in a nursery even if the body returns first', function()
       local loop = async.configure()
       local resolve, completed

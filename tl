@@ -5,7 +5,8 @@
 do
    local script_path = debug.getinfo(1, "S").source:match("^@?(.*[/\\])") or "."
    local save_package_path = package.path
-   package.path = script_path .. "/?.lua;" .. script_path .. "/?/init.lua;" .. package.path
+   package.path = script_path .. "/?.lua;" .. script_path .. "/?/init.lua;" ..
+      script_path .. "/extras/?.lua;" .. script_path .. "/extras/?/init.lua;" .. package.path
 
    -- get the whole API into package.loaded
    require("teal")

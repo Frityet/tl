@@ -2,8 +2,13 @@
 
 
 
-
 local Struct = { Field = {}, Descriptor = {} }
+
+
+
+
+
+
 
 
 
@@ -88,6 +93,10 @@ local function construct(desc, values)
    return instance
 end
 
+
+
+
+
 function Struct.define(class_value, description)
    local class = class_value
    local desc = description
@@ -130,6 +139,81 @@ function Struct.define(class_value, description)
       end
    end
 end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
