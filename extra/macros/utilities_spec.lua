@@ -27,7 +27,7 @@ local macro (import)! = utilities.(import)!
    end
 
    it('inserts the piped value first and calls the result of a parenthesized expression', function()
-      assert.same({6, 6, 34, 6, 9, 14}, {run([[
+      assert.same({6, 6, 34, 6, 9, 14, 34}, {run([[
          local function double(value: integer): integer return value * 2 end
          local function digits(first: integer, second: integer): integer
             return first * 10 + second
@@ -35,10 +35,11 @@ local macro (import)! = utilities.(import)!
          local function factory(): function(integer): integer
             return value -> value + 6
          end
+         local macro target!() return `digits(4)` end
 
          assert(3 |> double == 6)
          return 3 |> double, 3 |> double(), 3 |> digits(4), 3 |> (double),
-            3 |> (factory()), 1 + 3 |> double |> (factory())
+            3 |> (factory()), 1 + 3 |> double |> (factory()), 3 |> target!()
       ]], true)})
    end)
 
@@ -241,7 +242,8 @@ local macro (import)! = utilities.(import)!
       end)
       assert.same({6, 8, 10}, {run([[
          import { some_function as fn, number } from utility_fixture.source
-         import { some_function as other, number as table } from "utility fixture"
+         local macro selection!() return `{ some_function as other, number as table }` end
+         import selection!() from "utility fixture"
          return fn(3), other(4), number + table
       ]])})
    end)
@@ -254,7 +256,7 @@ local macro (import)! = utilities.(import)!
          {'{key = a} from row', 'bare field names'},
          {'{row.a} from row', 'bare field names'},
          {'local value = {a} from row', 'returned statements in an expression context'},
-         {'import {a}', 'expects { fields } from'},
+         {'import {[1] = a} from source', 'bare field names'},
          {'import {a} from get_module()', 'dotted module name or a string literal'},
          {'import {a as b, b} from source', "duplicate binding 'b'"},
          {'import {a as other.name} from source', 'alias must be a bare name'},

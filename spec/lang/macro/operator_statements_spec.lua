@@ -179,6 +179,7 @@ print(answer)]]
          local function selection(symbol, parameters)
             return 'local macro (' .. symbol .. ')!(' .. parameters .. '): Operator<infix, comparison>\n' .. [[
                local out = block('statements')
+               if names.kind == 'paren' then names = names[BLOCK_INDEXES.PAREN.EXP] end
                for _, item in ipairs(names) do
                   local name = expect(item[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE], 'identifier')
                   table.insert(out, ```local $name = $source.$name```)
@@ -188,8 +189,8 @@ print(answer)]]
             ]]
          end
          assert.equals(42, run([[
-            local macro (from)!(value: Expression): Operator<prefix, conditional> return value end
-            local macro (import)!(value: Expression): Operator<prefix, conditional> return value end
+            local macro (from)!(value: Expression): Operator<prefix, unary> return value end
+            local macro (import)!(value: Expression): Operator<prefix, unary> return value end
          ]] .. selection('import', 'source: Expression, names: Expression')
             .. selection('from', 'names: Expression, source: Expression') .. [[
             local source = {first = 19, second = 23};

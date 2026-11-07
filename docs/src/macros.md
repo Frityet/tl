@@ -130,8 +130,11 @@ end, "ok")
 `Statement` arguments are passed as a `statements` block, which can contain one
 or more statements.
 
-Macro arguments are **AST blocks**, not runtime values. Macros transform the
-syntax tree and return new blocks to be spliced into the program.
+Macro arguments are **AST blocks**. Teal expands any nested macro calls and
+operators in each argument before invoking the outer macro. For example, in
+`outer!(inner!())`, `outer` receives the block produced by `inner`. An inner
+macro runs even if the outer macro discards its argument. If the outer macro
+splices an expanded block twice, the resulting Lua can evaluate it twice.
 
 ## Quoting and splicing
 

@@ -73,6 +73,7 @@ local function clone_value(v: Block, splice_name?: string): Block
       is_longstring = v.is_longstring,
       custom_operator = v.custom_operator,
       operator_use = v.operator_use,
+      implicit_table_key = v.implicit_table_key,
       short_function = v.short_function,
       lj_const = v.lj_const,
       safe_navigation = v.safe_navigation,
@@ -506,6 +507,7 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
          return b
       end
    end
+   local argument_errors = #errs
    if args then
       for i, ab in ipairs(args) do
          if ab.kind == "macro_quote" and ab[BLOCK_INDEXES.MACRO_QUOTE.BLOCK] then
@@ -529,9 +531,13 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
             end
          end
          if ab then
-            table.insert(argv, ab)
+            local argument_context = expected == "stmt" and "stmt" or "expr"
+            table.insert(argv, traverse_invoking_macros(ab, filename, env, errs, argument_context))
          end
       end
+   end
+   if #errs > argument_errors then
+      return b
    end
    local prev_where = env.where
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }

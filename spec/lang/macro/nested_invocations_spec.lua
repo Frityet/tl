@@ -69,11 +69,47 @@ describe('macro invocation restrictions', function()
       assert.equals(5, assert(loadstring(tl.generate(result.ast, '5.1')))())
    end)
 
-   it('still allows nested calls supplied at the call site', function()
-      local ast, errors = tl.parse(ordinary .. 'return inner!(inner!(7))', 'nested-macros.tl')
+   it('passes expanded expressions and operator operands to the outer macro', function()
+      local ast, errors = tl.parse(ordinary .. [[
+         local macro (@)!(lhs: Expression, rhs: Expression): Operator<infix, additive>
+            expect(lhs, "integer")
+            return `$lhs + $rhs`
+         end
+         local macro outer!(value: Expression)
+            expect(value, "paren")
+            expect(value[BLOCK_INDEXES.PAREN.EXP], "op_add")
+            return value
+         end
+         return outer!(inner!(7) @ inner!(2))
+      ]], 'nested-macros.tl')
       assert.same({}, errors)
       local result = tl.check(ast, 'nested-macros.tl', {gen_target = '5.1', gen_compat = 'off'})
       assert.same({}, result.type_errors)
-      assert.equals(7, assert(loadstring(tl.generate(result.ast, '5.1')))())
+      assert.equals(9, assert(loadstring(tl.generate(result.ast, '5.1')))())
+   end)
+
+   it('reports errors from nested invocations even when the argument is discarded', function()
+      local _, errors = tl.parse([[local macro bad!() error("inner failed", 0) end
+local macro ignore!(value: Expression) return `0` end
+return ignore!(
+   bad!()
+)]], 'nested-macros.tl')
+      assert.equals(1, #errors)
+      assert.equals(4, errors[1].y)
+      assert.matches('inner failed', errors[1].msg, 1, true)
+   end)
+
+   it('expands nested macros in statement arguments before passing the block', function()
+      local ast, errors = tl.parse([[
+         local macro declare!() return ```local x = 7``` end
+         local macro forward!(body: Statement)
+            expect(body[1], "local_declaration")
+            return body
+         end
+         forward!(declare!())
+         return x
+      ]], 'nested-macros.tl')
+      assert.same({}, errors)
+      assert.equals(7, assert(loadstring(tl.generate(ast, '5.1')))())
    end)
 end)

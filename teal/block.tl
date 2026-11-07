@@ -130,6 +130,7 @@ local record block
 
       custom_operator: OperatorSpec
       operator_use: boolean
+      implicit_table_key: boolean
       short_function: boolean
       lj_const: boolean
       safe_navigation: boolean

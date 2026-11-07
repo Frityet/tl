@@ -1681,6 +1681,7 @@ function block_to_constructor(state, block)
 
    local node = new_node(state, block, "literal_table")
    add_boolean_field(node, block, "operator_use", block.operator_use)
+   add_boolean_field(node, block, "implicit_table_key", block.implicit_table_key)
    add_boolean_field(node, block, "short_function", block.short_function)
    add_boolean_field(node, block, "lj_const", block.lj_const)
    add_boolean_field(node, block, "safe_navigation", block.safe_navigation)
@@ -2627,6 +2628,7 @@ local errors = require("teal.errors")
 
 
 local block = { OperatorSpec = {}, Block = { ExpectedContext = {} } }
+
 
 
 
@@ -14490,6 +14492,7 @@ local function clone_value(v, splice_name)
       is_longstring = v.is_longstring,
       custom_operator = v.custom_operator,
       operator_use = v.operator_use,
+      implicit_table_key = v.implicit_table_key,
       short_function = v.short_function,
       lj_const = v.lj_const,
       safe_navigation = v.safe_navigation,
@@ -14923,6 +14926,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
          return b
       end
    end
+   local argument_errors = #errs
    if args then
       for i, ab in ipairs(args) do
          if ab.kind == "macro_quote" and ab[BLOCK_INDEXES.MACRO_QUOTE.BLOCK] then
@@ -14946,9 +14950,13 @@ eval_macro_invocation = function(b, filename, env, errs, context)
             end
          end
          if ab then
-            table.insert(argv, ab)
+            local argument_context = expected == "stmt" and "stmt" or "expr"
+            table.insert(argv, traverse_invoking_macros(ab, filename, env, errs, argument_context))
          end
       end
+   end
+   if #errs > argument_errors then
+      return b
    end
    local prev_where = env.where
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }
@@ -15903,6 +15911,7 @@ local function clone_block_deep(b)
       is_longstring = b.is_longstring,
       custom_operator = b.custom_operator,
       operator_use = b.operator_use,
+      implicit_table_key = b.implicit_table_key,
       short_function = b.short_function,
       lj_const = b.lj_const,
       safe_navigation = b.safe_navigation,
@@ -16665,6 +16674,7 @@ local function read_table_item(ps, i, n)
 
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY] = new_block(ps, i, "integer")
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk = tostring(n)
+   node.implicit_table_key = true
    i, node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] = read_expression(ps, i)
    if not node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] then
       return fail(ps, i, "expected an expression")

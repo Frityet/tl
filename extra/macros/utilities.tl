@@ -108,8 +108,7 @@ macro Utilities.(+=>)!(source: Expression, reduction: Expression): Operator<infi
       local message = "+=> expects a sum callback or { initial, reducer }"
       assert(#reduction == 2, message)
       for _, entry in ipairs(reduction) do
-         local key = entry[item.KEY]
-         assert(key.kind == "integer" and key.x == entry.x and key.y == entry.y, message)
+         assert(entry.implicit_table_key, message)
       end
       local initial, reducer = reduction[1][item.VALUE], reduction[2][item.VALUE]
       return `require("extra.macros.utilities").reduce($source, $initial, $reducer)`
@@ -122,14 +121,18 @@ macro Utilities.(?>)!(source: Expression, predicate: Expression): Operator<infix
 end
 
 macro Utilities.(import)!(fields: Expression): Operator<prefix, unary>
-   error("import expects { fields } from a module name", 0)
+   -- Tag an ordinary call block for the from operator to consume.
+   local selection = `__tl_import_fields($fields)`
+   selection.tk = "__tl_import_fields"
+   return selection
 end
 
 macro Utilities.(from)!(fields: Expression, source: Expression): Operator<infix, conditional>
    local B = BLOCK_INDEXES
-   local importing = fields.kind == "macro_invocation" and fields.operator_use and fields.tk == "import"
+   while fields.kind == "paren" do fields = fields[B.PAREN.EXP] end
+   local importing = fields.kind == "op_funcall" and fields.tk == "__tl_import_fields"
    if importing then
-      fields = fields[B.MACRO_INVOCATION.ARGS][1]
+      fields = fields[B.OP.E2][1]
       local function module_path(part)
          if part.kind == "identifier" then return part.tk end
          assert(part.kind == "op_dot" and not part.safe_navigation and part[B.OP.E2].kind == "identifier",
@@ -162,7 +165,6 @@ macro Utilities.(from)!(fields: Expression, source: Expression): Operator<infix,
 
    local seen = {}
    for i, item in ipairs(fields) do
-      local key = item[B.LITERAL_TABLE_ITEM.KEY]
       local field = item[B.LITERAL_TABLE_ITEM.VALUE]
       local name = field
       if importing and field.kind == "op_as" then
@@ -176,8 +178,7 @@ macro Utilities.(from)!(fields: Expression, source: Expression): Operator<infix,
             name = alias[B.NOMINAL_TYPE.NAME]
          end
       end
-      -- Implicit array keys share their source position with the value.
-      assert(field.kind == "identifier" and key.kind == "integer" and key.x == field.x and key.y == field.y,
+      assert(field.kind == "identifier" and item.implicit_table_key,
          importing and "import expects bare field names with optional 'as' aliases" or "from expects bare field names")
       assert(not seen[name.tk], operation .. " has duplicate binding '" .. name.tk .. "'")
       seen[name.tk] = true

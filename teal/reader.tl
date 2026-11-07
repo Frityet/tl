@@ -357,6 +357,7 @@ local function clone_block_deep(b: Block): Block
       is_longstring = b.is_longstring,
       custom_operator = b.custom_operator,
       operator_use = b.operator_use,
+      implicit_table_key = b.implicit_table_key,
       short_function = b.short_function,
       lj_const = b.lj_const,
       safe_navigation = b.safe_navigation,
@@ -1119,6 +1120,7 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
 
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY] = new_block(ps, i, "integer")
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk = tostring(n)
+   node.implicit_table_key = true
    i, node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] = read_expression(ps, i)
    if not node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] then
       return fail(ps, i, "expected an expression")

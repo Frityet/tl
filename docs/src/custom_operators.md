@@ -135,8 +135,9 @@ shadowed in an inner block. Duplicate declarations in the same scope are
 errors. Bindings do not leak between files. Explicit `(@)!(a, b)` calls
 remain available, and retain the same lexical binding as the operator.
 
-Operator invocations can be supplied as arguments at an ordinary macro call
-site. Macro bodies and quotes cannot invoke other macros, including custom
+Nested macro calls and operators expand before the enclosing macro or operator
+runs. Each operand contains the expanded syntax, with the grouping set by the
+parser. Macro bodies and quotes cannot invoke other macros, including custom
 operators or explicit `(operator)!(...)` calls. Use ordinary helper functions
 within a macro body and build the resulting AST directly or quote built-in
 expressions. Supplied arguments can still be forwarded or spliced.
@@ -205,6 +206,7 @@ local macro (import)! = utilities.(import)!
 
 `|>` inserts the value as the first argument and chains from left to right.
 A parenthesized target is evaluated as written, then called with the value.
+If a macro target expands to a bare call, `|>` inserts the value into that call.
 Pipes bind more tightly than comparisons.
 
 | Usage | Equivalent call |
