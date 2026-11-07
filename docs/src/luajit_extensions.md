@@ -66,13 +66,24 @@ local answer = || -> 42
 local pair = || -> do return 1, 2 end
 ```
 
+Place an explicit return annotation after the closing pipe and before `->`.
+
+```lua
+local answer = ||: integer -> 4
+local increment = |x: integer|: integer -> x + 1
+local pair = ||: (integer, string) -> do return 4, "four" end
+```
+
+The annotation supplies the return types for both expression and block bodies.
+An expected function signature can still supply omitted parameter types.
+
 Parameters can use Teal annotations between the pipes. Unannotated
 parameters receive contextual types when an expected function signature
 is available. Otherwise, they follow Teal's usual unannotated parameter
 rules. Contextual inference includes generic callbacks, using the types of
 other arguments even when supplied as literals, fields, or call results.
 See [contextual parameter inference](functions.md#contextual-parameter-inference).
-Return types are inferred when no expected signature is available,
+Omitted return types are inferred when no expected signature is available,
 including unions across returns and nil for paths that fall through.
 The expression form returns one expression, which may itself produce
 multiple results; the block form can use an explicit return list.

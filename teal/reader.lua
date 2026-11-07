@@ -1626,10 +1626,11 @@ read_type = function(ps, i)
    if not bt then
       return i
    end
-   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" then
+
+   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" then
       local u = new_type(ps, istart, "union_type")
       u[1] = bt
-      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" do
+      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" do
          i = i + 1
          i, bt = read_base_type(ps, i)
          if not bt then
@@ -2396,6 +2397,9 @@ read_short_function = function(ps, i)
       i = i + 1
    end
    node[BLOCK_INDEXES.FUNCTION.ARGS] = args
+   if ps.tokens[i].tk == ":" then
+      i, node[BLOCK_INDEXES.FUNCTION.RETS] = read_return_types(ps, i)
+   end
    i = verify_tk(ps, i, "->")
    if ps.tokens[i].tk == "do" then
       local middle = ps.ternary_middle

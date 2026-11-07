@@ -982,7 +982,7 @@ local function contextualize_function(self: Context, node: Node, signature: Type
    node.infer_returns = false
    node.inferred_rets = nil
    local expected = contextual_function(self, signature)
-   if node.short_function or (expected and not node.has_return_annotation) then
+   if not node.has_return_annotation and (node.short_function or expected) then
       local unresolved_returns = false
       if expected then
          types.map(self, expected.rets, {

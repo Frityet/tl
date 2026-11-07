@@ -221,6 +221,30 @@ describe('LuaJIT 3.0 syntax backported to 2.1', function()
       ]])})
    end)
 
+   it('lowers short functions with declared return types to standard Lua', function()
+      local result = checked([[
+         local answer = ||: integer -> 4
+         local next_value: function(integer): number = |x|: integer -> x + 1
+         local pair = ||: (integer, string) -> do return 2, 'ok' end
+         local maybe = |flag: boolean|: integer | nil -> do
+            if flag then return answer() end
+            return nil
+         end
+         assert(maybe(false) == nil)
+         return next_value(answer()), pair()
+      ]], '5.1')
+      assert.same({}, result.type_errors)
+      local output = tl.generate(result.ast, '5.1')
+      assert.same({5, 2, 'ok'}, {assert(loadstring(output), output)()})
+   end)
+
+   it('checks short function bodies against their explicit return types', function()
+      type_error([[local f = ||: integer -> 'bad']], 'expected integer')
+      type_error([[local f = ||: integer -> do return 'bad' end]], 'expected integer')
+      type_error([[local f: function(): number = ||: integer -> 1.5]], 'expected integer')
+      type_error([[local f = ||: number -> 4; local value: integer = f()]], 'expected integer')
+   end)
+
    runtime_it('infers unresolved generic callback return types from short functions', function()
       assert.same({4, '2', 5, 'ok'}, {run([[
          local function apply<A, B>(x: A, f: function(A): B): B
