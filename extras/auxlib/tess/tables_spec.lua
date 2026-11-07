@@ -9,7 +9,6 @@ local macro (||>)! = tables.(||>)!
 local macro (+=>)! = tables.(+=>)!
 local macro (?>)! = tables.(?>)!
 local macro (from)! = tables.(from)!
-local macro (import)! = tables.(import)!
 ]]
 
    local function run(source, macro_only)
@@ -255,9 +254,16 @@ local macro (import)! = tables.(import)!
       assert.same({6, 8, 10}, {run([[
          import { some_function as fn, number } from utility_fixture.source
          local macro selection!() return `{ some_function as other, number as table }` end
-         import selection!() from "utility fixture"
+         import(selection!()) from "utility fixture"
          return fn(3), other(4), number + table
       ]])})
+   end)
+
+   it('keeps import as an ordinary identifier outside from expressions', function()
+      assert.equals(7, run([[
+         local function import(fields: {integer}): integer return fields[1] end
+         return import {7}
+      ]], true))
    end)
 
    it('rejects malformed field lists and expression-position destructuring', function()
@@ -268,6 +274,9 @@ local macro (import)! = tables.(import)!
          {'{key = a} from row', 'bare field names'},
          {'{row.a} from row', 'bare field names'},
          {'local value = {a} from row', 'returned statements in an expression context'},
+         {'import() from source', 'exactly one field selection'},
+         {'import({a}, {b}) from source', 'exactly one field selection'},
+         {'other.import {a} from source', 'nonempty list'},
          {'import {[1] = a} from source', 'bare field names'},
          {'import {a} from get_module()', 'dotted module name or a string literal'},
          {'import {a as b, b} from source', "duplicate binding 'b'"},

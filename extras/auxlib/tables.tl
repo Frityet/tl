@@ -217,30 +217,23 @@ macro Tables.(?>)!(source: Expression, predicate: Expression): Operator<infix, s
    return `require("auxlib.tables").filter($source, $predicate)`
 end
 
---- Import named module fields, optionally renaming them with `as`.
---- Activate both import and from from auxlib.tables, then write
---- `import { function_name as alias } from some.module`.
---- @param fields Nonempty field selection, with optional `as` aliases.
---- @return A selection consumed by the from operator to declare local bindings.
-macro Tables.(import)!(fields: Expression): Operator<prefix, unary>
-   -- Tag an ordinary call block for the from operator to consume.
-   local selection = `__tl_import_fields($fields)`
-   selection.tk = "__tl_import_fields"
-   return selection
-end
-
 --- Bind named fields from a source expression, evaluating it once.
 --- For example, `{ name, count } from row` declares local bindings. This also
---- completes an import whose module name is dotted or quoted.
+--- completes an import whose module name is dotted or quoted. Only from needs
+--- activating: `import { name as alias } from some.module` uses import as a
+--- contextual marker. A computed selection uses `import(selection!()) from some.module`.
 --- @param fields Nonempty field selection, or an import selection with optional aliases.
 --- @param source Table expression, or module name for an import.
 --- @return Statements declaring the selected local bindings.
 macro Tables.(from)!(fields: Expression, source: Expression): Operator<infix, conditional>
    local B = BLOCK_INDEXES
    while fields.kind == "paren" do fields = fields[B.PAREN.EXP] end
-   local importing = fields.kind == "op_funcall" and fields.tk == "__tl_import_fields"
+   local target = fields.kind == "op_funcall" and fields[B.OP.E1]
+   local importing = target and target.kind == "identifier" and target.tk == "import"
    if importing then
-      fields = fields[B.OP.E2][1]
+      local arguments = fields[B.OP.E2]
+      assert(#arguments == 1, "import expects exactly one field selection")
+      fields = arguments[1]
       local function module_path(part)
          if part.kind == "identifier" then return part.tk end
          assert(part.kind == "op_dot" and not part.safe_navigation and part[B.OP.E2].kind == "identifier",

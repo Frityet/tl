@@ -201,7 +201,6 @@ local macro (||>)! = tables.(||>)!
 local macro (+=>)! = tables.(+=>)!
 local macro (?>)! = tables.(?>)!
 local macro (from)! = tables.(from)!
-local macro (import)! = tables.(import)!
 ```
 
 `|>` inserts the value as the first argument and chains from left to right.
@@ -296,10 +295,16 @@ print(width * height) -- 12
 Use a semicolon after a preceding expression when its parser could consume
 the opening brace as a table argument.
 
-`import` uses `from` to select fields from a required module. The module name
-can be dotted or quoted, and `as` gives an imported field a different local name.
+`from` recognizes `import { ... }` as an ordinary call-shaped marker and selects
+fields from a required module. Only the `from` macro needs activating; there is
+no separate `import` macro or global function to define. The module name can be
+dotted or quoted, and `as` gives an imported field a different local name.
 
 ```lua
 import { some_function as fn, version } from module.name
 import { load as load_file } from "module name"
 ```
+
+A selection produced by another macro uses ordinary call parentheses:
+`import(selection!()) from module.name`. Outside a `from` expression, `import`
+remains an ordinary identifier.
