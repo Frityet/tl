@@ -1903,6 +1903,18 @@ local function hover(server: Server, document: Document, position: Position): An
          end
       end
       if not documentation then documentation = documentation_from_file(target_path, info.y, info.x, token.tk) end
+      -- The precompiled standard library records a checkout-relative filename.
+      -- Resolve it against the compiler's module paths when the workspace root
+      -- is a different directory from the compiler checkout.
+      if not documentation and info.file:match("^%./teal/default/stdlib%.d%.tl$") then
+         for template in package.path:gmatch("[^;]+") do
+            local prefix = template:match("^(.-)%?")
+            if prefix then
+               documentation = documentation_from_file(prefix .. "teal/default/stdlib.d.tl", info.y, info.x, token.tk)
+               if documentation then break end
+            end
+         end
+      end
    end
    if not documentation then
       local location = find_definition(server, document, token.tk, position)

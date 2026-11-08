@@ -343,4 +343,10 @@ local values: {integer} = {1, 2}
       end)
    end
 
+   it('shows standard library documentation outside the compiler checkout', function()
+      local value = text(hover('local value = @H@tonumber("24")'))
+      assert.matches('Convert a value to a number', value, 1, true)
+      assert.matches('**Parameter `value`:**', value, 1, true)
+   end)
+
 end)

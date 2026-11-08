@@ -416,7 +416,11 @@ local special_functions <total>: {SpecialFunctionName : function(NodeChecker, No
    ["rawget"] = function(self: NodeChecker, node: Node, _a: Type, b: TupleType, _argdelta?: integer): InvalidOrTupleType
       -- TODO should those offsets be fixed by _argdelta?
       if #b.tuple == 2 then
-         return a_tuple(node, { self:type_check_index(node.e2[1], node.e2[2], b.tuple[1], b.tuple[2]) })
+         local result = self:type_check_index(node.e2[1], node.e2[2], b.tuple[1], b.tuple[2])
+         if self.feat_strict_nil and not result is InvalidType then
+            result = types.unite(node, { result, a_type(node, "nil", {}) }, true, false)
+         end
+         return a_tuple(node, { result })
       else
          return self:invalid_at(node, "rawget expects two arguments")
       end
@@ -590,7 +594,12 @@ local special_functions <total>: {SpecialFunctionName : function(NodeChecker, No
             end
          end
 
-         -- set the returns to match the response
+         -- A failed search returns nil instead of any of the inferred results.
+         if self.feat_strict_nil then
+            for i, item in ipairs(items) do
+               items[i] = types.unite(node, { item, a_type(node, "nil", {}) }, true, false)
+            end
+         end
          rets = a_tuple(node, items)
       end
       return (self:type_check_function_call(node, a, b, argdelta, nil, rets))
@@ -625,7 +634,12 @@ local special_functions <total>: {SpecialFunctionName : function(NodeChecker, No
          table.insert(items, 1, a_type(pat, "integer", {}))
          table.insert(items, 1, a_type(pat, "integer", {}))
 
-         -- set the returns to match the response
+         -- A failed search returns nil instead of any of the inferred results.
+         if self.feat_strict_nil then
+            for i, item in ipairs(items) do
+               items[i] = types.unite(node, { item, a_type(node, "nil", {}) }, true, false)
+            end
+         end
          rets = a_tuple(node, items)
       end
 

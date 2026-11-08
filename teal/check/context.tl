@@ -1722,6 +1722,14 @@ end
 function Context:match_record_key(t: Type, rec: Node, key: string): Type, string
    t = self:to_structural(t)
 
+   if not self.feat_strict_nil and t is UnionType then
+      local members: {Type} = {}
+      for _, member in ipairs(t.types) do
+         if not member is NilType then table.insert(members, member) end
+      end
+      if #members > 0 then t = self:to_structural(unite(rec, members, true, false)) end
+   end
+
    if t is SelfType then
       t = self:type_of_self(t)
    end
@@ -1944,6 +1952,17 @@ function Context:type_check_index(anode: Node, bnode: Node, a: Type, b: Type): T
 
    local ra = self:to_structural(a)
    local rb = self:to_structural(b)
+
+   -- Legacy nil mode permits indexing nullable values without narrowing.
+   if not self.feat_strict_nil and ra is UnionType then
+      local members: {Type} = {}
+      for _, member in ipairs(ra.types) do
+         if not member is NilType then table.insert(members, member) end
+      end
+      if #members > 0 then
+         ra = self:to_structural(unite(anode, members, true, false))
+      end
+   end
 
    if self.feat_lax and is_unknown(a) then
       return a

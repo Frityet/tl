@@ -1,4 +1,4 @@
-
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local table = _tl_compat and _tl_compat.table or table
 local Async = { Loop = {}, Scheduler = {}, Task = {}, Scope = {}, Job = {} }
 
 
@@ -329,7 +329,7 @@ local function depends_on(target, job)
    local pending = { target }
    local seen = {}
    while #pending > 0 do
-      local dependency = table.remove(pending)
+      local dependency = assert(table.remove(pending))
       if dependency == job then return true end
       if not seen[dependency] then
          seen[dependency] = true

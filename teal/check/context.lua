@@ -1722,6 +1722,14 @@ end
 function Context:match_record_key(t, rec, key)
    t = self:to_structural(t)
 
+   if not self.feat_strict_nil and t.typename == "union" then
+      local members = {}
+      for _, member in ipairs(t.types) do
+         if not (member.typename == "nil") then table.insert(members, member) end
+      end
+      if #members > 0 then t = self:to_structural(unite(rec, members, true, false)) end
+   end
+
    if t.typename == "self" then
       t = self:type_of_self(t)
    end
@@ -1944,6 +1952,17 @@ function Context:type_check_index(anode, bnode, a, b)
 
    local ra = self:to_structural(a)
    local rb = self:to_structural(b)
+
+
+   if not self.feat_strict_nil and ra.typename == "union" then
+      local members = {}
+      for _, member in ipairs(ra.types) do
+         if not (member.typename == "nil") then table.insert(members, member) end
+      end
+      if #members > 0 then
+         ra = self:to_structural(unite(anode, members, true, false))
+      end
+   end
 
    if self.feat_lax and is_unknown(a) then
       return a

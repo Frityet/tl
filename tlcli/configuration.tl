@@ -168,7 +168,7 @@ function configuration.get(): TlConfig, {string}
       common.die("Error loading tlconfig.lua:\n" .. err)
    end
 
-   local ok, user_config = pcall(conf_fn) as (boolean, any)
+   local ok, user_config = pcall(assert(conf_fn)) as (boolean, any)
    if not ok then
       err = user_config as string
       common.die("Error loading tlconfig.lua:\n" .. err)

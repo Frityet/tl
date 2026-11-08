@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 
 
@@ -416,7 +416,11 @@ local special_functions = {
    ["rawget"] = function(self, node, _a, b, _argdelta)
 
       if #b.tuple == 2 then
-         return a_type(node, "tuple", { tuple = { self:type_check_index(node.e2[1], node.e2[2], b.tuple[1], b.tuple[2]) } })
+         local result = self:type_check_index(node.e2[1], node.e2[2], b.tuple[1], b.tuple[2])
+         if self.feat_strict_nil and not (result.typename == "invalid") then
+            result = types.unite(node, { result, a_type(node, "nil", {}) }, true, false)
+         end
+         return a_type(node, "tuple", { tuple = { result } })
       else
          return self:invalid_at(node, "rawget expects two arguments")
       end
@@ -591,6 +595,11 @@ local special_functions = {
          end
 
 
+         if self.feat_strict_nil then
+            for i, item in ipairs(items) do
+               items[i] = types.unite(node, { item, a_type(node, "nil", {}) }, true, false)
+            end
+         end
          rets = a_type(node, "tuple", { tuple = items })
       end
       return (self:type_check_function_call(node, a, b, argdelta, nil, rets))
@@ -626,6 +635,11 @@ local special_functions = {
          table.insert(items, 1, a_type(pat, "integer", {}))
 
 
+         if self.feat_strict_nil then
+            for i, item in ipairs(items) do
+               items[i] = types.unite(node, { item, a_type(node, "nil", {}) }, true, false)
+            end
+         end
          rets = a_type(node, "tuple", { tuple = items })
       end
 

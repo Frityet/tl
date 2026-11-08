@@ -1903,6 +1903,18 @@ local function hover(server, document, position)
          end
       end
       if not documentation then documentation = documentation_from_file(target_path, info.y, info.x, token.tk) end
+
+
+
+      if not documentation and info.file:match("^%./teal/default/stdlib%.d%.tl$") then
+         for template in package.path:gmatch("[^;]+") do
+            local prefix = template:match("^(.-)%?")
+            if prefix then
+               documentation = documentation_from_file(prefix .. "teal/default/stdlib.d.tl", info.y, info.x, token.tk)
+               if documentation then break end
+            end
+         end
+      end
    end
    if not documentation then
       local location = find_definition(server, document, token.tk, position)

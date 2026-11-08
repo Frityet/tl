@@ -329,7 +329,7 @@ local function depends_on(target: Job, job: Job): boolean
    local pending = {target}
    local seen: {Job:boolean} = {}
    while #pending > 0 do
-      local dependency = table.remove(pending)
+      local dependency = assert(table.remove(pending))
       if dependency == job then return true end
       if not seen[dependency] then
          seen[dependency] = true

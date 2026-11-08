@@ -1465,6 +1465,22 @@ visit_node.cbs = {
          local from_t = self:to_structural(untuple(children[2]))
          local to_t = self:to_structural(untuple(children[3]))
          local step_t = children[4] and self:to_structural(children[4])
+         if self.feat_strict_nil then
+            local numeric = a_type(node, "number", {})
+            if not self:is_a(from_t, numeric) then
+               self:add_error(node, "numeric for initial value must be a non-nil number")
+            end
+            if not self:is_a(to_t, numeric) then
+               self:add_error(node, "numeric for limit must be a non-nil number")
+            end
+            if step_t and not self:is_a(step_t, numeric) then
+               self:add_error(node, "numeric for step must be a non-nil number")
+            end
+         else
+            from_t = self:to_structural(non_nil_type(self, node, from_t))
+            to_t = self:to_structural(non_nil_type(self, node, to_t))
+            if step_t then step_t = self:to_structural(non_nil_type(self, node, step_t)) end
+         end
          local typename: TypeName = (from_t is IntegerType and
                                      to_t is IntegerType and
                                      (not step_t or step_t is IntegerType))
@@ -2279,6 +2295,7 @@ visit_node.cbs = {
          end
 
          if node.op.op == "@funcall" then
+            if not self.feat_strict_nil then ua = non_nil_type(self, node, ua) end
             if self.feat_lax and is_unknown(ua) then
                if node.e1.op and node.e1.op.op == ":" and node.e1.e1.kind == "variable" then
                   self.errs:add_unknown_dot(node, node.e1.e1.tk .. "." .. node.e1.e2.tk)
