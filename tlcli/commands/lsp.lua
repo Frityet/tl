@@ -14,6 +14,7 @@ local driver = require("tlcli.driver")
 local configuration = require("tlcli.configuration")
 local lexer = require("teal.lexer")
 local reader = require("teal.reader")
+local block = require("teal.block")
 
 local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
@@ -1742,7 +1743,8 @@ local function macro_hover_at(document, position)
             local owner = macro_path(node[B.LOCAL_MACRO.OWNER])
             if name then
                declarations[(owner and (owner .. ".") or "") .. name.tk] = node
-               if node.custom_operator then declarations[node.custom_operator.binding] = node end
+               local operator = node[B.LOCAL_MACRO.OPERATOR]
+               if operator then declarations[operator[B.OPERATOR_SPEC.BINDING].tk] = node end
                table.insert(aliases, node)
             end
             return
@@ -1751,7 +1753,7 @@ local function macro_hover_at(document, position)
          elseif node.kind == "macro_quote" then
             return
          end
-         for index = 1, math.max(5, #node) do
+         for index = 1, block.child_limit(node) do
             if node[index] then collect(node[index]) end
          end
       end
@@ -1797,7 +1799,7 @@ local function macro_hover_at(document, position)
       for _, use in ipairs(uses) do
          local target = use[B.MACRO_INVOCATION.MACRO]
          local definition = resolve(declarations[macro_path(target)], {})
-         if use.operator_use then
+         if use[B.MACRO_INVOCATION.OPERATOR] then
             add(use, definition, use.tk, #use.tk, true)
          else
             local leaf = target

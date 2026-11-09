@@ -201,6 +201,8 @@ The macro sandbox provides helpers for manual AST construction:
 - `block(kind)` creates a block of a given kind
 - `BLOCK_INDEXES` gives numeric indices for block fields
 - `clone(b)` makes a deep copy of a block
+- `string_value(b)` returns a string block's contents between its delimiters,
+  preserving escape sequences
 - `parse_expression(source)` parses exactly one Teal expression from a string,
   without executing it; its names are resolved and type-checked when the block
   is spliced into the caller. Invalid expressions, expression lists and statement
@@ -367,6 +369,21 @@ print(z) -- prints 14
 
 ## Block kinds
 
+Blocks have a kind, token text, source coordinates, and numbered children.
+Use `BLOCK_INDEXES` to access syntax attached to a block:
+
+| Syntax | Block representation |
+| --- | --- |
+| An implicit array key | `LITERAL_TABLE_ITEM.IMPLICIT_KEY` |
+| A short function | `FUNCTION.SHORT` |
+| A native `const` | `LOCAL_DECLARATION.CONST` or `LOCAL_FUNCTION.CONST` |
+| Optional navigation | `OP.SAFE` |
+| Compound assignment | `ASSIGNMENT.OPERATOR` contains the full token, such as `+=` |
+| A custom operator declaration or alias | `LOCAL_MACRO.OPERATOR` holds an `operator_spec` block |
+| An operator use or its generated grouping | `MACRO_INVOCATION.OPERATOR` or `PAREN.OPERATOR_GROUPING` |
+
+Long-bracket strings retain their delimiters in `tk`.
+
 All block kinds that can be returned from macros are listed below (from
 `teal/block.tl`):
 
@@ -389,12 +406,13 @@ goto
 label
 repeat
 do
+continue
+conditional
 break
 return
 newtype
 argument
 type_identifier
-variable
 variable_list
 statements
 assignment
@@ -419,7 +437,17 @@ local_macro
 macro_quote
 macro_var
 macro_invocation
+operator_spec
+operator_use
+operator_grouping
+implicit_table_key
+short_function
+native_const
+safe_navigation
+compound_operator
+record
 interface
+enum
 pragma
 error_block
 userdata
@@ -441,6 +469,8 @@ op_bxor
 op_band
 op_shl
 op_shr
+op_sar
+op_coalesce
 op_concat
 op_add
 op_sub
@@ -484,12 +514,15 @@ GLOBAL_TYPE.VALUE
 GLOBAL_TYPE.VAR
 
 ASSIGNMENT.VARS
+ASSIGNMENT.OPERATOR
 ASSIGNMENT.EXPS
 
 MACRO_INVOCATION.ARGS
 MACRO_INVOCATION.MACRO
+MACRO_INVOCATION.OPERATOR
 
 PAREN.EXP
+PAREN.OPERATOR_GROUPING
 
 DO.BODY
 
@@ -497,6 +530,7 @@ FUNCTION.BODY
 FUNCTION.RETS
 FUNCTION.TYPEARGS
 FUNCTION.ARGS
+FUNCTION.SHORT
 
 LOCAL_MACROEXP.NAME
 LOCAL_MACROEXP.EXP
@@ -530,6 +564,12 @@ MAP_TYPE.VALUES
 
 OP.E1
 OP.E2
+OP.SAFE
+
+OPERATOR_SPEC.BINDING
+OPERATOR_SPEC.FIXITY
+OPERATOR_SPEC.PRECEDENCE
+OPERATOR_SPEC.ASSOCIATIVITY
 
 ARRAY_TYPE.ELEMENT
 
@@ -571,6 +611,7 @@ INTERFACE.ARRAY_TYPE
 LITERAL_TABLE_ITEM.VALUE
 LITERAL_TABLE_ITEM.KEY
 LITERAL_TABLE_ITEM.TYPED_VALUE
+LITERAL_TABLE_ITEM.IMPLICIT_KEY
 
 FUNCTION_TYPE.MACROEXP
 FUNCTION_TYPE.ARGS
@@ -579,12 +620,14 @@ FUNCTION_TYPE.RETS
 LOCAL_DECLARATION.EXPS
 LOCAL_DECLARATION.VARS
 LOCAL_DECLARATION.DECL
+LOCAL_DECLARATION.CONST
 
 LOCAL_FUNCTION.RETS
 LOCAL_FUNCTION.BODY
 LOCAL_FUNCTION.TYPEARGS
 LOCAL_FUNCTION.NAME
 LOCAL_FUNCTION.ARGS
+LOCAL_FUNCTION.CONST
 
 FORIN.EXPS
 FORIN.VARS
@@ -613,6 +656,7 @@ LOCAL_MACRO.BODY
 LOCAL_MACRO.TYPEARGS
 LOCAL_MACRO.NAME
 LOCAL_MACRO.ARGS
+LOCAL_MACRO.OPERATOR
 
 FORNUM.TO
 FORNUM.VAR

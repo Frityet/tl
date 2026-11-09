@@ -161,7 +161,9 @@ describe("tl dump-blocks", function()
             "yend": 1,
             "xend": 11
          }
-      }
+      },
+      "4": null,
+      "CONST": null
    }
 }
 ]]

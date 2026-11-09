@@ -11,8 +11,15 @@ local block = require("teal.block")
 
 
 
-
 local macro_eval = require("teal.macro_eval")
+
+
+
+
+
+
+
+
 
 
 
@@ -78,19 +85,6 @@ local function is_macro_quote_token(t)
    return t.kind == "`" or t.tk:sub(1, 1) == "`"
 end
 
-local function unquote(str)
-   local f = str:sub(1, 1)
-   if f == '"' or f == "'" then
-      return str:sub(2, -2), false
-   end
-   f = str:match("^%[=*%[")
-   if not f then
-      return str, false
-   end
-   local l = #f + 1
-   return str:sub(l, -l), true
-end
-
 local attributes = {
    ["const"] = true,
    ["close"] = true,
@@ -110,11 +104,7 @@ function reader.node_is_require_call(n)
       n[BLOCK_INDEXES.OP.E2][1].kind == "string" then
 
 
-      local arg_block = n[BLOCK_INDEXES.OP.E2][1]
-      if arg_block.tk then
-         local value = unquote(arg_block.tk)
-         return value
-      end
+      return block.string_value(n[BLOCK_INDEXES.OP.E2][1])
    end
    return nil
 end
@@ -354,14 +344,6 @@ local function clone_block_deep(b)
       tk = b.tk,
       yend = b.yend,
       xend = b.xend,
-      is_longstring = b.is_longstring,
-      custom_operator = b.custom_operator,
-      operator_use = b.operator_use,
-      implicit_table_key = b.implicit_table_key,
-      short_function = b.short_function,
-      lj_const = b.lj_const,
-      safe_navigation = b.safe_navigation,
-      compound = b.compound,
    }
    local child_indexes = {}
    for k, child in pairs(b) do
@@ -659,6 +641,31 @@ local function read_operator_annotation(ps, node, key)
    }
 end
 
+local function operator_spec_block(owner, spec)
+   local function leaf(kind, text)
+      return { kind = kind, tk = text, f = owner.f, y = owner.y, x = owner.x }
+   end
+   local node = leaf("operator_spec", spec.symbol)
+   local slots = BLOCK_INDEXES.OPERATOR_SPEC
+   node[slots.BINDING] = leaf("identifier", spec.binding)
+   node[slots.FIXITY] = leaf("identifier", spec.fixity)
+   node[slots.PRECEDENCE] = leaf("integer", tostring(spec.precedence))
+   node[slots.ASSOCIATIVITY] = leaf("identifier", spec.right_associative and "right" or "left")
+   return node
+end
+
+local function operator_spec_from_block(node)
+   if not node then return nil end
+   local slots = BLOCK_INDEXES.OPERATOR_SPEC
+   return {
+      symbol = node.tk,
+      binding = node[slots.BINDING].tk,
+      fixity = node[slots.FIXITY].tk,
+      precedence = tonumber(node[slots.PRECEDENCE].tk),
+      right_associative = node[slots.ASSOCIATIVITY].tk == "right",
+   }
+end
+
 local function find_operator(ps, at, fixity)
    local best
    local width = 0
@@ -698,7 +705,10 @@ local function operator_invocation(ps, token, spec, lhs, rhs)
    local target = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
    local args = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
    return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
-   operator_use = true, [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = target, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, }
+   [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = target,
+   [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args,
+   [BLOCK_INDEXES.MACRO_INVOCATION.OPERATOR] = { kind = "operator_use", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x },
+   }
 end
 
 local function extract_macro_owner_from_newtype(nt)
@@ -870,7 +880,7 @@ local function collect_module_macro_exports(node, errs, filename)
                local suffix_owner = owner_key == return_path and "" or owner_key:sub(#return_path + 2)
                local exported_key = suffix_owner == "" and name.tk or (suffix_owner .. "." .. name.tk)
                local sig = build_macro_sig(stmt[BLOCK_INDEXES.LOCAL_MACRO.ARGS], errs, filename, exported_key)
-               sig.operator = stmt.custom_operator
+               sig.operator = operator_spec_from_block(stmt[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR])
                table.insert(exports, {
                   key = exported_key,
                   sig = sig,
@@ -1120,7 +1130,7 @@ local function read_table_item(ps, i, n)
 
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY] = new_block(ps, i, "integer")
    node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.KEY].tk = tostring(n)
-   node.implicit_table_key = true
+   node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.IMPLICIT_KEY] = new_block(ps, i, "implicit_table_key")
    i, node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] = read_expression(ps, i)
    if not node[BLOCK_INDEXES.LITERAL_TABLE_ITEM.VALUE] then
       return fail(ps, i, "expected an expression")
@@ -1557,8 +1567,6 @@ local function read_base_type(ps, i)
       return read_simple_type_or_nominal(ps, i)
    elseif ps.tokens[i].kind == "string" then
       local node = new_block(ps, i, "string")
-      local _, is_long = unquote(tk)
-      node.is_longstring = is_long
       return i + 1, node
    elseif ps.tokens[i].kind == "number" or ps.tokens[i].kind == "integer" then
       local node
@@ -1846,8 +1854,6 @@ local function read_literal(ps, i)
       return verify_kind(ps, i, "identifier")
    elseif kind == "string" then
       local node = new_block(ps, i, "string")
-      local _, is_long = unquote(tk)
-      node.is_longstring = is_long
       return i + 1, node
    elseif kind == "number" or kind == "integer" then
       local node
@@ -2067,9 +2073,10 @@ do
          else
             if infix or postfix then break end
          end
-         local safe_navigation = ps.tokens[i].tk == "?."
+         local navigation
          local tkop = ps.tokens[i]
-         if safe_navigation then
+         if tkop.tk == "?." then
+            navigation = new_block(ps, i, "safe_navigation")
             i = i + 1
             tkop = ps.tokens[i]
             if tkop.kind == "identifier" then
@@ -2171,8 +2178,6 @@ do
                end
                if next_tk.kind == "string" then
                   argument = new_block(ps, i, "string")
-                  local _, is_long = unquote(next_tk.tk)
-                  argument.is_longstring = is_long
                   i = i + 1
                else
                   i, argument = read_table_literal(ps, i)
@@ -2251,8 +2256,6 @@ do
             local argument
             if tkop.kind == "string" then
                argument = new_block(ps, i, "string")
-               local _, is_long = unquote(tkop.tk)
-               argument.is_longstring = is_long
                i = i + 1
             else
                i, argument = read_table_literal(ps, i)
@@ -2286,8 +2289,8 @@ do
          else
             break
          end
-         if safe_navigation then
-            e1.safe_navigation = true
+         if navigation then
+            e1[BLOCK_INDEXES.OP.SAFE] = navigation
          end
       end
 
@@ -2379,7 +2382,7 @@ end
 
 read_short_function = function(ps, i)
    local node = new_block(ps, i, "function")
-   node.short_function = true
+   node[BLOCK_INDEXES.FUNCTION.SHORT] = new_block(ps, i, "short_function")
    local args = new_block(ps, i, "argument_list")
    if ps.tokens[i].tk == "||" then
       i = i + 1
@@ -3096,7 +3099,7 @@ read_record_body = function(ps, i, def)
 
             local field_name
             if v.kind == "string" then
-               field_name = unquote(v.tk)
+               field_name = block.string_value(v)
             else
                field_name = v.tk
             end
@@ -3239,7 +3242,7 @@ do
 
       assignment_op = ps.tokens[i].tk
       if compound_ops[assignment_op] then
-         asgn.compound = assignment_op:sub(1, -2)
+         asgn[BLOCK_INDEXES.ASSIGNMENT.OPERATOR] = new_block(ps, i, "compound_operator")
          if #asgn[BLOCK_INDEXES.ASSIGNMENT.VARS] ~= 1 then
             fail(ps, i, "compound assignment requires a single variable")
          end
@@ -3249,7 +3252,7 @@ do
       end
 
       i, asgn = read_assignment_expression_list(ps, i, asgn)
-      if asgn and asgn.compound and #asgn[BLOCK_INDEXES.ASSIGNMENT.EXPS] ~= 1 then
+      if asgn and asgn[BLOCK_INDEXES.ASSIGNMENT.OPERATOR] and #asgn[BLOCK_INDEXES.ASSIGNMENT.EXPS] ~= 1 then
          fail(ps, i - 1, "compound assignment requires a single expression")
       end
       return i, asgn
@@ -3433,10 +3436,10 @@ local function register_macro_signature(ps, node, key)
    if key then
       local signature = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
       local spec = read_operator_annotation(ps, node, key)
-      node.custom_operator = spec
       signature.operator = spec
       ps.macro_sigs[key] = signature
       if spec then
+         node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] = operator_spec_block(node, spec)
          ps.macro_sigs[spec.binding] = signature
          if not node[BLOCK_INDEXES.LOCAL_MACRO.OWNER] then register_operator(ps, spec, node) end
       end
@@ -3460,7 +3463,7 @@ local function bind_macro_alias(ps, node, signature)
          right_associative = original.right_associative,
          binding = "@operator:" .. ps.filename .. ":" .. tostring(node.y) .. ":" .. tostring(node.x) .. ":" .. name.tk,
       }
-      node.custom_operator = spec
+      node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] = operator_spec_block(node, spec)
       node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = setmetatable({
          kind = "identifier", tk = original.binding, f = ps.filename, y = name.y, x = name.x,
       }, node_mt)
@@ -3600,7 +3603,7 @@ local function resolve_macro_aliases(ps)
          end
 
          if name and sig then
-            if not ps.macro_sigs[name.tk] or not node.custom_operator then bind_macro_alias(ps, node, sig) end
+            if not ps.macro_sigs[name.tk] or not node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then bind_macro_alias(ps, node, sig) end
             resolved_any = true
          else
             table.insert(unresolved, node)
@@ -3768,7 +3771,11 @@ read_statement_fns = {
       end
       local node
       i, node = read_local(ps, i)
-      if node then node.lj_const = true end
+      if node and node.kind == "local_function" then
+         node[BLOCK_INDEXES.LOCAL_FUNCTION.CONST] = new_block(ps, i, "native_const")
+      elseif node and node.kind == "local_declaration" then
+         node[BLOCK_INDEXES.LOCAL_DECLARATION.CONST] = new_block(ps, i, "native_const")
+      end
       return i, node
    end,
    ["continue"] = function(ps, i)
@@ -3972,7 +3979,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
             end
          end
       end
-      for i2 = 1, #b do
+      for i2 = 1, block.child_limit(b) do
          local child = b[i2]
          if child then
             check_macro_arity(child)
@@ -4007,10 +4014,10 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
          if recovered[b] then return end
          recovered[b] = true
          if b.kind == "local_macro" then
+            for j = 1, block.child_limit(b) do b[j] = nil end
             b.kind = "error_block"
-            for j = 1, math.max(5, #b) do b[j] = nil end
          else
-            for j = 1, math.max(5, #b) do
+            for j = 1, block.child_limit(b) do
                if b[j] then recover_macro_declarations(b[j]) end
             end
          end

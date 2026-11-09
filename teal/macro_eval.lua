@@ -37,17 +37,13 @@ local macro_eval = {}
 
 
 
-
-
-
-
 local function children_iter(b, at)
    while true do
       at = at + 1
       local val = b[at]
       if val then
          return at, val
-      elseif at > 5 then
+      elseif at >= block.child_limit(b) then
          return
       end
    end
@@ -70,15 +66,6 @@ local function clone_value(v, splice_name)
       tk = v.tk,
       yend = v.yend,
       xend = v.xend,
-      is_longstring = v.is_longstring,
-      custom_operator = v.custom_operator,
-      operator_use = v.operator_use,
-      operator_grouping = v.operator_grouping,
-      implicit_table_key = v.implicit_table_key,
-      short_function = v.short_function,
-      lj_const = v.lj_const,
-      safe_navigation = v.safe_navigation,
-      compound = v.compound,
    }
    for idx, child in children(v) do
       out[idx] = clone_value(child)
@@ -104,19 +91,6 @@ local function reanchor_block_positions(b, where_y, where_x, seen_blocks)
    for idx, child in children(b) do
       reanchor_block_positions(child, where_y, where_x, seen_blocks)
    end
-end
-
-local function unquote(str)
-   local f = str:sub(1, 1)
-   if f == '"' or f == "'" then
-      return str:sub(2, -2)
-   end
-   f = str:match("^%[=*%[")
-   if not f then
-      return str
-   end
-   local l = #f + 1
-   return str:sub(l, -l)
 end
 
 local function path_block_to_string(node)
@@ -172,7 +146,7 @@ local function require_call_module_name(n)
       n[BLOCK_INDEXES.OP.E2][1].kind == "string" and
       n[BLOCK_INDEXES.OP.E2][1].tk then
 
-      return unquote(n[BLOCK_INDEXES.OP.E2][1].tk)
+      return block.string_value(n[BLOCK_INDEXES.OP.E2][1])
    end
    return nil
 end
@@ -258,6 +232,7 @@ function macro_eval.new_env(errs, parse_expression)
       return nil
    end
 
+   env.sandbox.string_value = block.string_value
 
    env.sandbox.parse_expression = function(source)
       assert(parse_expression, "expression parsing is unavailable in this macro environment")
@@ -417,15 +392,17 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = tostring(fn_raw) })
       return
    end
+   local operator = mb[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR]
+   local binding = operator and operator[BLOCK_INDEXES.OPERATOR_SPEC.BINDING].tk
    if type(fn_raw) == "function" then
       env.macros[macro_key] = fn_raw
-      if mb.custom_operator then env.macros[mb.custom_operator.binding] = fn_raw end
+      if binding then env.macros[binding] = fn_raw end
    else
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = "macro '" .. macro_key .. "' did not compile to a function" })
       return
    end
    env.signatures[macro_key] = sig
-   if mb.custom_operator then env.signatures[mb.custom_operator.binding] = sig end
+   if binding then env.signatures[binding] = sig end
 end
 
 local function compile_macro_alias(mb, env)
@@ -442,9 +419,11 @@ local function compile_macro_alias(mb, env)
 
    env.macros[name_block.tk] = target
    env.signatures[name_block.tk] = env.signatures[target_key]
-   if mb.custom_operator then
-      env.macros[mb.custom_operator.binding] = target
-      env.signatures[mb.custom_operator.binding] = env.signatures[target_key]
+   local operator = mb[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR]
+   if operator then
+      local binding = operator[BLOCK_INDEXES.OPERATOR_SPEC.BINDING].tk
+      env.macros[binding] = target
+      env.signatures[binding] = env.signatures[target_key]
    end
    return true
 end
@@ -492,7 +471,8 @@ eval_macro_invocation = function(b, filename, env, errs, context)
       return b
    end
    local public_name = mname:match("^@operator:.*:([^:]+)$") or mname
-   local display_name = b.operator_use and ("operator '" .. b.tk .. "'") or ("macro '" .. public_name .. "'")
+   local operator_use = b[BLOCK_INDEXES.MACRO_INVOCATION.OPERATOR]
+   local display_name = operator_use and ("operator '" .. b.tk .. "'") or ("macro '" .. public_name .. "'")
    local fn = env.macros[mname]
    if not fn then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = "unknown " .. display_name })
@@ -587,13 +567,17 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    end
    local checked = validate_statement_positions(expanded, context == "stmt")
    if not checked then
-      local message = b.operator_use and "operator expression cannot be used as a statement" or
+      local message = operator_use and "operator expression cannot be used as a statement" or
       (display_name .. " returned an expression that cannot be used as a statement; assign or return its value")
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = message })
       return b
    end
-   if b.operator_use and context == "expr" then
-      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, operator_grouping = true, [BLOCK_INDEXES.PAREN.EXP] = checked }
+   if operator_use and context == "expr" then
+      return {
+         kind = "paren", tk = "(", f = filename, y = b.y, x = b.x,
+         [BLOCK_INDEXES.PAREN.EXP] = checked,
+         [BLOCK_INDEXES.PAREN.OPERATOR_GROUPING] = { kind = "operator_grouping", tk = "", f = filename, y = b.y, x = b.x },
+      }
    end
    return checked
 end
@@ -606,7 +590,7 @@ local function expand_assignment_target(target, filename, env, errs)
    end
 
 
-   while expanded.kind == "paren" and expanded.operator_grouping do
+   while expanded.kind == "paren" and expanded[BLOCK_INDEXES.PAREN.OPERATOR_GROUPING] do
       expanded = expanded[BLOCK_INDEXES.PAREN.EXP]
    end
    if expanded.kind ~= "identifier" and expanded.kind ~= "op_index" and expanded.kind ~= "op_dot" then
@@ -721,7 +705,7 @@ function macro_eval.compile_all_and_expand(node, filename, read_lang, errs, pars
       if b.kind == "local_macro" or b.kind == "macro_quote" then return end
       local remove = {}
       for index, child in children(b) do
-         if child.kind == "local_macro" and child.custom_operator then
+         if child.kind == "local_macro" and child[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then
             if child[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then table.insert(aliases, child)
             else compile_local_macro(child, filename, read_lang, env, errs) end
             table.insert(remove, 1, index)

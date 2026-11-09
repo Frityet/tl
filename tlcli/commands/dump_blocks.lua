@@ -127,9 +127,6 @@ local function write_json_block(fd, bl, indent)
    if bl.x then table.insert(entries, { key = "\"x\"", val = function() fd:write(tostring(bl.x)) end }) end
    if bl.yend then table.insert(entries, { key = "\"yend\"", val = function() fd:write(tostring(bl.yend)) end }) end
    if bl.xend then table.insert(entries, { key = "\"xend\"", val = function() fd:write(tostring(bl.xend)) end }) end
-   if bl.is_longstring then
-      table.insert(entries, { key = "\"is_longstring\"", val = function() fd:write("true") end })
-   end
 
    local arr = bl
    for _, idx in ipairs(child_indexes(bl)) do
@@ -181,7 +178,6 @@ local function write_lua_block(fd, bl, indent)
    if bl.x then add_line("x", function() fd:write(tostring(bl.x)) end) end
    if bl.yend then add_line("yend", function() fd:write(tostring(bl.yend)) end) end
    if bl.xend then add_line("xend", function() fd:write(tostring(bl.xend)) end) end
-   if bl.is_longstring then add_line("is_longstring", function() fd:write("true") end) end
 
    local arr = bl
    for _, idx in ipairs(child_indexes(bl)) do

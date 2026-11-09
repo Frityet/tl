@@ -409,29 +409,6 @@ local function end_at(node, block)
    end
 end
 
-local function unquote_string_literal(str)
-   local f = str:sub(1, 1)
-   if f == '"' or f == "'" then
-      return str:sub(2, -2), false
-   end
-   local long_start = str:match("^%[=*%[")
-   if not long_start then
-      return str, false
-   end
-   local l = #long_start + 1
-   return str:sub(l, -l), true
-end
-
-local function block_string_value(b)
-   if b and b.kind == "string" and b.tk then
-      local text
-      local _is_long
-      text, _is_long = unquote_string_literal(b.tk)
-      return text
-   end
-   return nil
-end
-
 local function block_number_value(b)
    if b and (b.kind == "integer" or b.kind == "number") then
       local text = b.tk:gsub("_", "")
@@ -458,12 +435,6 @@ local function new_node(state, block, kind)
       tk = block.tk,
       kind = kind or (bkind),
    }, node_mt)
-   if not state.in_macro_quote then
-      node.short_function = block.short_function
-      node.lj_const = block.lj_const
-      node.safe_navigation = block.safe_navigation
-      node.compound = block.compound
-   end
    end_at(node, block)
    return node
 end
@@ -835,6 +806,7 @@ parse_expression = function(state, block)
             end
          end
       end
+      node.safe_navigation = block[reader.BLOCK_INDEXES.OP.SAFE] ~= nil
       node.optional_chain = node.safe_navigation or
       ((op_info.op == "." or op_info.op == ":" or op_info.op == "@index" or op_info.op == "@funcall") and node.e1.optional_chain)
       return node
@@ -847,14 +819,8 @@ parse_expression = function(state, block)
       node.e2 = parse_expression(state, block[2]) or new_node(state, block, "error_node")
       node.e3 = parse_expression(state, block[3]) or new_node(state, block, "error_node")
    elseif kind == "string" then
-      node.conststr = block_string_value(block)
-      if block.is_longstring ~= nil then
-         node.is_longstring = block.is_longstring
-      elseif block.tk then
-         node.is_longstring = not not block.tk:match("^%[%=*%[")
-      else
-         node.is_longstring = false
-      end
+      node.conststr = reader.string_value(block)
+      node.is_longstring = reader.is_long_string(block)
    elseif kind == "number" or kind == "integer" then
       node.kind = kind
       node.constnum = block_number_value(block)
@@ -903,6 +869,7 @@ parse_expression = function(state, block)
          end
       end
    elseif kind == "function" then
+      node.short_function = block[reader.BLOCK_INDEXES.FUNCTION.SHORT] ~= nil
       local rets_block = block[reader.BLOCK_INDEXES.FUNCTION.RETS]
       node.has_return_annotation = rets_block and rets_block.tk == ":"
       node.typeargs = parse_typeargs_if_any(state, block[reader.BLOCK_INDEXES.FUNCTION.TYPEARGS])
@@ -991,7 +958,7 @@ local function parse_newtype(state, block)
                elseif value_block and value_block.tk then
                   local value_str = value_block.tk
                   if value_block.kind == "string" then
-                     value_str = block_string_value(value_block) or value_str
+                     value_str = reader.string_value(value_block) or value_str
                   elseif value_str:match('^".*"$') or value_str:match("^'.*'$") then
                      value_str = value_str:sub(2, -2)
                   end
@@ -1047,6 +1014,7 @@ parse_fns.local_declaration = function(state, block)
    assert(block)
    local node = new_node(state, block)
    node.vars = parse_variable_list(state, block[reader.BLOCK_INDEXES.LOCAL_DECLARATION.VARS], false)
+   node.lj_const = block[reader.BLOCK_INDEXES.LOCAL_DECLARATION.CONST] ~= nil
    if node.lj_const then
       for _, var in ipairs(node.vars) do
          var.attribute = "const"
@@ -1093,6 +1061,10 @@ parse_fns.assignment = function(state, block)
       node.exps = parse_expression_list(state, block[reader.BLOCK_INDEXES.ASSIGNMENT.EXPS])
    end
 
+   local operator = block[reader.BLOCK_INDEXES.ASSIGNMENT.OPERATOR]
+   if operator then
+      node.compound = operator.tk:sub(1, -2)
+   end
    if node.compound and node.exps and node.exps[1] then
       local rhs = node.exps[1]
       node.exps[1] = setmetatable({
@@ -1285,6 +1257,7 @@ end
 parse_fns.local_function = function(state, block)
    assert(block)
    local node = new_node(state, block, "local_function")
+   node.lj_const = block[reader.BLOCK_INDEXES.LOCAL_FUNCTION.CONST] ~= nil
 
    if not block[reader.BLOCK_INDEXES.LOCAL_FUNCTION.NAME] then
       fail(state, block, "local function missing name")
@@ -1409,24 +1382,7 @@ function block_to_constructor(state, block)
       table.insert(tbl, it)
    end
 
-   local function add_boolean_field(tbl, owner, keyname, value)
-      if not value then return end
-      local item = new_node(state, owner, "literal_table_item")
-      item.key_parsed = "short"
-      item.key = new_node(state, owner, "identifier")
-      item.key.tk = string.format("%q", keyname)
-      item.value = new_node(state, owner, "boolean")
-      item.value.tk = "true"
-      table.insert(tbl, item)
-   end
-
    local node = new_node(state, block, "literal_table")
-   add_boolean_field(node, block, "operator_use", block.operator_use)
-   add_boolean_field(node, block, "implicit_table_key", block.implicit_table_key)
-   add_boolean_field(node, block, "short_function", block.short_function)
-   add_boolean_field(node, block, "lj_const", block.lj_const)
-   add_boolean_field(node, block, "safe_navigation", block.safe_navigation)
-   if block.compound then add_string_field(node, block, "compound", block.compound) end
    if not node.yend then
       node.yend = block.yend or block.y
    end
@@ -1448,10 +1404,6 @@ function block_to_constructor(state, block)
    end
    if block.xend then
       add_number_field(node, block, "xend", block.xend)
-   end
-
-   if block.kind == "string" then
-      add_string_field(node, block, "conststr", block_string_value(block) or block.tk or "")
    end
 
    local numeric_keys = {}
@@ -2020,7 +1972,7 @@ parse_record_like_type = function(state, block, typename)
             local comments = extract_attached_comments(pending_field_comments, name_node or fld)
             local field_name
             if name_node and name_node.kind == "string" then
-               field_name = block_string_value(name_node) or name_node.tk or ""
+               field_name = reader.string_value(name_node) or name_node.tk or ""
             else
                field_name = name_node and name_node.tk or ""
             end
@@ -2189,7 +2141,7 @@ parse_base_type = function(state, block)
       return u
    elseif block.kind == "string" then
       local decl = new_type(state, block, "string")
-      decl.literal = block_string_value(block)
+      decl.literal = reader.string_value(block)
       end_at(decl, block)
       return decl
    elseif block.kind == "number" then

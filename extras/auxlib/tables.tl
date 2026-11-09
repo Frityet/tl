@@ -192,7 +192,7 @@ macro Tables.(+=>)!(source: Expression, reduction: Expression): Operator<infix, 
       local message = "+=> expects a sum callback or { initial, reducer }"
       assert(#reduction == 2, message)
       for _, entry in ipairs(reduction) do
-         assert(entry.implicit_table_key, message)
+         assert(entry[item.IMPLICIT_KEY], message)
       end
       local initial, reducer = reduction[1][item.VALUE], reduction[2][item.VALUE]
       return `require("auxlib.tables").reduce($source, $initial, $reducer)`
@@ -236,7 +236,7 @@ macro Tables.(from)!(fields: Expression, source: Expression): Operator<infix, co
       fields = arguments[1]
       local function module_path(part)
          if part.kind == "identifier" then return part.tk end
-         assert(part.kind == "op_dot" and not part.safe_navigation and part[B.OP.E2].kind == "identifier",
+         assert(part.kind == "op_dot" and not part[B.OP.SAFE] and part[B.OP.E2].kind == "identifier",
             "import expects a dotted module name or a string literal")
          return module_path(part[B.OP.E1]) .. "." .. part[B.OP.E2].tk
       end
@@ -279,7 +279,7 @@ macro Tables.(from)!(fields: Expression, source: Expression): Operator<infix, co
             name = alias[B.NOMINAL_TYPE.NAME]
          end
       end
-      assert(field.kind == "identifier" and item.implicit_table_key,
+      assert(field.kind == "identifier" and item[B.LITERAL_TABLE_ITEM.IMPLICIT_KEY],
          importing and "import expects bare field names with optional 'as' aliases" or "from expects bare field names")
       assert(not seen[name.tk], operation .. " has duplicate binding '" .. name.tk .. "'")
       seen[name.tk] = true

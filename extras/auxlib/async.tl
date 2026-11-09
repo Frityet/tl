@@ -576,7 +576,7 @@ macro Async.(async)!(fn: Expression): Operator<prefix, unary>
    assert(not rets or not rets[1] or #rets[1] <= 1, "async functions declare one result type")
    local inner = clone(fn)
    inner[F.ARGS] = block("argument_list")
-   inner.short_function = true
+   inner[F.SHORT] = block("short_function")
    local void = rets and rets[1] and rets[1][1] and rets[1][1].kind == "nil"
    if not rets or rets.tk ~= ":" then
       local function returns_value(node)
