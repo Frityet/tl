@@ -103,6 +103,26 @@ foo!{ key = "value" }
 Macros can appear in expression or statement positions, as long as the macro
 returns a compatible kind of block.
 
+### Assignment targets
+
+A macro invocation, including a custom operator, can appear in any target
+position of an assignment or as the target of a compound assignment. Its
+expansion must be a single assignable expression, such as a variable, field
+access, or index access. The normal assignment and type-checking rules apply
+to that expression.
+
+```lua
+local macro test_field!(tbl: Expression)
+   return `($tbl).test`
+end
+
+local tbl = {test = 0}
+test_field!(tbl) = 4
+```
+
+An expansion to a call, a computed value, or a statement is rejected as a
+target. A call can still be the receiver of an assignable field or index.
+
 ## Macro arguments
 
 Macro parameters must be annotated as one of:

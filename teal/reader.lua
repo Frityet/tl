@@ -3193,6 +3193,12 @@ local function read_assignment_expression_list(ps, i, asgn)
 end
 
 do
+   local compound_ops = {
+      ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
+      ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
+      ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
+   }
+
    local function read_variable(ps, i)
       local node
       i, node = read_expression(ps, i)
@@ -3207,11 +3213,14 @@ do
          return i
       end
 
-      if reader.node_is_funcall(exp) then
+      local assignment_op = ps.tokens[i].tk
+      local macro_target = exp.kind == "macro_invocation" and
+      (assignment_op == "=" or assignment_op == "," or compound_ops[assignment_op])
+      if reader.node_is_funcall(exp) and not macro_target then
          return i, exp
       end
 
-      if exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
+      if not macro_target and exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
          return fail(ps, i, "syntax error")
       end
 
@@ -3228,12 +3237,7 @@ do
 
       end_at(asgn[BLOCK_INDEXES.ASSIGNMENT.VARS], ps.tokens[i - 1])
 
-      local compound_ops = {
-         ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
-         ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
-         ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
-      }
-      local assignment_op = ps.tokens[i].tk
+      assignment_op = ps.tokens[i].tk
       if compound_ops[assignment_op] then
          asgn.compound = assignment_op:sub(1, -2)
          if #asgn[BLOCK_INDEXES.ASSIGNMENT.VARS] ~= 1 then

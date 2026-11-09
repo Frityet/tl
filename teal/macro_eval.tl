@@ -73,6 +73,7 @@ local function clone_value(v: Block, splice_name?: string): Block
       is_longstring = v.is_longstring,
       custom_operator = v.custom_operator,
       operator_use = v.operator_use,
+      operator_grouping = v.operator_grouping,
       implicit_table_key = v.implicit_table_key,
       short_function = v.short_function,
       lj_const = v.lj_const,
@@ -592,9 +593,27 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
       return b
    end
    if b.operator_use and context == "expr" then
-      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, [BLOCK_INDEXES.PAREN.EXP] = checked }
+      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, operator_grouping = true, [BLOCK_INDEXES.PAREN.EXP] = checked }
    end
    return checked
+end
+
+local function expand_assignment_target(target: Block, filename: string, env: MacroEnv, errs: {Error}): Block
+   local previous_errors = #errs
+   local expanded = traverse_invoking_macros(target, filename, env, errs, "expr")
+   if #errs > previous_errors then
+      return expanded
+   end
+
+   -- Keep grouping inside the target, such as the receiver of an index.
+   while expanded.kind == "paren" and expanded.operator_grouping do
+      expanded = expanded[BLOCK_INDEXES.PAREN.EXP]
+   end
+   if expanded.kind ~= "identifier" and expanded.kind ~= "op_index" and expanded.kind ~= "op_dot" then
+      table.insert(errs, { filename = filename, y = target.y, x = target.x, msg = "invalid assignment target: expected a variable, field, or index" })
+      return target
+   end
+   return expanded
 end
 
 traverse_invoking_macros = function(b: Block, filename: string, env: MacroEnv, errs: {Error}, context: string): Block
@@ -608,7 +627,11 @@ traverse_invoking_macros = function(b: Block, filename: string, env: MacroEnv, e
    local patches: {integer:Block}
    for i, child in children(b) do
       local ret: Block
-      if child.kind == "macro_invocation" then
+      if b.kind == "assignment" and i == BLOCK_INDEXES.ASSIGNMENT.VARS then
+         for j, target in ipairs(child) do
+            child[j] = expand_assignment_target(target, filename, env, errs)
+         end
+      elseif child.kind == "macro_invocation" then
          ret = eval_macro_invocation(child, filename, env, errs, b.kind == "statements" and "stmt" or "expr")
          if ret.kind == "statements" then
             patches = patches or {}

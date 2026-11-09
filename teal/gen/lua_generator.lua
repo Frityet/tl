@@ -176,6 +176,20 @@ function lua_generator.generate(ast, gen_target, opts)
       return table.concat(out)
    end
 
+   local function first_output_character(out)
+      for _, part in ipairs(out) do
+         local first
+         if type(part) == "table" then
+            first = first_output_character(part)
+         else
+            first = part:match("^%s*(.)")
+         end
+         if first then
+            return first
+         end
+      end
+   end
+
    local function print_record_def(typ)
       local out = { "{" }
       local i = 0
@@ -326,13 +340,24 @@ function lua_generator.generate(ast, gen_target, opts)
                out = { y = node.y, h = 0 }
             end
             local space
+            local previous_statement
             for i, child in ipairs(children) do
+               local statement = node[i]
+
+
+               if statement.kind == "assignment" and previous_statement and not previous_statement.semicolon and
+                  opts.preserve_newlines and child.y > out.y + out.h and first_output_character(child) == "(" then
+                  table.insert(out, ";")
+               end
                add_child(out, child, space, indent)
-               if node[i].semicolon then
+               if statement.semicolon then
                   table.insert(out, ";")
                   space = " "
                else
                   space = "; "
+               end
+               if #child > 0 then
+                  previous_statement = statement
                end
             end
             return out

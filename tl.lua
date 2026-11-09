@@ -2779,6 +2779,7 @@ local block = { OperatorSpec = {}, Block = { ExpectedContext = {} } }
 
 
 
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -12693,6 +12694,20 @@ function lua_generator.generate(ast, gen_target, opts)
       return table.concat(out)
    end
 
+   local function first_output_character(out)
+      for _, part in ipairs(out) do
+         local first
+         if type(part) == "table" then
+            first = first_output_character(part)
+         else
+            first = part:match("^%s*(.)")
+         end
+         if first then
+            return first
+         end
+      end
+   end
+
    local function print_record_def(typ)
       local out = { "{" }
       local i = 0
@@ -12843,13 +12858,24 @@ function lua_generator.generate(ast, gen_target, opts)
                out = { y = node.y, h = 0 }
             end
             local space
+            local previous_statement
             for i, child in ipairs(children) do
+               local statement = node[i]
+
+
+               if statement.kind == "assignment" and previous_statement and not previous_statement.semicolon and
+                  opts.preserve_newlines and child.y > out.y + out.h and first_output_character(child) == "(" then
+                  table.insert(out, ";")
+               end
                add_child(out, child, space, indent)
-               if node[i].semicolon then
+               if statement.semicolon then
                   table.insert(out, ";")
                   space = " "
                else
                   space = "; "
+               end
+               if #child > 0 then
+                  previous_statement = statement
                end
             end
             return out
@@ -14542,6 +14568,7 @@ local function clone_value(v, splice_name)
       is_longstring = v.is_longstring,
       custom_operator = v.custom_operator,
       operator_use = v.operator_use,
+      operator_grouping = v.operator_grouping,
       implicit_table_key = v.implicit_table_key,
       short_function = v.short_function,
       lj_const = v.lj_const,
@@ -15061,9 +15088,27 @@ eval_macro_invocation = function(b, filename, env, errs, context)
       return b
    end
    if b.operator_use and context == "expr" then
-      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, [BLOCK_INDEXES.PAREN.EXP] = checked }
+      return { kind = "paren", tk = "(", f = filename, y = b.y, x = b.x, operator_grouping = true, [BLOCK_INDEXES.PAREN.EXP] = checked }
    end
    return checked
+end
+
+local function expand_assignment_target(target, filename, env, errs)
+   local previous_errors = #errs
+   local expanded = traverse_invoking_macros(target, filename, env, errs, "expr")
+   if #errs > previous_errors then
+      return expanded
+   end
+
+
+   while expanded.kind == "paren" and expanded.operator_grouping do
+      expanded = expanded[BLOCK_INDEXES.PAREN.EXP]
+   end
+   if expanded.kind ~= "identifier" and expanded.kind ~= "op_index" and expanded.kind ~= "op_dot" then
+      table.insert(errs, { filename = filename, y = target.y, x = target.x, msg = "invalid assignment target: expected a variable, field, or index" })
+      return target
+   end
+   return expanded
 end
 
 traverse_invoking_macros = function(b, filename, env, errs, context)
@@ -15077,7 +15122,11 @@ traverse_invoking_macros = function(b, filename, env, errs, context)
    local patches
    for i, child in children(b) do
       local ret
-      if child.kind == "macro_invocation" then
+      if b.kind == "assignment" and i == BLOCK_INDEXES.ASSIGNMENT.VARS then
+         for j, target in ipairs(child) do
+            child[j] = expand_assignment_target(target, filename, env, errs)
+         end
+      elseif child.kind == "macro_invocation" then
          ret = eval_macro_invocation(child, filename, env, errs, b.kind == "statements" and "stmt" or "expr")
          if ret.kind == "statements" then
             patches = patches or {}
@@ -18810,6 +18859,12 @@ local function read_assignment_expression_list(ps, i, asgn)
 end
 
 do
+   local compound_ops = {
+      ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
+      ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
+      ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
+   }
+
    local function read_variable(ps, i)
       local node
       i, node = read_expression(ps, i)
@@ -18824,11 +18879,14 @@ do
          return i
       end
 
-      if reader.node_is_funcall(exp) then
+      local assignment_op = ps.tokens[i].tk
+      local macro_target = exp.kind == "macro_invocation" and
+      (assignment_op == "=" or assignment_op == "," or compound_ops[assignment_op])
+      if reader.node_is_funcall(exp) and not macro_target then
          return i, exp
       end
 
-      if exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
+      if not macro_target and exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
          return fail(ps, i, "syntax error")
       end
 
@@ -18845,12 +18903,7 @@ do
 
       end_at(asgn[BLOCK_INDEXES.ASSIGNMENT.VARS], ps.tokens[i - 1])
 
-      local compound_ops = {
-         ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true,
-         ["%="] = true, ["&="] = true, ["|="] = true, ["~="] = true,
-         ["<<="] = true, [">>="] = true, ["~>>="] = true, ["..="] = true,
-      }
-      local assignment_op = ps.tokens[i].tk
+      assignment_op = ps.tokens[i].tk
       if compound_ops[assignment_op] then
          asgn.compound = assignment_op:sub(1, -2)
          if #asgn[BLOCK_INDEXES.ASSIGNMENT.VARS] ~= 1 then
