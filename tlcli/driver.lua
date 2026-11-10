@@ -38,6 +38,7 @@ function driver.setup_compiler(tlconfig)
    end
 
    local opts = {
+      defines = tlconfig.defines,
       feat_arity = tlconfig["feat_arity"],
       gen_compat = tlconfig["gen_compat"],
       gen_target = tlconfig["gen_target"],

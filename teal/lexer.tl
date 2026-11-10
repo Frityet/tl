@@ -40,13 +40,98 @@ local record lexer
       comments: {Comment}
    end
 
-   lex: function(input: string, filename: string): {Token}, {Error}
+   record ConditionalOptions
+      defines: {string:any}
+      strict_nil: boolean
+   end
+
+   lex: function(input: string, filename: string, opts?: ConditionalOptions, is_lua?: boolean): {Token}, {Error}
    get_token_at: function(tks: {Token}, y: integer, x: integer): string
 end
 
 local type Token = lexer.Token
 local type TokenKind = lexer.TokenKind
 local type Comment = lexer.Comment
+local type ConditionalOptions = lexer.ConditionalOptions
+
+local condition_precedence: {string:integer} = {
+   ["or"] = 1, ["and"] = 2, ["=="] = 3, ["~="] = 3, ["!="] = 3,
+}
+
+local function conditional_value(tokens: {Token}, defines: {string:any}, strict_nil: boolean): boolean, string
+   local index = 1
+   local err: string
+   local expression: function(integer, integer): any
+   expression = function(min_precedence: integer, depth: integer): any
+      if depth > 100 then
+         err = "condition is nested too deeply"
+         return nil
+      end
+      local token = tokens[index]
+      index = index + 1
+      local value: any
+      if token.tk == "(" then
+         value = expression(1, depth + 1)
+         if not err then
+            if tokens[index].tk == ")" then
+               index = index + 1
+            else
+               err = "expected ')' in condition"
+            end
+         end
+      elseif token.tk == "not" then
+         value = not expression(4, depth + 1)
+      elseif token.tk == "TL_NG" or token.tk == "true" then
+         value = true
+      elseif token.tk == "STRICT_NIL" then
+         value = strict_nil
+      elseif token.tk == "false" then
+         value = false
+      elseif token.tk == "nil" then
+         value = nil
+      elseif token.kind == "identifier" then
+         value = defines and rawget(defines, token.tk)
+      elseif token.kind == "string" then
+         -- The lexer has already verified that this is a single string literal.
+         local literal = load("return " .. token.tk, "=(conditional literal)", "t", {})
+         if literal then
+            value = literal()
+         else
+            err = "invalid string literal in condition"
+         end
+      elseif token.kind == "integer" or token.kind == "number" then
+         local text = token.tk:gsub("_", "")
+         value = text:match("^0[bB]") and tonumber(text:sub(3), 2) or tonumber(text)
+         if value == nil then err = "invalid number in condition" end
+      else
+         err = "expected a define, literal, 'not', or '(' in condition"
+      end
+
+      while not err do
+         local op = tokens[index].tk
+         local precedence = condition_precedence[op]
+         if not precedence or precedence < min_precedence then break end
+         index = index + 1
+         local rhs = expression(precedence + 1, depth + 1)
+         if op == "or" then
+            value = value or rhs
+         elseif op == "and" then
+            value = value and rhs
+         elseif op == "==" then
+            value = rawequal(value, rhs)
+         else
+            value = not rawequal(value, rhs)
+         end
+      end
+      return value
+   end
+
+   local value = expression(1, 0)
+   if not err and tokens[index].kind ~= "$EOF$" then
+      err = "unexpected token '" .. tokens[index].tk .. "' in condition"
+   end
+   return not not value, err
+end
 
 do
    local enum LexState
@@ -275,7 +360,7 @@ do
       end
    end
 
-   lexer.lex = function(input: string, filename: string): {Token}, {Error}
+   local function lex(input: string, filename: string, opts?: ConditionalOptions, is_lua?: boolean): {Token}, {Error}
       local tokens: {Token} = {}
 
       local state: LexState = "any"
@@ -296,6 +381,16 @@ do
       local in_token = false
 
       local comments: {Comment}
+      local strict_nil = not opts or opts.strict_nil ~= false
+      local record ConditionalEnd
+         first: integer
+         last: integer
+         parent: ConditionalEnd
+      end
+      local conditional_end: ConditionalEnd
+      if is_lua == nil then
+         is_lua = filename and filename:lower():match("%.lua$") ~= nil
+      end
 
       local function begin_token()
          tx = x
@@ -385,6 +480,84 @@ do
          }
       end
 
+      local function skip_through(last: integer)
+         local newline = input:find("\n", i, true)
+         while newline and newline <= last do
+            y = y + 1
+            i = newline
+            x = 0
+            newline = input:find("\n", i + 1, true)
+         end
+         x = x + last - i
+         i = last
+      end
+
+      local function open_conditional(level: integer): boolean
+         local header = input:match("^%s*()#if%f[^%w_]", i + 1)
+         if not header then return false end
+
+         local function fail(msg: string)
+            local line = ty
+            local column = tx + header - ti
+            for newline in input:sub(ti, header - 1):gmatch("\n()") do
+               line = line + 1
+               column = header - ti - newline + 2
+            end
+            table.insert(errs, { filename = filename, y = line, x = column, msg = msg })
+         end
+
+         local close, last = input:find("]" .. string.rep("=", level) .. "]", i + 1, true)
+         if not close or (conditional_end and last >= conditional_end.first) then return false end
+         local header_end = input:find("\n", header, true)
+         local footer = header_end and header_end < close
+            and input:sub(header_end, close - 1):match("\n()[ \t]*#end%s*$")
+         local condition = header_end and header_end < close
+            and input:sub(header + 3, header_end - 1):match("^[ \t]+(.-)[ \t]+then[ \t\r]*$")
+         local enabled = false
+         if not condition or condition == "" then
+            fail("expected '#if <condition> then'")
+         elseif not footer then
+            fail("expected '#end' before the conditional comment closes")
+         else
+            local condition_tokens, condition_errors = lex(condition, filename, nil, true)
+            local message: string
+            if #condition_errors > 0 then
+               message = condition_errors[1].msg
+            else
+               enabled, message = conditional_value(condition_tokens, opts and opts.defines, strict_nil)
+            end
+            if message then
+               fail("invalid conditional compilation condition: " .. message)
+               enabled = false
+            end
+         end
+
+         if enabled then
+            conditional_end = {
+               first = header_end + footer - 1,
+               last = last,
+               parent = conditional_end,
+            }
+            skip_through(header_end - 1)
+         else
+            add_comment(input:sub(ti, last))
+            skip_through(last)
+         end
+         drop_token()
+         return true
+      end
+
+      local function update_strict_nil()
+         if nt >= 3 and tokens[nt - 2].tk == "--#pragma" and tokens[nt - 1].tk == "strict_nil"
+               and tokens[nt - 2].y == tokens[nt].y then
+            if tokens[nt].tk == "on" then
+               strict_nil = true
+            elseif tokens[nt].tk == "off" then
+               strict_nil = false
+            end
+         end
+      end
+
       local bom <const> = "\239\187\191" -- "\xEF\xBB\xBF"
       local bom_len = bom:len()
       if input:sub(1, bom_len) == bom then
@@ -442,7 +615,17 @@ do
                end
             end
          end
-         if extension_op then
+         if conditional_end and i == conditional_end.first then
+            if state ~= "any" then
+               end_token_prev("$ERR$")
+               add_syntax_error("unfinished token in conditional compilation block")
+            end
+            skip_through(conditional_end.last)
+            conditional_end = conditional_end.parent
+            lc_open_lvl = 0
+            lc_close_lvl = 0
+            state = "any"
+         elseif extension_op then
             begin_token()
             end_token("op", extension_op)
             i = i + #extension_op - 1
@@ -658,6 +841,7 @@ do
          elseif state == "pragma word" then
             if not lex_word[c] then
                end_token_prev("pragma_identifier")
+               update_strict_nil()
                fwd = false
                state = (c == "\n") and "any" or "pragma any"
             end
@@ -679,7 +863,12 @@ do
             end
          elseif state == "got --[" then
             if c == "[" then
-               state = "comment long"
+               if not is_lua and open_conditional(lc_open_lvl) then
+                  state = "any"
+                  lc_open_lvl = 0
+               else
+                  state = "comment long"
+               end
             elseif c == "=" then
                lc_open_lvl = lc_open_lvl + 1
             else
@@ -878,6 +1067,8 @@ do
 
       return tokens, errs
    end
+
+   lexer.lex = lex
 end
 
 lexer.get_token_at = function(tks: {Token}, y: integer, x: integer): string

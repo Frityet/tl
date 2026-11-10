@@ -76,6 +76,8 @@ local v2 = { CheckOptions = {}, EnvOptions = {} }
 
 
 
+
+
 environment.set_require_module_fn(require_file.require_module)
 
 v2.warning_kinds = errors.warning_kinds
@@ -97,10 +99,12 @@ v2.typecodes = type_reporter.typecodes
 
 
 
+
 local function env_from_check_options(opts)
    return environment.new(opts and {
       feat_arity = opts.feat_arity,
       feat_strict_nil = opts.feat_strict_nil,
+      defines = opts.defines,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
    })
@@ -217,13 +221,13 @@ v2.new_env = function(opts)
    return env
 end
 
-v2.parse = function(teal_code, filename, parse_lang)
-   local ast, errs, required_modules = parser.parse(teal_code, filename, parse_lang)
+v2.parse = function(teal_code, filename, parse_lang, conditional)
+   local ast, errs, required_modules = parser.parse(teal_code, filename, parse_lang, conditional)
    return ast, errs, required_modules
 end
 
-v2.parse_program = function(tokens, errs, filename, parse_lang)
-   local ast, required_modules = parser.parse_program(tokens, errs, filename, parse_lang)
+v2.parse_program = function(tokens, errs, filename, parse_lang, conditional)
+   local ast, required_modules = parser.parse_program(tokens, errs, filename, parse_lang, conditional)
    return ast, required_modules
 end
 

@@ -25,6 +25,10 @@ local function get_args_parser()
    argname("<directory>"):
    count("*")
 
+   parser:option("-D --define", "Set a compile-time define. Can be repeated."):
+   argname("<NAME[=VALUE]>"):
+   count("*")
+
    local warnings = common.keys(teal.warning_set())
 
    parser:option("--wdisable", "Disable the given kind of warning."):

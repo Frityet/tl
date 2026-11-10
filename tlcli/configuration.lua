@@ -73,6 +73,7 @@ local function validate_config(config)
 
    local valid_keys = {
       include_dir = "{string}",
+      defines = "{string:any}",
       source_dir = "string",
       global_env_def = "string",
       quiet = "boolean",
@@ -105,6 +106,16 @@ local function validate_config(config)
       if type(vk) == "table" then
          if not (type(v) == "string") or not vk[v] then
             fail(k, "expected one of: %s", table.concat(common.keys(vk), ", "))
+         end
+      elseif vk == "{string:any}" then
+         if type(v) == "table" then
+            for name in pairs(v) do
+               if not (type(name) == "string" and name:match("^[_%a][_%w]*$") and name ~= "STRICT_NIL" and name ~= "TL_NG") then
+                  fail(k, "expected a define name, got %s", tostring(name))
+               end
+            end
+         else
+            fail(k, "expected a table of defines")
          end
       elseif vk == "{string}" then
          if type(v) == "table" then
@@ -237,6 +248,24 @@ function configuration.merge_config_and_args(tlconfig, args)
 
    if args["pretend"] then
       tlconfig["pretend"] = true
+   end
+
+   for _, define in ipairs(args.define or {}) do
+      local name, value = define:match("^([_%a][_%w]*)=(.*)$")
+      if not name then
+         name = define:match("^[_%a][_%w]*$")
+      end
+      if not name or name == "STRICT_NIL" or name == "TL_NG" then
+         common.die("Error: invalid or reserved define '" .. define .. "'")
+      end
+      tlconfig.defines = tlconfig.defines or {}
+      if value == nil or value == "true" then
+         tlconfig.defines[name] = true
+      elseif value == "false" then
+         tlconfig.defines[name] = false
+      else
+         tlconfig.defines[name] = tonumber(value) or value
+      end
    end
 
    tlconfig["feat_arity"] = args["feat_arity"] or tlconfig["feat_arity"]

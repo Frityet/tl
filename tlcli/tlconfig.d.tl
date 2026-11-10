@@ -1,4 +1,5 @@
 local record TlConfig
+   defines: {string:any}
    disable_warnings: {string}
    include_dir: {string}
    source_dir: string

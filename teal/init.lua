@@ -134,6 +134,8 @@ local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, Parse
 
 
 
+
+
 local Compiler = teal.Compiler
 local Module = teal.Module
 
@@ -257,7 +259,9 @@ end
 
 
 function Input:lex()
-   local tokens, errs = lexer.lex(self.teal_code, self.filename)
+   local tokens, errs = lexer.lex(self.teal_code, self.filename, {
+      defines = self.env.opts.defines, strict_nil = self.env.opts.feat_strict_nil ~= "off",
+   }, parser.lang_heuristic(self.filename, self.teal_code) == "lua")
    return setmetatable({
       filename = self.filename,
       tokens = tokens,
@@ -304,7 +308,9 @@ end
 
 function TokenList:parse()
    local errs = self.lexical_errors or {}
-   local ast, required_modules = parser.parse_program(self.tokens, errs, self.filename)
+   local ast, required_modules = parser.parse_program(self.tokens, errs, self.filename, nil, {
+      defines = self.env.opts.defines, strict_nil = self.env.opts.feat_strict_nil ~= "off",
+   })
 
    if #errs > 0 and not self.env.keep_going then
       environment.register_failed(self.env, self.filename, errs)
@@ -365,6 +371,8 @@ function teal.compiler(opts)
 
    local env_opts = {
       feat_arity = opts and opts.feat_arity,
+      feat_strict_nil = opts and opts.feat_strict_nil,
+      defines = opts and opts.defines,
       gen_compat = opts and opts.gen_compat,
       gen_target = opts and opts.gen_target,
       no_stdlib = opts and not not opts.no_stdlib,

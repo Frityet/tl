@@ -21,6 +21,7 @@ return {
 | Command line option  | Config key                 | Type       | Relevant Commands    | Description |
 | -------------------- | -------------------------- | ---------- | -------------------- | ----------- |
 | `-l --require`       |                            | `{string}` | `run`                | Require a module prior to executing the script. This is similar in behavior to the `-l` flag in the Lua interpreter. |
+| `-D --define`        | `defines`                 | `{string:any}` | All source commands | Set a compile-time define for a [conditional block](#conditional-compilation). |
 | `-I --include-dir`   | `include_dir`              | `{string}` | `check` `gen` `run`  | Prepend this directory to the module search path.
 |                      | `source_dir`               | `string`   | `check` `gen` `run`  | Set the project source directory and add it to the module search path.
 | `--gen-compat`       | `gen_compat`               | `string`   | `gen` `run`          | Generate compatibility code for targeting different Lua VM versions. See [below](#generated-code) for details.
@@ -36,6 +37,43 @@ When `source_dir` is set in `tlconfig.lua`, Teal also uses it when resolving
 required modules. This lets a project keep its modules under a source directory
 such as `src` without repeating that directory in `include_dir`; any explicit
 `include_dir` entries are preserved.
+
+### Conditional compilation
+
+In tl-ng, a long comment whose first non-whitespace text is `#if CONDITION then`
+can contain Teal code. Put `#end` on its own line before the closing comment delimiter.
+
+```lua
+local retries = 2
+--[=[
+#if TL_NG and STRICT_NIL and PROFILE == "debug" then
+retries = 0
+#end
+]=]
+print(retries)
+```
+
+Run this example with `tl -DPROFILE=debug run example.tl`. When the condition is
+true, the compiler reads the body in the surrounding Teal scope. When the
+condition is false, the body stays a comment. Use different long-comment
+delimiter levels when nesting blocks. Upstream Teal and Lua treat the whole
+block as a comment.
+
+Conditions accept define names, boolean, nil, number and string literals,
+parentheses, `not`, `and`, `or`, `==`, `~=` and `!=`. An undefined name is
+`nil`. Conditions use Lua truthiness, so only `false` and `nil` disable a block.
+
+- `TL_NG` is always true in tl-ng.
+- `STRICT_NIL` follows the strict-nil setting at the directive. It defaults to true,
+  and an earlier `--#pragma strict_nil off` disables it.
+
+Use `-DNAME` or `-D NAME` to set a name to `true`. With `-DNAME=VALUE`, the CLI
+reads `true`, `false` and numbers as typed values and keeps other values as
+strings. Repeat `-D` for multiple names. The last CLI value for a name takes
+precedence over earlier values and over `defines` in `tlconfig.lua`.
+
+Embedded users can set `defines` in `require("teal").compiler({ defines = ... })`
+or in the `defaults` table passed to `require("tl").new_env`.
 
 ### Generated code
 

@@ -185,6 +185,7 @@ end
 
 
 
+
 local read_type_list
 local read_typeargs_if_any
 local read_expression
@@ -916,7 +917,7 @@ local function load_module_macro_info(ps, module_name)
    end
 
    local lang = lang_heuristic(found, code)
-   local mod_node, mod_errs = reader.read(code, found, lang, true, true)
+   local mod_node, mod_errs = reader.read(code, found, lang, true, true, nil, nil, ps.conditional)
    for _, e in ipairs(mod_errs) do
       table.insert(ps.errs, e)
    end
@@ -1262,7 +1263,7 @@ local function read_macro_args_with_sig(ps, i, sig)
                local eof_prev = ps2.tokens[math.max(ii, jend - 1)]
                slice[nt] = { x = eof_prev.x, y = eof_prev.y, tk = "$EOF$", kind = "$EOF$" }
                local errs2 = {}
-               local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
+               local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true, nil, nil, ps2.conditional)
                if #errs2 == 0 and block_ast then
                   if can_split_on_comma and
                      block_ast.kind == "statements" and
@@ -1322,7 +1323,7 @@ local function read_macro_args_with_sig(ps, i, sig)
                local eof_prev = ps2.tokens[math.max(ii, j - 1)]
                slice[nt] = { x = eof_prev.x, y = eof_prev.y, tk = "$EOF$", kind = "$EOF$" }
                local errs2 = {}
-               local block_fallback = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
+               local block_fallback = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true, nil, nil, ps2.conditional)
                for _, e in ipairs(errs2) do table.insert(ps2.errs, e) end
                best_block = block_fallback
                best_j = j
@@ -1790,7 +1791,7 @@ read_macro_quote = function(ps, i)
 
       local kept_code = table.concat(kept_lines, "\n")
       local parsed_block
-      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
+      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true, ps.conditional)
 
 
       if #splices > 0 and parsed_block and parsed_block.kind == "statements" then
@@ -1807,7 +1808,7 @@ read_macro_quote = function(ps, i)
       end
    else
 
-      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
+      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true, ps.conditional)
       if #werrs == 0 then
          local ret = wrapped[1]
          if ret and ret.kind == "return" and ret[BLOCK_INDEXES.RETURN.EXPS] then
@@ -3752,7 +3753,14 @@ local function read_pragma(ps, i)
       return fail(ps, i, "expected pragma value")
    end
    pragma[BLOCK_INDEXES.PRAGMA.VALUE] = new_block(ps, i, "identifier")
-   pragma[BLOCK_INDEXES.PRAGMA.VALUE].tk = ps.tokens[i].tk
+   local value = ps.tokens[i].tk
+   pragma[BLOCK_INDEXES.PRAGMA.VALUE].tk = value
+   if pragma[BLOCK_INDEXES.PRAGMA.KEY].tk == "strict_nil" and (value == "on" or value == "off") then
+      ps.conditional = {
+         defines = ps.conditional and ps.conditional.defines,
+         strict_nil = value == "on",
+      }
+   end
    i = i + 1
 
    return i, pragma
@@ -3885,7 +3893,7 @@ read_statements = function(ps, i, toplevel)
    return i, node
 end
 
-function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    if read_program_depth == 0 then
       module_macro_cache = {}
       module_macro_missing = {}
@@ -3904,6 +3912,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       errs = errs,
       filename = filename,
       read_lang = read_lang,
+      conditional = conditional,
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
       in_macro_quote = in_macro_quote or false,
@@ -3994,7 +4003,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
 
    if not skip_macro_expand and #errs == 0 then
       local function parse_expression(source)
-         local program, parse_errors = reader.read("return " .. source, filename, lang, false, true)
+         local program, parse_errors = reader.read("return " .. source, filename, lang, false, true, nil, nil, ps.conditional)
          if #parse_errors > 0 then error("invalid expression: " .. parse_errors[1].msg, 0) end
          if #program ~= 1 or program[1].kind ~= "return" then
             error("expected a single expression", 0)
@@ -4072,11 +4081,11 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    return node
 end
 
-function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename, input)
-   local tokens, errs = lexer.lex(input, filename)
-   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+   local tokens, errs = lexer.lex(input, filename, conditional, read_lang == "lua")
+   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    return node, errs
 end
 

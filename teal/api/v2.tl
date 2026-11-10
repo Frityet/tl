@@ -19,6 +19,7 @@ local type type_reporter = require("teal.type_reporter")
 --------------------------------------------------------------------------------
 
 local record v2
+   type ConditionalOptions = lexer.ConditionalOptions
    type Env = environment.Env
    type Error = errors.Error
    type Feat = environment.Feat
@@ -44,6 +45,7 @@ local record v2
       feat_lax: Feat
       feat_arity: Feat
       feat_strict_nil: Feat
+      defines: {string:any}
       gen_compat: GenCompat
       gen_target: GenTarget
    end
@@ -63,12 +65,12 @@ local record v2
    generate: function(ast: Node, gen_target: GenTarget, opts?: GenerateOptions): string, string
    gen: function(string, ? Env, ? GenerateOptions): string, Result
    get_token_at: function(tks: {Token}, y: integer, x: integer): string
-   lex: function(teal_code: string, filename: string): {Token}, {Error}
+   lex: function(teal_code: string, filename: string, conditional?: ConditionalOptions): {Token}, {Error}
    loader: function()
    load: function(string, ? string, ? LoadMode, ...: {any:any}): LoadFunction, string
    new_env: function(? EnvOptions): Env, string
-   parse: function(teal_code: string, filename: string, parse_lang?: ParseLang): Node, {Error}, {string}
-   parse_program: function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang): Node, {string}
+   parse: function(teal_code: string, filename: string, parse_lang?: ParseLang, conditional?: ConditionalOptions): Node, {Error}, {string}
+   parse_program: function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang, conditional?: ConditionalOptions): Node, {string}
    process: function(filename: string, env?: Env, fd?: FILE): (Result, string)
    search_module: function(module_name: string, search_all: boolean): string, FILE, {string}
    symbols_in_scope: function(tr: TypeReport, y: integer, x: integer, filename: string): {string:integer}
@@ -81,6 +83,7 @@ environment.set_require_module_fn(require_file.require_module)
 v2.warning_kinds = errors.warning_kinds
 v2.typecodes = type_reporter.typecodes
 
+local type ConditionalOptions = v2.ConditionalOptions
 local type CheckOptions = v2.CheckOptions
 local type EnvOptions = v2.EnvOptions
 local type Env = v2.Env
@@ -101,6 +104,7 @@ local function env_from_check_options(opts?: CheckOptions): Env
    return environment.new(opts and {
       feat_arity = opts.feat_arity,
       feat_strict_nil = opts.feat_strict_nil,
+      defines = opts.defines,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
    })
@@ -217,13 +221,13 @@ v2.new_env = function(opts?: EnvOptions): Env, string
    return env
 end
 
-v2.parse = function(teal_code: string, filename: string, parse_lang?: ParseLang): Node, {Error}, {string}
-   local ast, errs, required_modules = parser.parse(teal_code, filename, parse_lang)
+v2.parse = function(teal_code: string, filename: string, parse_lang?: ParseLang, conditional?: ConditionalOptions): Node, {Error}, {string}
+   local ast, errs, required_modules = parser.parse(teal_code, filename, parse_lang, conditional)
    return ast as v2.Node, errs, required_modules
 end
 
-v2.parse_program = function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang): Node, {string}
-   local ast, required_modules = parser.parse_program(tokens, errs, filename, parse_lang)
+v2.parse_program = function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang, conditional?: ConditionalOptions): Node, {string}
+   local ast, required_modules = parser.parse_program(tokens, errs, filename, parse_lang, conditional)
    return ast as v2.Node, required_modules
 end
 

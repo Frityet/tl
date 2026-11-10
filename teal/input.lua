@@ -16,7 +16,9 @@ function input.check(env, filename, code)
       return env.loaded[filename]
    end
 
-   local program, syntax_errors = parser.parse(code, filename)
+   local program, syntax_errors = parser.parse(code, filename, nil, {
+      defines = env.opts.defines, strict_nil = env.opts.feat_strict_nil ~= "off",
+   })
 
    if (not env.keep_going) and #syntax_errors > 0 then
       return environment.register_failed(env, filename, syntax_errors)

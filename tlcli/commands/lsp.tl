@@ -568,6 +568,7 @@ local record MacroHover
 end
 
 local record Document
+   conditional: lexer.ConditionalOptions
    uri: string
    path: string
    text: string
@@ -687,8 +688,9 @@ local function lsp_enabled(server: Server, feature: string): boolean
    return not server.tlconfig.lsp or server.tlconfig.lsp[feature] ~= false
 end
 
-local function document_new(uri: string, text: string, version: integer): Document
+local function document_new(server: Server, uri: string, text: string, version: integer): Document
    return {
+      conditional = { defines = server.tlconfig.defines },
       uri = uri,
       path = uri_to_path(uri),
       text = text,
@@ -980,7 +982,7 @@ end
 -- Workspace queries can use the token index without running the type checker.
 local function analyze_syntax(document: Document, tokens?: {Token})
    if document.syntax_version == document.version then return end
-   if not tokens then tokens = lexer.lex(document.text, document.path) end
+   if not tokens then tokens = lexer.lex(document.text, document.path, document.conditional) end
    document.document_symbols_cache = nil
    document.folding_ranges_cache = nil
    document.tokens = tokens
@@ -1727,7 +1729,7 @@ local function macro_hover_at(document: Document, position: Position): MacroHove
       -- This uses the reader's lexical operator bindings and imported origins;
       -- it neither guesses by spelling nor executes macro bodies.
       local ok, tree = pcall(function(): Block
-         local tree = reader.read(document.text, document.path, "tl", false, true)
+         local tree = reader.read(document.text, document.path, "tl", false, true, nil, nil, document.conditional)
          return tree
       end)
       if not ok or not tree then return nil end
@@ -2139,7 +2141,7 @@ end
 
 local function formatting(document: Document, wanted?: Range): AnyArray
    local edits = array()
-   local tokens, errors = lexer.lex(document.text, document.path)
+   local tokens, errors = lexer.lex(document.text, document.path, document.conditional)
    -- An unfinished string can extend to EOF. Never guess which whitespace is code.
    if #errors > 0 then return edits end
    local protected: {integer: boolean} = {}
@@ -2386,7 +2388,7 @@ document_for = function(server: Server, uri: string): Document
    local file = io.open(path, "rb")
    local text = file and file:read("*a") or ""
    if file then file:close() end
-   document = document_new(uri, text, 0)
+   document = document_new(server, uri, text, 0)
    server.documents[uri] = document
    index_text_hints(server, document)
    return document
@@ -2518,7 +2520,7 @@ local function handle_notification(server: Server, method: string, params: AnyOb
          remove_text_hints(server, previous)
          server.pending_diagnostics[previous] = nil
       end
-      local document = document_new(uri, item.text as string or "", item.version as integer or 0)
+      local document = document_new(server, uri, item.text as string or "", item.version as integer or 0)
       document.is_open = true
       server.documents[uri] = document
       index_text_hints(server, document)
