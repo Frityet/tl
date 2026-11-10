@@ -46,8 +46,8 @@ parser.node_is_require_call = ast.node_is_require_call
 parser.node_at = ast.node_at
 parser.lang_heuristic = ast.lang_heuristic
 
-function parser.parse(input, filename, parse_lang)
-   local block_ast, read_errs = reader.read(input, filename, parse_lang)
+function parser.parse(input, filename, parse_lang, conditional)
+   local block_ast, read_errs = reader.read(input, filename, parse_lang, nil, nil, nil, nil, conditional)
    read_errs = read_errs or {}
 
    local ast_nodes, parse_errs, required = ast.parse_blocks(block_ast, filename, parse_lang)
@@ -58,9 +58,9 @@ function parser.parse(input, filename, parse_lang)
    return ast_nodes, read_errs, required
 end
 
-function parser.parse_program(tokens, errs, filename, parse_lang)
+function parser.parse_program(tokens, errs, filename, parse_lang, conditional)
    errs = errs or {}
-   local block_ast = reader.read_program(tokens, errs, filename, parse_lang)
+   local block_ast = reader.read_program(tokens, errs, filename, parse_lang, nil, nil, nil, nil, conditional)
    local ast_nodes, parse_errs, required = ast.parse_program_block(block_ast, filename or "input", parse_lang)
    for _, e in ipairs(parse_errs) do
       table.insert(errs, e)

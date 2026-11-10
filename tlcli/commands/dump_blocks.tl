@@ -227,7 +227,7 @@ return function(tlconfig: TlConfig, args: Args)
       common.die(open_err or "failed to read input")
    end
 
-   local block_ast, errs = reader.read(input.code, input.filename)
+   local block_ast, errs = reader.read(input.code, input.filename, nil, nil, nil, nil, nil, { defines = tlconfig.defines })
    if errs and #errs > 0 then
       print_errors(errs, input.filename)
       os.exit(1)

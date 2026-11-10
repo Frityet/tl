@@ -11,8 +11,7 @@ local record package_loader
    env: Env
 end
 
-local function tl_package_loader(module_name: string): any, any
-   local env = package_loader.env
+local function load_module(module_name: string, env: Env): any, any
    if not env then
       package_loader.env = environment.for_runtime()
       env = package_loader.env
@@ -47,9 +46,11 @@ local function tl_package_loader(module_name: string): any, any
    end, found_filename
 end
 
-function package_loader.install_loader()
+function package_loader.install_loader(env?: Env)
    local searchers = package.searchers or package.loaders
-   table.insert(searchers, 2, tl_package_loader)
+   table.insert(searchers, 2, function(module_name: string): any, any
+      return load_module(module_name, env or package_loader.env)
+   end)
 end
 
 return package_loader

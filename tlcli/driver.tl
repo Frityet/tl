@@ -38,6 +38,7 @@ function driver.setup_compiler(tlconfig: TlConfig): teal.Compiler
    end
 
    local opts: teal.CompilerOptions = {
+      defines = tlconfig.defines,
       feat_arity = tlconfig["feat_arity"] as teal.Feat,
       gen_compat = tlconfig["gen_compat"] as teal.GenCompat,
       gen_target = tlconfig["gen_target"] as teal.GenTarget,

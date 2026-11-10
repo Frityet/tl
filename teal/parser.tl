@@ -21,9 +21,9 @@ local record parser
    type Operator = ast.Operator
    type ParseLang = ast.ParseLang
 
-   parse: function(input: string, filename: string, parse_lang?: ParseLang): types.Node, {Error}, {string}
+   parse: function(input: string, filename: string, parse_lang?: ParseLang, conditional?: lexer.ConditionalOptions): types.Node, {Error}, {string}
    parse_blocks: function(input: Block, filename: string, parse_lang?: ParseLang): types.Node, {Error}, {string}
-   parse_program: function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang): types.Node, {string}
+   parse_program: function(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: ParseLang, conditional?: lexer.ConditionalOptions): types.Node, {string}
    parse_program_block: function(input: Block, filename: string, parse_lang?: ParseLang): types.Node, {Error}, {string}
    operator: function(ast.Node, integer, string): ast.Operator
 
@@ -46,8 +46,8 @@ parser.node_is_require_call = ast.node_is_require_call
 parser.node_at = ast.node_at
 parser.lang_heuristic = ast.lang_heuristic
 
-function parser.parse(input: string, filename: string, parse_lang?: parser.ParseLang): types.Node, {Error}, {string}
-   local block_ast, read_errs = reader.read(input, filename, parse_lang)
+function parser.parse(input: string, filename: string, parse_lang?: parser.ParseLang, conditional?: lexer.ConditionalOptions): types.Node, {Error}, {string}
+   local block_ast, read_errs = reader.read(input, filename, parse_lang, nil, nil, nil, nil, conditional)
    read_errs = read_errs or {}
 
    local ast_nodes, parse_errs, required = ast.parse_blocks(block_ast, filename, parse_lang)
@@ -58,9 +58,9 @@ function parser.parse(input: string, filename: string, parse_lang?: parser.Parse
    return ast_nodes, read_errs, required
 end
 
-function parser.parse_program(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: parser.ParseLang): types.Node, {string}
+function parser.parse_program(tokens: {Token}, errs: {Error}, filename?: string, parse_lang?: parser.ParseLang, conditional?: lexer.ConditionalOptions): types.Node, {string}
    errs = errs or {}
-   local block_ast = reader.read_program(tokens, errs, filename, parse_lang)
+   local block_ast = reader.read_program(tokens, errs, filename, parse_lang, nil, nil, nil, nil, conditional)
    local ast_nodes, parse_errs, required = ast.parse_program_block(block_ast, filename or "input", parse_lang)
    for _, e in ipairs(parse_errs) do
       table.insert(errs, e)

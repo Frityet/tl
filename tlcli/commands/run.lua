@@ -8,6 +8,7 @@ local driver = require("tlcli.driver")
 local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 local teal = require("teal.init")
+local package_loader = require("teal.package_loader")
 
 
 
@@ -34,7 +35,7 @@ local function type_check_and_load(tlconfig, filename)
       common.die("Internal Compiler Error: Teal generator produced invalid Lua. " ..
       "Please report a bug at https://github.com/teal-language/tl\n\n" .. tostring(chunk_err))
    end
-   return chunk
+   return chunk, compiler
 end
 
 return function(tlconfig, args)
@@ -54,7 +55,7 @@ return function(tlconfig, args)
       end
    end
 
-   local chunk = type_check_and_load(tlconfig, args["script"][1])
+   local chunk, compiler = type_check_and_load(tlconfig, args["script"][1])
 
 
    local neg_arg = {}
@@ -87,7 +88,7 @@ return function(tlconfig, args)
       n = n + 1
    end
 
-   teal.loader()
+   package_loader.install_loader(compiler.env)
 
    assert(not perf.is_turbo_on())
 

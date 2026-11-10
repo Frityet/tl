@@ -620,6 +620,7 @@ local COMPLETION_KEYWORDS = {
 
 
 
+
 local ensure_workspace_index
 local document_for
 
@@ -687,8 +688,9 @@ local function lsp_enabled(server, feature)
    return not server.tlconfig.lsp or server.tlconfig.lsp[feature] ~= false
 end
 
-local function document_new(uri, text, version)
+local function document_new(server, uri, text, version)
    return {
+      conditional = { defines = server.tlconfig.defines },
       uri = uri,
       path = uri_to_path(uri),
       text = text,
@@ -980,7 +982,7 @@ end
 
 local function analyze_syntax(document, tokens)
    if document.syntax_version == document.version then return end
-   if not tokens then tokens = lexer.lex(document.text, document.path) end
+   if not tokens then tokens = lexer.lex(document.text, document.path, document.conditional) end
    document.document_symbols_cache = nil
    document.folding_ranges_cache = nil
    document.tokens = tokens
@@ -1727,7 +1729,7 @@ local function macro_hover_at(document, position)
 
 
       local ok, tree = pcall(function()
-         local tree = reader.read(document.text, document.path, "tl", false, true)
+         local tree = reader.read(document.text, document.path, "tl", false, true, nil, nil, document.conditional)
          return tree
       end)
       if not ok or not tree then return nil end
@@ -2139,7 +2141,7 @@ end
 
 local function formatting(document, wanted)
    local edits = array()
-   local tokens, errors = lexer.lex(document.text, document.path)
+   local tokens, errors = lexer.lex(document.text, document.path, document.conditional)
 
    if #errors > 0 then return edits end
    local protected = {}
@@ -2386,7 +2388,7 @@ document_for = function(server, uri)
    local file = io.open(path, "rb")
    local text = file and file:read("*a") or ""
    if file then file:close() end
-   document = document_new(uri, text, 0)
+   document = document_new(server, uri, text, 0)
    server.documents[uri] = document
    index_text_hints(server, document)
    return document
@@ -2518,7 +2520,7 @@ local function handle_notification(server, method, params)
          remove_text_hints(server, previous)
          server.pending_diagnostics[previous] = nil
       end
-      local document = document_new(uri, item.text or "", item.version or 0)
+      local document = document_new(server, uri, item.text or "", item.version or 0)
       document.is_open = true
       server.documents[uri] = document
       index_text_hints(server, document)

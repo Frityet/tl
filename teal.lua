@@ -11099,6 +11099,7 @@ local environment = { EnvOptions = {}, Env = {}, Result = {} }
 
 
 
+
 environment.VERSION = VERSION
 environment.DEFAULT_GEN_COMPAT = "optional"
 environment.DEFAULT_GEN_TARGET = "5.3"
@@ -13360,6 +13361,8 @@ local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, Parse
 
 
 
+
+
 local Compiler = teal.Compiler
 local Module = teal.Module
 
@@ -13483,7 +13486,9 @@ end
 
 
 function Input:lex()
-   local tokens, errs = lexer.lex(self.teal_code, self.filename)
+   local tokens, errs = lexer.lex(self.teal_code, self.filename, {
+      defines = self.env.opts.defines, strict_nil = self.env.opts.feat_strict_nil ~= "off",
+   }, parser.lang_heuristic(self.filename, self.teal_code) == "lua")
    return setmetatable({
       filename = self.filename,
       tokens = tokens,
@@ -13530,7 +13535,9 @@ end
 
 function TokenList:parse()
    local errs = self.lexical_errors or {}
-   local ast, required_modules = parser.parse_program(self.tokens, errs, self.filename)
+   local ast, required_modules = parser.parse_program(self.tokens, errs, self.filename, nil, {
+      defines = self.env.opts.defines, strict_nil = self.env.opts.feat_strict_nil ~= "off",
+   })
 
    if #errs > 0 and not self.env.keep_going then
       environment.register_failed(self.env, self.filename, errs)
@@ -13591,6 +13598,8 @@ function teal.compiler(opts)
 
    local env_opts = {
       feat_arity = opts and opts.feat_arity,
+      feat_strict_nil = opts and opts.feat_strict_nil,
+      defines = opts and opts.defines,
       gen_compat = opts and opts.gen_compat,
       gen_target = opts and opts.gen_target,
       no_stdlib = opts and not not opts.no_stdlib,
@@ -13653,7 +13662,9 @@ function input.check(env, filename, code)
       return env.loaded[filename]
    end
 
-   local program, syntax_errors = parser.parse(code, filename)
+   local program, syntax_errors = parser.parse(code, filename, nil, {
+      defines = env.opts.defines, strict_nil = env.opts.feat_strict_nil ~= "off",
+   })
 
    if (not env.keep_going) and #syntax_errors > 0 then
       return environment.register_failed(env, filename, syntax_errors)
@@ -13672,7 +13683,7 @@ end
 
 -- module teal.lexer from teal/lexer.lua
 package.preload["teal.lexer"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local load = _tl_compat and _tl_compat.load or load; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 
 
@@ -13682,7 +13693,7 @@ local errors = require("teal.errors")
 local util = require("teal.util")
 local binary_search = util.binary_search
 
-local lexer = { Comment = {}, Token = {} }
+local lexer = { Comment = {}, Token = {}, ConditionalOptions = {} }
 
 
 
@@ -13721,6 +13732,91 @@ local lexer = { Comment = {}, Token = {} }
 
 
 
+
+
+
+
+
+
+
+local condition_precedence = {
+   ["or"] = 1, ["and"] = 2, ["=="] = 3, ["~="] = 3, ["!="] = 3,
+}
+
+local function conditional_value(tokens, defines, strict_nil)
+   local index = 1
+   local err
+   local expression
+   expression = function(min_precedence, depth)
+      if depth > 100 then
+         err = "condition is nested too deeply"
+         return nil
+      end
+      local token = tokens[index]
+      index = index + 1
+      local value
+      if token.tk == "(" then
+         value = expression(1, depth + 1)
+         if not err then
+            if tokens[index].tk == ")" then
+               index = index + 1
+            else
+               err = "expected ')' in condition"
+            end
+         end
+      elseif token.tk == "not" then
+         value = not expression(4, depth + 1)
+      elseif token.tk == "TL_NG" or token.tk == "true" then
+         value = true
+      elseif token.tk == "STRICT_NIL" then
+         value = strict_nil
+      elseif token.tk == "false" then
+         value = false
+      elseif token.tk == "nil" then
+         value = nil
+      elseif token.kind == "identifier" then
+         value = defines and rawget(defines, token.tk)
+      elseif token.kind == "string" then
+
+         local literal = load("return " .. token.tk, "=(conditional literal)", "t", {})
+         if literal then
+            value = literal()
+         else
+            err = "invalid string literal in condition"
+         end
+      elseif token.kind == "integer" or token.kind == "number" then
+         local text = token.tk:gsub("_", "")
+         value = text:match("^0[bB]") and tonumber(text:sub(3), 2) or tonumber(text)
+         if value == nil then err = "invalid number in condition" end
+      else
+         err = "expected a define, literal, 'not', or '(' in condition"
+      end
+
+      while not err do
+         local op = tokens[index].tk
+         local precedence = condition_precedence[op]
+         if not precedence or precedence < min_precedence then break end
+         index = index + 1
+         local rhs = expression(precedence + 1, depth + 1)
+         if op == "or" then
+            value = value or rhs
+         elseif op == "and" then
+            value = value and rhs
+         elseif op == "==" then
+            value = rawequal(value, rhs)
+         else
+            value = not rawequal(value, rhs)
+         end
+      end
+      return value
+   end
+
+   local value = expression(1, 0)
+   if not err and tokens[index].kind ~= "$EOF$" then
+      err = "unexpected token '" .. tokens[index].tk .. "' in condition"
+   end
+   return not not value, err
+end
 
 do
 
@@ -13949,7 +14045,7 @@ do
       end
    end
 
-   lexer.lex = function(input, filename)
+   local function lex(input, filename, opts, is_lua)
       local tokens = {}
 
       local state = "any"
@@ -13970,6 +14066,16 @@ do
       local in_token = false
 
       local comments
+      local strict_nil = not opts or opts.strict_nil ~= false
+
+
+
+
+
+      local conditional_end
+      if is_lua == nil then
+         is_lua = filename and filename:lower():match("%.lua$") ~= nil
+      end
 
       local function begin_token()
          tx = x
@@ -14059,6 +14165,84 @@ do
          }
       end
 
+      local function skip_through(last)
+         local newline = input:find("\n", i, true)
+         while newline and newline <= last do
+            y = y + 1
+            i = newline
+            x = 0
+            newline = input:find("\n", i + 1, true)
+         end
+         x = x + last - i
+         i = last
+      end
+
+      local function open_conditional(level)
+         local header = input:match("^%s*()#if%f[^%w_]", i + 1)
+         if not header then return false end
+
+         local function fail(msg)
+            local line = ty
+            local column = tx + header - ti
+            for newline in input:sub(ti, header - 1):gmatch("\n()") do
+               line = line + 1
+               column = header - ti - newline + 2
+            end
+            table.insert(errs, { filename = filename, y = line, x = column, msg = msg })
+         end
+
+         local close, last = input:find("]" .. string.rep("=", level) .. "]", i + 1, true)
+         if not close or (conditional_end and last >= conditional_end.first) then return false end
+         local header_end = input:find("\n", header, true)
+         local footer = header_end and header_end < close and
+         input:sub(header_end, close - 1):match("\n()[ \t]*#end%s*$")
+         local condition = header_end and header_end < close and
+         input:sub(header + 3, header_end - 1):match("^[ \t]+(.-)[ \t]+then[ \t\r]*$")
+         local enabled = false
+         if not condition or condition == "" then
+            fail("expected '#if <condition> then'")
+         elseif not footer then
+            fail("expected '#end' before the conditional comment closes")
+         else
+            local condition_tokens, condition_errors = lex(condition, filename, nil, true)
+            local message
+            if #condition_errors > 0 then
+               message = condition_errors[1].msg
+            else
+               enabled, message = conditional_value(condition_tokens, opts and opts.defines, strict_nil)
+            end
+            if message then
+               fail("invalid conditional compilation condition: " .. message)
+               enabled = false
+            end
+         end
+
+         if enabled then
+            conditional_end = {
+               first = header_end + footer - 1,
+               last = last,
+               parent = conditional_end,
+            }
+            skip_through(header_end - 1)
+         else
+            add_comment(input:sub(ti, last))
+            skip_through(last)
+         end
+         drop_token()
+         return true
+      end
+
+      local function update_strict_nil()
+         if nt >= 3 and tokens[nt - 2].tk == "--#pragma" and tokens[nt - 1].tk == "strict_nil" and
+            tokens[nt - 2].y == tokens[nt].y then
+            if tokens[nt].tk == "on" then
+               strict_nil = true
+            elseif tokens[nt].tk == "off" then
+               strict_nil = false
+            end
+         end
+      end
+
       local bom = "\239\187\191"
       local bom_len = bom:len()
       if input:sub(1, bom_len) == bom then
@@ -14116,7 +14300,17 @@ do
                end
             end
          end
-         if extension_op then
+         if conditional_end and i == conditional_end.first then
+            if state ~= "any" then
+               end_token_prev("$ERR$")
+               add_syntax_error("unfinished token in conditional compilation block")
+            end
+            skip_through(conditional_end.last)
+            conditional_end = conditional_end.parent
+            lc_open_lvl = 0
+            lc_close_lvl = 0
+            state = "any"
+         elseif extension_op then
             begin_token()
             end_token("op", extension_op)
             i = i + #extension_op - 1
@@ -14332,6 +14526,7 @@ do
          elseif state == "pragma word" then
             if not lex_word[c] then
                end_token_prev("pragma_identifier")
+               update_strict_nil()
                fwd = false
                state = (c == "\n") and "any" or "pragma any"
             end
@@ -14353,7 +14548,12 @@ do
             end
          elseif state == "got --[" then
             if c == "[" then
-               state = "comment long"
+               if not is_lua and open_conditional(lc_open_lvl) then
+                  state = "any"
+                  lc_open_lvl = 0
+               else
+                  state = "comment long"
+               end
             elseif c == "=" then
                lc_open_lvl = lc_open_lvl + 1
             else
@@ -14552,6 +14752,8 @@ do
 
       return tokens, errs
    end
+
+   lexer.lex = lex
 end
 
 lexer.get_token_at = function(tks, y, x)
@@ -15606,8 +15808,7 @@ local package_loader = {}
 
 
 
-local function tl_package_loader(module_name)
-   local env = package_loader.env
+local function load_module(module_name, env)
    if not env then
       package_loader.env = environment.for_runtime()
       env = package_loader.env
@@ -15642,9 +15843,11 @@ local function tl_package_loader(module_name)
    end, found_filename
 end
 
-function package_loader.install_loader()
+function package_loader.install_loader(env)
    local searchers = package.searchers or package.loaders
-   table.insert(searchers, 2, tl_package_loader)
+   table.insert(searchers, 2, function(module_name)
+      return load_module(module_name, env or package_loader.env)
+   end)
 end
 
 return package_loader
@@ -15701,8 +15904,8 @@ parser.node_is_require_call = ast.node_is_require_call
 parser.node_at = ast.node_at
 parser.lang_heuristic = ast.lang_heuristic
 
-function parser.parse(input, filename, parse_lang)
-   local block_ast, read_errs = reader.read(input, filename, parse_lang)
+function parser.parse(input, filename, parse_lang, conditional)
+   local block_ast, read_errs = reader.read(input, filename, parse_lang, nil, nil, nil, nil, conditional)
    read_errs = read_errs or {}
 
    local ast_nodes, parse_errs, required = ast.parse_blocks(block_ast, filename, parse_lang)
@@ -15713,9 +15916,9 @@ function parser.parse(input, filename, parse_lang)
    return ast_nodes, read_errs, required
 end
 
-function parser.parse_program(tokens, errs, filename, parse_lang)
+function parser.parse_program(tokens, errs, filename, parse_lang, conditional)
    errs = errs or {}
-   local block_ast = reader.read_program(tokens, errs, filename, parse_lang)
+   local block_ast = reader.read_program(tokens, errs, filename, parse_lang, nil, nil, nil, nil, conditional)
    local ast_nodes, parse_errs, required = ast.parse_program_block(block_ast, filename or "input", parse_lang)
    for _, e in ipairs(parse_errs) do
       table.insert(errs, e)
@@ -15969,6 +16172,7 @@ local function path_block_to_string(node)
    end
    return nil
 end
+
 
 
 
@@ -16726,7 +16930,7 @@ local function load_module_macro_info(ps, module_name)
    end
 
    local lang = lang_heuristic(found, code)
-   local mod_node, mod_errs = reader.read(code, found, lang, true, true)
+   local mod_node, mod_errs = reader.read(code, found, lang, true, true, nil, nil, ps.conditional)
    for _, e in ipairs(mod_errs) do
       table.insert(ps.errs, e)
    end
@@ -17072,7 +17276,7 @@ local function read_macro_args_with_sig(ps, i, sig)
                local eof_prev = ps2.tokens[math.max(ii, jend - 1)]
                slice[nt] = { x = eof_prev.x, y = eof_prev.y, tk = "$EOF$", kind = "$EOF$" }
                local errs2 = {}
-               local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
+               local block_ast = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true, nil, nil, ps2.conditional)
                if #errs2 == 0 and block_ast then
                   if can_split_on_comma and
                      block_ast.kind == "statements" and
@@ -17132,7 +17336,7 @@ local function read_macro_args_with_sig(ps, i, sig)
                local eof_prev = ps2.tokens[math.max(ii, j - 1)]
                slice[nt] = { x = eof_prev.x, y = eof_prev.y, tk = "$EOF$", kind = "$EOF$" }
                local errs2 = {}
-               local block_fallback = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true)
+               local block_fallback = reader.read_program(slice, errs2, ps2.filename, ps2.read_lang, true, true, nil, nil, ps2.conditional)
                for _, e in ipairs(errs2) do table.insert(ps2.errs, e) end
                best_block = block_fallback
                best_j = j
@@ -17600,7 +17804,7 @@ read_macro_quote = function(ps, i)
 
       local kept_code = table.concat(kept_lines, "\n")
       local parsed_block
-      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
+      parsed_block, errs = reader.read(kept_code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true, ps.conditional)
 
 
       if #splices > 0 and parsed_block and parsed_block.kind == "statements" then
@@ -17617,7 +17821,7 @@ read_macro_quote = function(ps, i)
       end
    else
 
-      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true)
+      local wrapped, werrs = reader.read("return " .. code, ps.filename, ps.read_lang, true, true, ps.custom_operators, true, ps.conditional)
       if #werrs == 0 then
          local ret = wrapped[1]
          if ret and ret.kind == "return" and ret[BLOCK_INDEXES.RETURN.EXPS] then
@@ -19562,7 +19766,14 @@ local function read_pragma(ps, i)
       return fail(ps, i, "expected pragma value")
    end
    pragma[BLOCK_INDEXES.PRAGMA.VALUE] = new_block(ps, i, "identifier")
-   pragma[BLOCK_INDEXES.PRAGMA.VALUE].tk = ps.tokens[i].tk
+   local value = ps.tokens[i].tk
+   pragma[BLOCK_INDEXES.PRAGMA.VALUE].tk = value
+   if pragma[BLOCK_INDEXES.PRAGMA.KEY].tk == "strict_nil" and (value == "on" or value == "off") then
+      ps.conditional = {
+         defines = ps.conditional and ps.conditional.defines,
+         strict_nil = value == "on",
+      }
+   end
    i = i + 1
 
    return i, pragma
@@ -19695,7 +19906,7 @@ read_statements = function(ps, i, toplevel)
    return i, node
 end
 
-function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    if read_program_depth == 0 then
       module_macro_cache = {}
       module_macro_missing = {}
@@ -19714,6 +19925,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       errs = errs,
       filename = filename,
       read_lang = read_lang,
+      conditional = conditional,
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
       in_macro_quote = in_macro_quote or false,
@@ -19804,7 +20016,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
 
    if not skip_macro_expand and #errs == 0 then
       local function parse_expression(source)
-         local program, parse_errors = reader.read("return " .. source, filename, lang, false, true)
+         local program, parse_errors = reader.read("return " .. source, filename, lang, false, true, nil, nil, ps.conditional)
          if #parse_errors > 0 then error("invalid expression: " .. parse_errors[1].msg, 0) end
          if #program ~= 1 or program[1].kind ~= "return" then
             error("expected a single expression", 0)
@@ -19882,11 +20094,11 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    return node
 end
 
-function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+function reader.read(input, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    filename = filename or "input"
    read_lang = read_lang or lang_heuristic(filename, input)
-   local tokens, errs = lexer.lex(input, filename)
-   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote)
+   local tokens, errs = lexer.lex(input, filename, conditional, read_lang == "lua")
+   local node = reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars, skip_macro_expand, operator_context, in_macro_quote, conditional)
    return node, errs
 end
 
