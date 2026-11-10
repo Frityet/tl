@@ -1,4 +1,5 @@
 --#pragma strict_nil off
+local type c_ffi = require("teal.gen.c_ffi")
 
 local reader = require("teal.block")
 local type Block = reader.Block
@@ -94,6 +95,7 @@ local enum NodeKind
    "macro_invocation"
    "interface"
    "pragma"
+   "ffi_cdef"
    "error_node"
 end
 local enum ParseTypeListMode
@@ -233,6 +235,29 @@ local record Node
    -- pragma
    pkey: string
    pvalue: string
+
+   strict_receiver: boolean
+   type_require: boolean
+   ffi_top_level: boolean
+   lua_ffi: boolean
+   lua_cdef: c_ffi.DeclarationBatch
+
+   record FfiCall
+      first: integer
+      promotions: string
+      repeat_last: boolean
+   end
+
+   ffi_call: FfiCall
+   native_builtin: string
+   native_module: Node
+   native_module_type: Type
+   native_module_returns: boolean
+   native_type: Type
+   native_return_type: Type
+   native_cdef: boolean
+   native_ffi: c_ffi.State
+   native_checked: boolean
 
    opt: boolean
 
@@ -1569,6 +1594,10 @@ parse_fns.record_function = function(state: ParseState, block: Block): Node
    end
 
    return node
+end
+
+parse_fns.ffi_cdef = function(state: ParseState, block: Block): Node
+   return new_node(state, block)
 end
 
 parse_fns.pragma = function(state: ParseState, block: Block): Node

@@ -63,7 +63,8 @@ function loader.load(teal_code: string, chunkname?: string, mode?: LoadMode, ...
 
    lua_compat.apply(result)
 
-   local lua_code = lua_generator.generate(result.ast, package_loader.env.opts.gen_target, lua_generator.fast_opts)
+   local lua_code, gen_error = lua_generator.generate(result.ast, package_loader.env.opts.gen_target, lua_generator.fast_opts)
+   if not lua_code then return nil, gen_error end
 
    return load(lua_code, chunkname, mode, ...)
 end

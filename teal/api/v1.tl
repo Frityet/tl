@@ -130,7 +130,7 @@ v1.pretty_print_ast = function(ast: Node, gen_target?: v1.TargetMode, mode?: boo
       opts = lua_generator.default_opts
    end
 
-   return lua_generator.generate(ast, gen_target, opts)
+   return v2.generate(ast as v2.Node, gen_target, opts)
 end
 
 v1.process = function(filename: string, env?: Env, _module_name?: string, fd?: FILE): Result, string

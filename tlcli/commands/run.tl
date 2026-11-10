@@ -29,7 +29,9 @@ local function type_check_and_load(tlconfig: TlConfig, filename: string): functi
       os.exit(1)
    end
 
-   local chunk, chunk_err = load(module:gen(), "@" .. filename)
+   local code, gen_error = module:gen()
+   if not code then common.die(gen_error) end
+   local chunk, chunk_err = load(code, "@" .. filename)
    if chunk_err then
       common.die("Internal Compiler Error: Teal generator produced invalid Lua. " ..
                  "Please report a bug at https://github.com/teal-language/tl\n\n" .. tostring(chunk_err))
@@ -38,6 +40,9 @@ local function type_check_and_load(tlconfig: TlConfig, filename: string): functi
 end
 
 return function(tlconfig: TlConfig, args: Args): any
+   if tlconfig["gen_target"] == "c" then
+      common.die("the C target requires tl gen followed by a C compiler")
+   end
    -- the script is loaded into the Lua running tl, so target that version
    local runtime_target = teal.runtime_target()
    if runtime_target and not tlconfig["gen_target"] then

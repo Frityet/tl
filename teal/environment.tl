@@ -56,7 +56,12 @@ local record environment
       no_stdlib: boolean
    end
 
-   type RequireModuleFn = function(env: Env, module_name: string): Type, string
+   enum CheckMode
+      "type_import"
+      "native_import"
+   end
+
+   type RequireModuleFn = function(env: Env, module_name: string, native_from?: string): Type, string, string
 
    record Env
       loaded: {string:Result}
@@ -70,6 +75,8 @@ local record environment
       globals: {string:Variable}
       modules: {string:Type}
       module_filenames: {string:string}
+      native_files: {string:Result}
+      native_loading: {string:boolean}
       require_module: RequireModuleFn
    end
 
@@ -108,6 +115,8 @@ local function empty_environment(): Env
    return {
       modules = {},
       module_filenames = {},
+      native_files = {},
+      native_loading = {},
       loaded = {},
       loaded_order = {},
       globals = {},
@@ -288,10 +297,36 @@ function environment.load_module(env: Env, name: string): boolean, string
    return true
 end
 
-function environment.register(env: Env, filename: string, result: Result)
-   env.loaded[filename] = result
+-- Normalize module paths before using them as cache and cycle keys.
+function environment.native_path_key(filename: string): string
+   local path = filename:gsub("\\", "/")
+   if path:sub(1, 1) ~= "/" and not path:match("^%a:/") then
+      local ok, fs = pcall(require, "lfs")
+      local cwd = ok and (fs as {string:function():string}).currentdir() or os.getenv("PWD")
+      if cwd then path = cwd:gsub("\\", "/") .. "/" .. path end
+   end
+   local absolute = path:sub(1, 1) == "/"
+   local parts: {string} = {}
+   for part in path:gmatch("[^/]+") do
+      if part == ".." then
+         local last = parts[#parts]
+         if last and last ~= ".." and not last:match("^%a:$") then
+            table.remove(parts)
+         elseif not absolute and not (last and last:match("^%a:$")) then
+            table.insert(parts, part)
+         end
+      elseif part ~= "." then
+         table.insert(parts, part)
+      end
+   end
+   return (absolute and "/" or "") .. table.concat(parts, "/")
+end
 
-   table.insert(env.loaded_order, filename)
+function environment.register(env: Env, filename: string, result: Result)
+   if env.opts.gen_target ~= "c" or not env.loaded[filename] then
+      table.insert(env.loaded_order, filename)
+   end
+   env.loaded[filename] = result
 end
 
 function environment.register_failed(env: Env, filename: string, syntax_errors: {Error}): Result

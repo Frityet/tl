@@ -11,9 +11,10 @@ local environment = require("teal.environment")
 local input = {}
 
 
-function input.check(env, filename, code)
-   if env.loaded and env.loaded[filename] then
-      return env.loaded[filename]
+function input.check(env, filename, code, mode)
+   local cached = env.loaded and env.loaded[filename]
+   if cached and (mode ~= "native_import" or not cached.ast or cached.ast.native_checked ~= nil) then
+      return cached
    end
 
    local program, syntax_errors = parser.parse(code, filename)
@@ -22,7 +23,7 @@ function input.check(env, filename, code)
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program, env, filename)
+   local result = check.check(program, env, filename, mode)
 
    result.syntax_errors = syntax_errors
 

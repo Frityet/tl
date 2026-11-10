@@ -144,6 +144,7 @@ local block = { Block = {} }
 
 
 
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -423,6 +424,7 @@ local BLOCK_KINDS = {
    ["interface"] = true,
    ["enum"] = true,
    ["pragma"] = true,
+   ["ffi_cdef"] = true,
    ["error_block"] = true,
    ["userdata"] = true,
 

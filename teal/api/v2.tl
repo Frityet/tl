@@ -4,6 +4,7 @@ local type environment = require("teal.environment")
 local type errors = require("teal.errors")
 local type lexer = require("teal.lexer")
 local type loader = require("teal.loader")
+local c_generator = require("teal.gen.c_generator")
 local type lua_generator = require("teal.gen.lua_generator")
 local type lua_compat = require("teal.gen.lua_compat")
 local type package_loader = require("teal.package_loader")
@@ -19,6 +20,7 @@ local type type_reporter = require("teal.type_reporter")
 --------------------------------------------------------------------------------
 
 local record v2
+   type COutput = c_generator.COutput
    type Env = environment.Env
    type Error = errors.Error
    type Feat = environment.Feat
@@ -60,6 +62,7 @@ local record v2
    check_file: function(filename: string, env?: Env, fd?: FILE): (Result, string)
    check: function(Node, ? string, ? CheckOptions, ? Env): Result, string
    check_string: function(teal_code: string, env?: Env, filename?: string, parse_lang?: ParseLang): Result
+   generate_c: function(ast: Node, directory?: string): COutput, string
    generate: function(ast: Node, gen_target: GenTarget, opts?: GenerateOptions): string, string
    gen: function(string, ? Env, ? GenerateOptions): string, Result
    get_token_at: function(tks: {Token}, y: integer, x: integer): string
@@ -177,11 +180,17 @@ v2.gen = function(teal_code: string, env?: Env, opts?: GenerateOptions, parse_la
       return nil, result
    end
    lua_compat.apply(result)
-   local code = lua_generator.generate(result.ast, env.opts.gen_target, opts)
+   local code, gen_error = v2.generate(result.ast as v2.Node, env.opts.gen_target, opts)
+   result.gen_error = gen_error
    return code, result
 end
 
+v2.generate_c = function(ast: Node, directory?: string): v2.COutput, string
+   return c_generator.generate_program(ast as parser.Node, directory)
+end
+
 v2.generate = function(ast: Node, gen_target: GenTarget, opts?: GenerateOptions): string, string
+   if gen_target == "c" then return c_generator.generate(ast as parser.Node) end
    return lua_generator.generate(ast as parser.Node, gen_target, opts)
 end
 

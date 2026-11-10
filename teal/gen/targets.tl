@@ -1,6 +1,7 @@
 --#pragma strict_nil off
 local record targets
    enum GenTarget
+      "c"
       "luajit"
       "5.1"
       "5.3"

@@ -5,6 +5,7 @@
 local type attributes = require("teal.attributes")
 local type Attribute = attributes.Attribute
 
+local lua_ffi = require("teal.gen.lua_ffi")
 local targets = require("teal.gen.targets")
 local type GenTarget = targets.GenTarget
 
@@ -94,8 +95,11 @@ lua_generator.fast_opts = {
    preserve_hashbang = false,
 }
 
-function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options): string
+function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options): string, string
    local indent = 0
+   local ffi_name = ast.lua_ffi and lua_ffi.local_name(ast)
+   local ffi_defined = false
+   local gen_error: string
 
    opts = opts or lua_generator.default_opts
 
@@ -362,6 +366,21 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
             end
             return out
          end
+      },
+      ["ffi_cdef"] = {
+         after = function(_: nil, node: Node): Output
+            local out: Output = { y = node.y, h = 0 }
+            if not node.lua_cdef or not ffi_name then
+               gen_error = ("%s:%d:%d: ffi.cdef! requires a checked declaration"):format(node.f, node.y, node.x)
+               return out
+            end
+            if not ffi_defined then
+               add_string(out, "local C = " .. ffi_name .. ".C; ")
+               ffi_defined = true
+            end
+            add_string(out, lua_ffi.declare(ffi_name, node.lua_cdef))
+            return out
+         end,
       },
       ["local_declaration"] = {
          after = function(_: nil, node: Node, children: {Output}): Output
@@ -656,8 +675,15 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
                table.insert(children[1], "?.")
             end
             if node.op.op == "@funcall" then
-               add_child(out, children[1], "", indent)
-               table.insert(out, "(")
+               if ffi_name and node.ffi_call then
+                  local call = node.ffi_call
+                  add_string(out, ffi_name .. ".call(")
+                  add_child(out, children[1], "", indent)
+                  add_string(out, (", %d, %q, %s, "):format(call.first, call.promotions, tostring(not not call.repeat_last)))
+               else
+                  add_child(out, children[1], "", indent)
+                  table.insert(out, "(")
+               end
                add_child(out, children[3], "", indent)
                table.insert(out, ")")
             elseif node.op.op == "@index" then
@@ -676,7 +702,12 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
                while ct is NominalType and ct.resolved do
                   ct = ct.resolved
                end
-               if ct.typename == "integer" then
+               if ct is RecordType and ct.native_pointer then
+                  local istype = ffi_name and ffi_name .. ".istype" or "require('ffi').istype"
+                  add_string(out, istype .. "(" .. string.format("%q", ct.native_pointer) .. ", ")
+                  add_child(out, children[1], "", indent)
+                  table.insert(out, ")")
+               elseif ct.typename == "integer" then
                   table.insert(out, "math.type(")
                   add_child(out, children[1], "", indent)
                   table.insert(out, ") == \"integer\"")
@@ -909,6 +940,7 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
       return out
    end
    local out = traversal.traverse_nodes(nil, ast, visit_node, visit_type)
+   if gen_error then return nil, gen_error end
 
    local code: Output
    if opts.preserve_newlines then
@@ -917,7 +949,17 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
    else
       code = out
    end
-   return (concat_output(code):gsub(" *\n", "\n"))
+   local output = concat_output(code):gsub(" *\n", "\n")
+   if ffi_name then
+      local preamble = lua_ffi.preamble(ffi_name)
+      if opts.preserve_hashbang and ast.hashbang then
+         local rest = output:sub(#ast.hashbang + 1):gsub("^\n", "", 1)
+         output = ast.hashbang .. "\n" .. preamble .. rest
+      else
+         output = preamble .. output
+      end
+   end
+   return output
 end
 
 return lua_generator

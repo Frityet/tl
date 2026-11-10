@@ -195,6 +195,7 @@ local record types
       meta_field_comments: {string: {{Comment}}}
       meta_field_locations: {string: Where}
       is_userdata: boolean
+      native_pointer: string
    end
 
    record RecordType
@@ -316,6 +317,7 @@ local record types
       rets: TupleType
       macroexp: Node
       special_function_handler: SpecialFunctionName -- special handling for format strings etc
+      ffi_fixed_params: integer -- set only for a variadic C function
    end
 
    interface AggregateType
@@ -1020,6 +1022,7 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          copy.args, same = resolve(t.args, same) as (TupleType, boolean)
          copy.rets, same = resolve(t.rets, same) as (TupleType, boolean)
          copy.special_function_handler = t.special_function_handler
+         copy.ffi_fixed_params = t.ffi_fixed_params
       elseif t is RecordLikeType then
          assert(copy is RecordType or copy is InterfaceType)
          copy.declname = t.declname
@@ -1045,6 +1048,7 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          end
 
          copy.is_userdata = t.is_userdata
+         copy.native_pointer = t.native_pointer
 
          copy.fields = {}
          copy.field_order = {}
@@ -1509,6 +1513,7 @@ function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
          copy.args = drop(typ.args, in_typedecl) as TupleType
          copy.rets = drop(typ.rets, in_typedecl) as TupleType
          copy.special_function_handler = typ.special_function_handler
+         copy.ffi_fixed_params = typ.ffi_fixed_params
       elseif typ is RecordLikeType then
          assert(copy is RecordType or copy is InterfaceType)
          copy.declname = typ.declname
@@ -1523,6 +1528,7 @@ function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
             end
          end
          copy.is_userdata = typ.is_userdata
+         copy.native_pointer = typ.native_pointer
          copy.fields = {}
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do

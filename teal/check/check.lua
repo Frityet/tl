@@ -1,6 +1,7 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 local context = require("teal.check.context")
 local Context = context.Context
+local c_ffi = require("teal.gen.c_ffi")
 
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
@@ -127,10 +128,47 @@ local function patch_visitors(my_visit_node,
    return my_visit_node, my_visit_type
 end
 
-function check.check(ast, env, filename)
+function check.check(ast, env, filename, mode)
    assert(filename)
 
-   local self = Context.new(env, filename)
+   local strict_pragma
+   for _, stmt in ipairs(ast) do
+      if stmt.kind == "pragma" then
+         if stmt.pkey == "strict" and stmt.pvalue == "on" then
+            strict_pragma = stmt
+            break
+         end
+      else
+         break
+      end
+   end
+   local native = env.opts.gen_target == "c" and mode ~= "type_import"
+   local implicit_strict = native and mode == "native_import" and ast or nil
+   local self = Context.new(env, filename, strict_pragma or implicit_strict)
+   local native_key
+   ast.native_checked = nil
+   ast.native_ffi = nil
+   ast.native_module_type = nil
+   ast.native_module_returns = nil
+   ast.lua_ffi = nil
+   if native then
+      if not strict_pragma and not implicit_strict then
+         self.errs:add(ast, "the C generation target requires '--#pragma strict on'")
+      end
+      if filename:match("%.lua$") or filename:match("%.d%.tl$") then
+         self.errs:add(ast, "the C generation target expects a Teal source file")
+      end
+      self.native_ffi = c_ffi.new(ast)
+      ast.native_ffi = self.native_ffi
+      native_key = environment.native_path_key(filename)
+      env.native_loading[native_key] = true
+   end
+   for _, stmt in ipairs(ast) do
+      if self.native_ffi or stmt.kind == "ffi_cdef" then
+         stmt.ffi_top_level = true
+         if not self.native_ffi then self.lua_ffi = self.lua_ffi or c_ffi.new(ast) end
+      end
+   end
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
@@ -159,11 +197,22 @@ function check.check(ast, env, filename)
    self.errs:check_var_usage(global_scope)
 
    errors.clear_redundant_errors(self.errs.errors)
+   local module_type = self.module_type or a_type(ast, "boolean", {})
+   if native_key then
+      env.native_loading[native_key] = nil
+      if mode == "native_import" and module_type.typename == "nil" then
+         module_type = a_type(ast, "boolean", {})
+      end
+      ast.native_module_type = module_type
+      ast.native_module_returns = context.block_returns(ast)
+      ast.native_checked = #self.errs.errors == 0
+   end
+   ast.lua_ffi = self.needs_lua_ffi
 
    local result = {
       ast = ast,
       env = env,
-      type = self.module_type or a_type(ast, "boolean", {}),
+      type = module_type,
       filename = filename,
       warnings = self.errs.warnings,
       type_errors = self.errs.errors,
@@ -171,6 +220,7 @@ function check.check(ast, env, filename)
       needs_compat = self.needs_compat,
    }
 
+   if native_key then env.native_files[native_key] = result end
    environment.register(env, filename, result)
 
    if self.collector then

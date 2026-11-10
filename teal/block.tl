@@ -66,6 +66,7 @@ local record block
       "interface"
       "enum"
       "pragma"
+      "ffi_cdef"
       "error_block"
       "userdata"
 
@@ -423,6 +424,7 @@ local BLOCK_KINDS <total>: {block.BlockKind: boolean} = {
    ["interface"] = true,
    ["enum"] = true,
    ["pragma"] = true,
+   ["ffi_cdef"] = true,
    ["error_block"] = true,
    ["userdata"] = true,
 

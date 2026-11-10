@@ -9,7 +9,7 @@ local type Type = types.Type
 local type TypeDeclType = types.TypeDeclType
 local a_type = types.a_type
 
-local type environment = require("teal.environment")
+local environment = require("teal.environment")
 local type Env = environment.Env
 local type Result = environment.Result
 
@@ -106,7 +106,7 @@ function require_file.search_and_load(env: Env, module_name: string, extension_s
    local w = { f = found, x = 1, y = 1 }
    env.modules[module_name] = a_circular_require(w)
 
-   local found_result = input.check(env, found, code)
+   local found_result = input.check(env, found, code, "type_import")
    if not found_result then
       return nil, nil, tried
    end
@@ -116,7 +116,31 @@ function require_file.search_and_load(env: Env, module_name: string, extension_s
    return found_result, found
 end
 
-function require_file.require_module(env: Env, module_name: string): Type, string
+local function require_native(env: Env, module_name: string, from: string): Type, string, string
+   if not module_name:match("^[%w_][%w_.]*$") or module_name:find("..", 1, true) or module_name:sub(-1) == "." then
+      return nil, nil, "the C target expects a dotted Teal module name"
+   end
+   local dir = from:match("^(.*[/\\])") or "./"
+   local path = dir .. "?.lua;" .. (os.getenv("TL_PATH") or package.path)
+   local found, code = search_for(module_name, ".tl", path, {})
+   if not found or found:match("%.d%.tl$") then
+      return nil, nil, "module '" .. module_name .. "' needs a .tl implementation for the C target"
+   end
+
+   local key = environment.native_path_key(found)
+   if env.native_loading[key] then
+      return nil, nil, "circular C module import '" .. module_name .. "'"
+   end
+   local result = env.native_files[key] or input.check(env, found, code, "native_import")
+   local err = result.syntax_errors and result.syntax_errors[1] or result.type_errors[1]
+   if err then
+      return nil, nil, ("%s:%d:%d: %s"):format(err.filename, err.y, err.x, err.msg)
+   end
+   return result.type, result.filename
+end
+
+function require_file.require_module(env: Env, module_name: string, native_from?: string): Type, string, string
+   if native_from then return require_native(env, module_name, native_from) end
    local mod = env.modules[module_name]
    if mod then
       return mod, env.module_filenames[module_name]

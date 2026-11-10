@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local os = _tl_compat and _tl_compat.os or os; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 local VERSION = "0.25.0-alpha+dev"
 
@@ -90,6 +90,13 @@ local environment = { EnvOptions = {}, Env = {}, Result = {} }
 
 
 
+
+
+
+
+
+
+
 environment.VERSION = VERSION
 environment.DEFAULT_GEN_COMPAT = "optional"
 environment.DEFAULT_GEN_TARGET = "5.3"
@@ -108,6 +115,8 @@ local function empty_environment()
    return {
       modules = {},
       module_filenames = {},
+      native_files = {},
+      native_loading = {},
       loaded = {},
       loaded_order = {},
       globals = {},
@@ -288,10 +297,36 @@ function environment.load_module(env, name)
    return true
 end
 
-function environment.register(env, filename, result)
-   env.loaded[filename] = result
 
-   table.insert(env.loaded_order, filename)
+function environment.native_path_key(filename)
+   local path = filename:gsub("\\", "/")
+   if path:sub(1, 1) ~= "/" and not path:match("^%a:/") then
+      local ok, fs = pcall(require, "lfs")
+      local cwd = ok and (fs).currentdir() or os.getenv("PWD")
+      if cwd then path = cwd:gsub("\\", "/") .. "/" .. path end
+   end
+   local absolute = path:sub(1, 1) == "/"
+   local parts = {}
+   for part in path:gmatch("[^/]+") do
+      if part == ".." then
+         local last = parts[#parts]
+         if last and last ~= ".." and not last:match("^%a:$") then
+            table.remove(parts)
+         elseif not absolute and not (last and last:match("^%a:$")) then
+            table.insert(parts, part)
+         end
+      elseif part ~= "." then
+         table.insert(parts, part)
+      end
+   end
+   return (absolute and "/" or "") .. table.concat(parts, "/")
+end
+
+function environment.register(env, filename, result)
+   if env.opts.gen_target ~= "c" or not env.loaded[filename] then
+      table.insert(env.loaded_order, filename)
+   end
+   env.loaded[filename] = result
 end
 
 function environment.register_failed(env, filename, syntax_errors)

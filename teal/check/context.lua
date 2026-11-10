@@ -11,6 +11,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
 
@@ -177,7 +178,80 @@ local context = { Context = {} }
 
 
 
+
+
+
+
 local Context = context.Context
+
+
+
+function Context:contains_dynamic(t, receiver)
+   local seen = {}
+   local function has_dynamic(typ)
+      if not typ or seen[typ] then return false end
+      seen[typ] = true
+      if typ.typename == "any" or typ.typename == "unknown" then return true end
+      if typ.typename == "tuple" or typ.typename == "union" then
+         local members = typ.typename == "tuple" and typ.tuple or (typ).types
+         for _, member in ipairs(members) do
+            if has_dynamic(member) then return true end
+         end
+      elseif typ.typename == "typedecl" then
+         return has_dynamic(typ.def)
+      elseif typ.typename == "nominal" then
+         for _, typearg in ipairs(typ.typevals or {}) do
+            if has_dynamic(typearg) then return true end
+         end
+         return has_dynamic(typ.resolved or (typ.found and typ.found.def))
+      elseif typ.typename == "generic" then
+         for _, typearg in ipairs(typ.typeargs) do
+            if has_dynamic(typearg.constraint) then return true end
+         end
+         return has_dynamic(typ.t)
+      elseif typ.typename == "typevar" or typ.typename == "typearg" then
+         return has_dynamic(typ.constraint)
+      elseif not receiver then
+         if typ.typename == "function" then
+            return has_dynamic(typ.args) or has_dynamic(typ.rets)
+         elseif typ.typename == "map" then
+            return has_dynamic(typ.keys) or has_dynamic(typ.values)
+         elseif typ.fields then
+            for _, fields in ipairs({ typ.fields, typ.meta_fields or {} }) do
+               for _, member in pairs(fields) do
+                  if has_dynamic(member) then return true end
+               end
+            end
+            for _, member in ipairs(typ.types or {}) do
+               if has_dynamic(member) then return true end
+            end
+            return has_dynamic(typ.elements)
+         elseif typ.typename == "array" then
+            return has_dynamic(typ.elements)
+         elseif typ.types then
+            for _, member in ipairs(typ.types) do
+               if has_dynamic(member) then return true end
+            end
+         end
+      end
+      return false
+   end
+   return has_dynamic(t)
+end
+
+function context.block_returns(body)
+   local last = body[#body]
+   if not last then return false end
+   if last.kind == "return" then return true end
+   if last.kind == "do" then return context.block_returns(last.body) end
+   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
+      for _, branch in ipairs(last.if_blocks) do
+         if not context.block_returns(branch.body) then return false end
+      end
+      return true
+   end
+   return false
+end
 
 
 
@@ -1921,6 +1995,20 @@ function Context:add_function_definition_for_recursion(node, fnargs, feat_arity,
 end
 
 function Context:end_function_scope(node)
+   local rets = node.rets
+   if self.strict_pragma and node.body and rets and #rets.tuple > 0 and
+      not context.block_returns(node.body) then
+      local nil_type = a_type(node, "nil", {})
+      for _, ret in ipairs(rets.tuple) do
+         if not self:is_a(nil_type, ret) then
+            self.errs:add(node, "strict mode: function may end without returning a non-nil result")
+            break
+         end
+      end
+   end
+   if self.native_ffi and rets and rets.tuple[1] then
+      node.native_return_type = self:to_structural(rets.tuple[1])
+   end
    self.errs:fail_unresolved_labels(self.st[#self.st])
    self:end_scope(node)
 end
@@ -2307,6 +2395,9 @@ function Context:determine_declaration_type(var, node, infertypes, i)
          if not ok then
             self.errs:add_prefixing(w, errs, self.errs:get_context(node, name))
          end
+      elseif self.strict_pragma and not self:is_a(a_type(var, "nil", {}), decltype) then
+         self.errs:add(var, "strict mode: non-nil variable '" .. name .. "' requires an initializer")
+         ok = false
       end
    else
       if infertype then
@@ -2436,6 +2527,7 @@ do
 
    local function recurse_type_declaration(self, n)
       if n.kind == "op" then
+         if self.native_ffi or self.strict_pragma then n.type_require = true end
 
          if n.op.op == "." then
             local ty = recurse_type_declaration(self, n.e1)
@@ -2510,10 +2602,11 @@ do
       end
    end
 
-   function Context.new(env, filename)
+   function Context.new(env, filename, strict_pragma)
       local self = {
          filename = filename,
          env = env,
+         strict_pragma = strict_pragma,
          st = {
             {
                vars = env.globals,
@@ -2536,9 +2629,9 @@ do
 
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t).def
 
-      self.feat_arity = set_feat(env.opts.feat_arity, true)
-      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
-      self.feat_lax = not not filename:match("%.lua$")
+      self.feat_arity = strict_pragma ~= nil or set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = strict_pragma ~= nil or set_feat(env.opts.feat_strict_nil, true)
+      self.feat_lax = not strict_pragma and not not filename:match("%.lua$")
 
       if self.feat_lax then
          self.feat_arity = false

@@ -1,4 +1,5 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string
+local c_generator = require("teal.gen.c_generator")
 local check = require("teal.check.check")
 local environment = require("teal.environment")
 
@@ -15,6 +16,9 @@ local targets = require("teal.gen.targets")
 local util = require("teal.util")
 
 local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, ParseTree = {}, Module = {}, CompilerOptions = {} }
+
+
+
 
 
 
@@ -290,7 +294,8 @@ function Input:gen(opts)
    if #check_error.syntax_errors > 0 then
       return nil, module, check_error
    end
-   local output = module:gen(opts)
+   local output, gen_error = module:gen(opts)
+   check_error.gen_error = gen_error
    return output, module, check_error
 end
 
@@ -352,8 +357,22 @@ end
 
 
 
+function Module:gen_c(directory)
+   if self.parse_tree.syntax_errors and #self.parse_tree.syntax_errors > 0 then
+      return nil, "cannot generate C with syntax errors"
+   end
+   return c_generator.generate_program(self.parse_tree.ast, directory)
+end
+
 function Module:gen(opts)
-   return lua_generator.generate(self.parse_tree.ast, self.env.opts.gen_target, opts)
+   local ast = self.parse_tree.ast
+   if self.env.opts.gen_target == "c" then
+      if self.parse_tree.syntax_errors and #self.parse_tree.syntax_errors > 0 then
+         return nil, "cannot generate C with syntax errors"
+      end
+      return c_generator.generate(ast)
+   end
+   return lua_generator.generate(ast, self.env.opts.gen_target, opts)
 end
 
 

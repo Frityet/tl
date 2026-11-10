@@ -225,6 +225,9 @@ local function compare_or_infer_typevar(ck, typevar, a, b, cmp)
 end
 
 local function subtype_record(ck, a, b)
+   if (a.native_pointer or b.native_pointer) and a.native_pointer ~= b.native_pointer then
+      return false, { types.error("%s is not compatible with %s", a, b) }
+   end
    if a.elements and b.elements then
       if not ck:is_a(a.elements, b.elements) then
          return false, { errors.new("array parts have incompatible element types") }

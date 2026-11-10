@@ -418,6 +418,8 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -1020,6 +1022,7 @@ types.map = function(self, ty, fns)
          copy.args, same = resolve(t.args, same)
          copy.rets, same = resolve(t.rets, same)
          copy.special_function_handler = t.special_function_handler
+         copy.ffi_fixed_params = t.ffi_fixed_params
       elseif t.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = t.declname
@@ -1045,6 +1048,7 @@ types.map = function(self, ty, fns)
          end
 
          copy.is_userdata = t.is_userdata
+         copy.native_pointer = t.native_pointer
 
          copy.fields = {}
          copy.field_order = {}
@@ -1509,6 +1513,7 @@ function types.drop_constant_values(t, keep_typedecls)
          copy.args = drop(typ.args, in_typedecl)
          copy.rets = drop(typ.rets, in_typedecl)
          copy.special_function_handler = typ.special_function_handler
+         copy.ffi_fixed_params = typ.ffi_fixed_params
       elseif typ.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = typ.declname
@@ -1523,6 +1528,7 @@ function types.drop_constant_values(t, keep_typedecls)
             end
          end
          copy.is_userdata = typ.is_userdata
+         copy.native_pointer = typ.native_pointer
          copy.fields = {}
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do

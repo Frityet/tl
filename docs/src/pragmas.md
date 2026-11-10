@@ -114,9 +114,29 @@ In the above example, even with arity check enabled, you could still write
 `greet(nil, nil)` and that would be accepted by the compiler as valid,
 even though it would crash at runtime.
 
-Explicit checking for `nil` is a separate feature, which may be added in a
-future version of Teal. When that happens, we will definitely need a `pragma`
-to allow for gradual adoption of it!
+Use `--#pragma strict_nil on` to also check whether an argument's value can be
+`nil`. With strict nil enabled, optional parameters have a type that includes
+`nil`.
+
+## Strict mode
+
+Place `--#pragma strict on` before other statements to enable strict mode for
+that file. It enables strict nil and arity checks. Values and types that use
+`any` or an unknown type are rejected. Type inference still works for typed
+expressions. An `as` cast is allowed only when the value can already be assigned
+to the destination type. Use a type test to narrow a union.
+
+```lua
+--#pragma strict on
+local function next_value(value: integer | nil): number
+   if value is nil then return 0 end
+   return (value + 1) as number
+end
+```
+
+Non-nil variables need initializers, and functions with non-nil return types
+must return on every path. Strict mode is required by the experimental
+[C generation target](./c_target.md).
 
 ## What pragmas are not
 

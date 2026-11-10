@@ -40,6 +40,7 @@
 - [The Teal API](./the_teal_api.md)
 - [Using tl with Lua](./using_tl_with_lua.md)
 - [LuaJIT syntax extensions](./luajit_extensions.md)
+- [Experimental C target](./c_target.md)
 - [Type definitions for third party libraries](./declaration_files.md)
 - [The Teal Standard Library and Lua compatibility](./teal_standard_library_and_lua_compatibility.md)
 - [Compiler options](./compiler_options.md)

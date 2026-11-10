@@ -1,6 +1,7 @@
 --#pragma strict_nil off
 local type environment = require("teal.environment")
 local type Env = environment.Env
+local type c_ffi = require("teal.gen.c_ffi")
 
 local type facts = require("teal.facts")
 local type FactDatabase = facts.FactDatabase
@@ -22,6 +23,7 @@ local record node_checker
    interface NodeChecker is TypeChecker
       dependencies: {string:string}
       env: Env
+      native_ffi: c_ffi.State
       fdb: FactDatabase
 
       type_check_funcall: function(self, node: Node, a: Type, b: TupleType, argdelta?: integer): InvalidOrTupleType
