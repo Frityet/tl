@@ -291,6 +291,7 @@ local no_traverse_nodes = {
    ["label"] = true,
    ["number"] = true,
    ["pragma"] = true,
+   ["ffi_cdef"] = true,
    ["string"] = true,
    ["boolean"] = true,
    ["integer"] = true,

@@ -1022,6 +1022,65 @@ local function count_scope_vars(self)
    return n
 end
 
+local function check_ffi_declaration(self, node, literal)
+   node.lua_cdef = nil
+   node.native_cdef = nil
+   if not node.ffi_top_level then
+      return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
+   end
+   local state = self.native_ffi or self.lua_ffi
+   local current = self:find_var("C", "check_only")
+   if current and current.t.typeid ~= state.namespace.typeid then
+      return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
+   end
+   local source, literal_error = c_ffi.decode_string(literal.tk)
+   if not source then
+      return self.errs:invalid_at(literal, literal_error)
+   end
+   local declaration, err = c_ffi.declare(state, node, source)
+   if not declaration then
+      return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
+   end
+   if not current then self:add_var(nil, "C", state.namespace, "const") end
+   if self.native_ffi then
+      node.native_cdef = true
+   else
+      node.lua_cdef = declaration
+      self.needs_lua_ffi = true
+   end
+   return NONE
+end
+
+local function ffi_promotion(self, t)
+   t = self:to_structural(t)
+   if t.typename == "integer" then return "i" end
+   if t.typename == "boolean" then return "b" end
+   if t.typename == "union" then
+      local promotion
+      for _, member in ipairs(t.types) do
+         if not (member.typename == "nil") then
+            local next_promotion = ffi_promotion(self, member)
+            if promotion and next_promotion ~= promotion then return "_" end
+            promotion = next_promotion
+         end
+      end
+      return promotion or "_"
+   end
+   return "_"
+end
+
+local function mark_ffi_call(self, node, first, args)
+   local promotions = {}
+   for i = first, #args.tuple do
+      table.insert(promotions, ffi_promotion(self, args.tuple[i]))
+   end
+   local pattern = table.concat(promotions)
+   if pattern:find("[ib]") then
+      node.ffi_call = { first = first, promotions = pattern, repeat_last = args.is_va }
+      self.needs_lua_ffi = true
+   end
+end
+
 visit_node.cbs = {
    ["statements"] = {
       before = function(self, node)
@@ -1052,6 +1111,11 @@ visit_node.cbs = {
          end
 
          return NONE
+      end,
+   },
+   ["ffi_cdef"] = {
+      after = function(self, node)
+         return check_ffi_declaration(self, node, node)
       end,
    },
    ["local_type"] = {
@@ -1161,8 +1225,9 @@ visit_node.cbs = {
 
                local rt = self:to_structural(t)
 
-               local native_number = self.native_ffi and rt.typename == "number" and self:to_structural(infertype).typename == "integer"
-               if not native_number and (not (rt.typename == "enum")) and
+               local ffi_number = (self.native_ffi or self.lua_ffi) and rt.typename == "number" and
+               self:to_structural(infertype).typename == "integer"
+               if not ffi_number and (not (rt.typename == "enum")) and
                   ((not (t.typename == "nominal")) or (rt.typename == "union")) and
                   not self:same_type(t, infertype) then
 
@@ -2296,26 +2361,11 @@ visit_node.cbs = {
 
          if node.op.op == "@funcall" then
             if self.native_ffi and ra.typeid == self.native_ffi.cdef.typeid then
-               if not node.native_top_level then
-                  return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
-               end
                if #node.e2 ~= 1 or node.e2[1].kind ~= "string" then
                   return self.errs:invalid_at(node, "ffi.cdef expects one string literal")
                end
-               local current = self:find_var("C", "check_only")
-               if current and current.t.typeid ~= self.native_ffi.namespace.typeid then
-                  return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
-               end
-               local source, literal_error = c_ffi.decode_string(node.e2[1].tk)
-               if not source then
-                  return self.errs:invalid_at(node.e2[1], literal_error)
-               end
-               local ok, err = c_ffi.declare(self.native_ffi, node, source)
-               if not ok then
-                  return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
-               end
-               if not current then self:add_var(nil, "C", self.native_ffi.namespace, "const") end
-               node.native_cdef = true
+               local t = check_ffi_declaration(self, node, node.e2[1])
+               if t.typename == "invalid" then return t end
                return a_type(node, "tuple", { tuple = {} })
             end
             if not self.feat_strict_nil then ua = non_nil_type(self, node, ua) end
@@ -2325,6 +2375,11 @@ visit_node.cbs = {
                end
             end
             assert(gb.typename == "tuple")
+            node.ffi_call = nil
+            if not self.native_ffi and ra.typename == "function" and ra.ffi_fixed_params and
+               not node.optional_chain and not (node.e1.op and node.e1.op.op == ":") then
+               mark_ffi_call(self, node, ra.ffi_fixed_params + 1, gb)
+            end
             local t = self:type_check_funcall(node, ua, gb)
             return t
 
@@ -2365,6 +2420,11 @@ visit_node.cbs = {
             if rb.typename == "typedecl" and rb.def.typename == "record" then
                rb = rb.def
             end
+         end
+
+         if self.lua_ffi and node.is_lvalue and ra.typeid == self.lua_ffi.namespace.typeid and
+            (node.op.op == "." or node.op.op == "@index") then
+            return self.errs:invalid_at(node, "C symbols declared by ffi.cdef! are read-only")
          end
 
          if node.op.op == "." then

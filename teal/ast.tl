@@ -95,6 +95,7 @@ local enum NodeKind
    "macro_invocation"
    "interface"
    "pragma"
+   "ffi_cdef"
    "error_node"
 end
 local enum ParseTypeListMode
@@ -237,7 +238,17 @@ local record Node
 
    strict_receiver: boolean
    type_require: boolean
-   native_top_level: boolean
+   ffi_top_level: boolean
+   lua_ffi: boolean
+   lua_cdef: c_ffi.DeclarationBatch
+
+   record FfiCall
+      first: integer
+      promotions: string
+      repeat_last: boolean
+   end
+
+   ffi_call: FfiCall
    native_type: Type
    native_return_type: Type
    native_cdef: boolean
@@ -1579,6 +1590,10 @@ parse_fns.record_function = function(state: ParseState, block: Block): Node
    end
 
    return node
+end
+
+parse_fns.ffi_cdef = function(state: ParseState, block: Block): Node
+   return new_node(state, block)
 end
 
 parse_fns.pragma = function(state: ParseState, block: Block): Node

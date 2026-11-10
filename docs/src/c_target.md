@@ -32,7 +32,7 @@ The `auxlib.ffi` import in the example is expanded at compile time. Type
 imports such as `local type Types = require("types")` are also allowed. The only
 runtime require syntax accepted by the target is `require("ffi")`, which the
 compiler resolves to its built-in FFI namespace. You can also use its
-`ffi.cdef` directly.
+`ffi.cdef` directly when targeting C.
 
 Each `ffi.cdef!` must be a top-level statement with a string literal. Use
 it to declare function prototypes, read-only extern objects, typedefs, and
@@ -59,6 +59,27 @@ C variadic arguments use `int` for Teal integers and booleans, `double` for
 numbers, and C strings for strings. For example, use `%d` for an integer and
 `%f` for a number with `printf`. Integer conversions across the FFI boundary
 trap on overflow.
+
+## Typed FFI in LuaJIT
+
+The same `ffi.cdef!` macro creates a typed `C` namespace in Lua output.
+You can use it in regular or strict Teal files. Run the generated Lua with
+LuaJIT.
+
+```sh
+tl gen --gen-target=luajit hello.tl -o hello.lua
+luajit hello.lua
+```
+
+LuaJIT output registers the declarations with `ffi.cdef`, copies returned
+C strings into Lua strings, and converts null pointer results to `nil`.
+Opaque pointers remain C data. Integer results returned as C data must fit
+LuaJIT's safe integer range of ±(2⁵³ − 1).
+
+Calls that retain their typed C variadic signature promote integer and
+boolean arguments to C `int`, as in the C target. Fixed arguments use
+LuaJIT's FFI conversions. For declarations that use the full LuaJIT FFI
+syntax, you can call the raw `ffi.cdef` with its dynamic `ffi.C` namespace.
 
 ## Supported Teal code
 

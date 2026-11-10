@@ -103,9 +103,20 @@ local lexer = require("teal.lexer")
 
 
 
+
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1579,6 +1590,10 @@ parse_fns.record_function = function(state, block)
    end
 
    return node
+end
+
+parse_fns.ffi_cdef = function(state, block)
+   return new_node(state, block)
 end
 
 parse_fns.pragma = function(state, block)

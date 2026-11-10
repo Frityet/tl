@@ -248,7 +248,7 @@ local function is_statement_kind(k)
    return k == "assignment" or k == "local_declaration" or k == "global_declaration" or
    k == "return" or k == "if" or k == "while" or k == "fornum" or k == "forin" or
    k == "do" or k == "repeat" or k == "local_function" or k == "global_function" or
-   k == "record_function" or k == "newtype" or k == "pragma" or
+   k == "record_function" or k == "newtype" or k == "pragma" or k == "ffi_cdef" or
    k == "local_type" or k == "global_type" or k == "goto" or k == "label" or
    k == "break" or k == "continue" or k == ";" or k == "comment" or k == "hashbang" or
    k == "local_macroexp" or k == "local_macro"
@@ -381,7 +381,11 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       host_name = "__teal_operator_macro";
       (mast)[1].name.tk = host_name
    end
-   local code = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
+   local code, gen_error = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
+   if not code then
+      table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = gen_error })
+      return
+   end
    local chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })

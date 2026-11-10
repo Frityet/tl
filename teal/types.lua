@@ -419,6 +419,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -1021,6 +1022,7 @@ types.map = function(self, ty, fns)
          copy.args, same = resolve(t.args, same)
          copy.rets, same = resolve(t.rets, same)
          copy.special_function_handler = t.special_function_handler
+         copy.ffi_fixed_params = t.ffi_fixed_params
       elseif t.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = t.declname
@@ -1511,6 +1513,7 @@ function types.drop_constant_values(t, keep_typedecls)
          copy.args = drop(typ.args, in_typedecl)
          copy.rets = drop(typ.rets, in_typedecl)
          copy.special_function_handler = typ.special_function_handler
+         copy.ffi_fixed_params = typ.ffi_fixed_params
       elseif typ.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = typ.declname

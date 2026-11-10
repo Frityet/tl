@@ -317,6 +317,7 @@ local record types
       rets: TupleType
       macroexp: Node
       special_function_handler: SpecialFunctionName -- special handling for format strings etc
+      ffi_fixed_params: integer -- set only for a variadic C function
    end
 
    interface AggregateType
@@ -1021,6 +1022,7 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          copy.args, same = resolve(t.args, same) as (TupleType, boolean)
          copy.rets, same = resolve(t.rets, same) as (TupleType, boolean)
          copy.special_function_handler = t.special_function_handler
+         copy.ffi_fixed_params = t.ffi_fixed_params
       elseif t is RecordLikeType then
          assert(copy is RecordType or copy is InterfaceType)
          copy.declname = t.declname
@@ -1511,6 +1513,7 @@ function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
          copy.args = drop(typ.args, in_typedecl) as TupleType
          copy.rets = drop(typ.rets, in_typedecl) as TupleType
          copy.special_function_handler = typ.special_function_handler
+         copy.ffi_fixed_params = typ.ffi_fixed_params
       elseif typ is RecordLikeType then
          assert(copy is RecordType or copy is InterfaceType)
          copy.declname = typ.declname

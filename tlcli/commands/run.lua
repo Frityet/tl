@@ -29,7 +29,9 @@ local function type_check_and_load(tlconfig, filename)
       os.exit(1)
    end
 
-   local chunk, chunk_err = load(module:gen(), "@" .. filename)
+   local code, gen_error = module:gen()
+   if not code then common.die(gen_error) end
+   local chunk, chunk_err = load(code, "@" .. filename)
    if chunk_err then
       common.die("Internal Compiler Error: Teal generator produced invalid Lua. " ..
       "Please report a bug at https://github.com/teal-language/tl\n\n" .. tostring(chunk_err))

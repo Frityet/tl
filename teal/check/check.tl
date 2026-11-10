@@ -145,6 +145,7 @@ function check.check(ast: Node, env: Env, filename: string, dependency?: boolean
    local self = Context.new(env, filename, strict_pragma)
    ast.native_checked = nil
    ast.native_ffi = nil
+   ast.lua_ffi = nil
    if env.opts.gen_target == "c" and not dependency then
       if not strict_pragma then
          self.errs:add(ast, "the C generation target requires '--#pragma strict on'")
@@ -154,7 +155,12 @@ function check.check(ast: Node, env: Env, filename: string, dependency?: boolean
       end
       self.native_ffi = c_ffi.new(ast)
       ast.native_ffi = self.native_ffi
-      for _, stmt in ipairs(ast) do stmt.native_top_level = true end
+   end
+   for _, stmt in ipairs(ast) do
+      if self.native_ffi or stmt.kind == "ffi_cdef" then
+         stmt.ffi_top_level = true
+         if not self.native_ffi then self.lua_ffi = self.lua_ffi or c_ffi.new(ast) end
+      end
    end
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
@@ -185,6 +191,7 @@ function check.check(ast: Node, env: Env, filename: string, dependency?: boolean
 
    errors.clear_redundant_errors(self.errs.errors)
    if self.native_ffi then ast.native_checked = #self.errs.errors == 0 end
+   ast.lua_ffi = self.needs_lua_ffi
 
    local result = {
       ast = ast,

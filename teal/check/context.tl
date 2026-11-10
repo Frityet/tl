@@ -168,6 +168,8 @@ local record context
       feat_strict_nil: boolean
       strict_pragma: Node
       native_ffi: c_ffi.State
+      lua_ffi: c_ffi.State
+      needs_lua_ffi: boolean
 
       type_check_funcall: function(self, node: Node, a: Type, b: TupleType, argdelta?: integer): InvalidOrTupleType
 

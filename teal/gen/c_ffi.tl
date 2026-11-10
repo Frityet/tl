@@ -38,6 +38,11 @@ local record c_ffi
       typedef: boolean
    end
 
+   record DeclarationBatch
+      code: string
+      symbols: {Symbol}
+   end
+
    record State
       ffi: RecordType
       namespace: RecordType
@@ -404,16 +409,18 @@ local function add_tag(state: State, c: CType)
    end
 end
 
-function c_ffi.declare(state: State, w: Where, source: string): boolean, string
+function c_ffi.declare(state: State, w: Where, source: string): c_ffi.DeclarationBatch, string
    local ok, result, aliases = pcall(parse_declarations, state, source)
    if not ok then
       local failure = result as {any}
-      if type(failure) == "table" and failure[1] == failure_tag then return false, failure[2] as string end
+      if type(failure) == "table" and failure[1] == failure_tag then return nil, failure[2] as string end
       error(result, 0)
    end
 
+   local symbols = result as {Symbol}
+   local first = #state.declarations + 1
    state.aliases = aliases
-   for _, symbol in ipairs(result as {Symbol}) do
+   for _, symbol in ipairs(symbols) do
       local c = symbol.result
       add_tag(state, c)
       if symbol.name then
@@ -436,6 +443,7 @@ function c_ffi.declare(state: State, w: Where, source: string): boolean, string
             local ret = teal_type(state, w, c, true)
             t = types.a_function(w, {
                min_arity = #symbol.params, args = tuple(w, args, symbol.variadic),
+               ffi_fixed_params = symbol.variadic and #symbol.params or nil,
                rets = tuple(w, ret and { ret } or {}),
             } as FunctionType)
          else
@@ -449,7 +457,7 @@ function c_ffi.declare(state: State, w: Where, source: string): boolean, string
          table.insert(state.declarations, symbol.declaration)
       end
    end
-   return true
+   return { code = table.concat(state.declarations, "\n", first), symbols = symbols }
 end
 
 return c_ffi

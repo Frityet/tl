@@ -9,7 +9,12 @@ local types = require("teal.types")
 local a_type = types.a_type
 local util = require("teal.util")
 
-local c_ffi = { CType = {}, Symbol = {}, State = {} }
+local c_ffi = { CType = {}, Symbol = {}, DeclarationBatch = {}, State = {} }
+
+
+
+
+
 
 
 
@@ -408,12 +413,14 @@ function c_ffi.declare(state, w, source)
    local ok, result, aliases = pcall(parse_declarations, state, source)
    if not ok then
       local failure = result
-      if type(failure) == "table" and failure[1] == failure_tag then return false, failure[2] end
+      if type(failure) == "table" and failure[1] == failure_tag then return nil, failure[2] end
       error(result, 0)
    end
 
+   local symbols = result
+   local first = #state.declarations + 1
    state.aliases = aliases
-   for _, symbol in ipairs(result) do
+   for _, symbol in ipairs(symbols) do
       local c = symbol.result
       add_tag(state, c)
       if symbol.name then
@@ -436,6 +443,7 @@ function c_ffi.declare(state, w, source)
             local ret = teal_type(state, w, c, true)
             t = types.a_function(w, {
                min_arity = #symbol.params, args = tuple(w, args, symbol.variadic),
+               ffi_fixed_params = symbol.variadic and #symbol.params or nil,
                rets = tuple(w, ret and { ret } or {}),
             })
          else
@@ -449,7 +457,7 @@ function c_ffi.declare(state, w, source)
          table.insert(state.declarations, symbol.declaration)
       end
    end
-   return true
+   return { code = table.concat(state.declarations, "\n", first), symbols = symbols }
 end
 
 return c_ffi

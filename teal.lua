@@ -105,9 +105,20 @@ local lexer = require("teal.lexer")
 
 
 
+
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1583,6 +1594,10 @@ parse_fns.record_function = function(state, block)
    return node
 end
 
+parse_fns.ffi_cdef = function(state, block)
+   return new_node(state, block)
+end
+
 parse_fns.pragma = function(state, block)
    assert(block)
    local node = new_node(state, block)
@@ -2474,6 +2489,7 @@ local block = { Block = {} }
 
 
 
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -2753,6 +2769,7 @@ local BLOCK_KINDS = {
    ["interface"] = true,
    ["enum"] = true,
    ["pragma"] = true,
+   ["ffi_cdef"] = true,
    ["error_block"] = true,
    ["userdata"] = true,
 
@@ -3000,6 +3017,7 @@ function check.check(ast, env, filename, dependency)
    local self = Context.new(env, filename, strict_pragma)
    ast.native_checked = nil
    ast.native_ffi = nil
+   ast.lua_ffi = nil
    if env.opts.gen_target == "c" and not dependency then
       if not strict_pragma then
          self.errs:add(ast, "the C generation target requires '--#pragma strict on'")
@@ -3009,7 +3027,12 @@ function check.check(ast, env, filename, dependency)
       end
       self.native_ffi = c_ffi.new(ast)
       ast.native_ffi = self.native_ffi
-      for _, stmt in ipairs(ast) do stmt.native_top_level = true end
+   end
+   for _, stmt in ipairs(ast) do
+      if self.native_ffi or stmt.kind == "ffi_cdef" then
+         stmt.ffi_top_level = true
+         if not self.native_ffi then self.lua_ffi = self.lua_ffi or c_ffi.new(ast) end
+      end
    end
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
@@ -3040,6 +3063,7 @@ function check.check(ast, env, filename, dependency)
 
    errors.clear_redundant_errors(self.errs.errors)
    if self.native_ffi then ast.native_checked = #self.errs.errors == 0 end
+   ast.lua_ffi = self.needs_lua_ffi
 
    local result = {
       ast = ast,
@@ -3213,6 +3237,8 @@ local has_var_been_used = variables.has_var_been_used
 
 
 local context = { Context = {} }
+
+
 
 
 
@@ -8826,6 +8852,65 @@ local function count_scope_vars(self)
    return n
 end
 
+local function check_ffi_declaration(self, node, literal)
+   node.lua_cdef = nil
+   node.native_cdef = nil
+   if not node.ffi_top_level then
+      return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
+   end
+   local state = self.native_ffi or self.lua_ffi
+   local current = self:find_var("C", "check_only")
+   if current and current.t.typeid ~= state.namespace.typeid then
+      return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
+   end
+   local source, literal_error = c_ffi.decode_string(literal.tk)
+   if not source then
+      return self.errs:invalid_at(literal, literal_error)
+   end
+   local declaration, err = c_ffi.declare(state, node, source)
+   if not declaration then
+      return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
+   end
+   if not current then self:add_var(nil, "C", state.namespace, "const") end
+   if self.native_ffi then
+      node.native_cdef = true
+   else
+      node.lua_cdef = declaration
+      self.needs_lua_ffi = true
+   end
+   return NONE
+end
+
+local function ffi_promotion(self, t)
+   t = self:to_structural(t)
+   if t.typename == "integer" then return "i" end
+   if t.typename == "boolean" then return "b" end
+   if t.typename == "union" then
+      local promotion
+      for _, member in ipairs(t.types) do
+         if not (member.typename == "nil") then
+            local next_promotion = ffi_promotion(self, member)
+            if promotion and next_promotion ~= promotion then return "_" end
+            promotion = next_promotion
+         end
+      end
+      return promotion or "_"
+   end
+   return "_"
+end
+
+local function mark_ffi_call(self, node, first, args)
+   local promotions = {}
+   for i = first, #args.tuple do
+      table.insert(promotions, ffi_promotion(self, args.tuple[i]))
+   end
+   local pattern = table.concat(promotions)
+   if pattern:find("[ib]") then
+      node.ffi_call = { first = first, promotions = pattern, repeat_last = args.is_va }
+      self.needs_lua_ffi = true
+   end
+end
+
 visit_node.cbs = {
    ["statements"] = {
       before = function(self, node)
@@ -8856,6 +8941,11 @@ visit_node.cbs = {
          end
 
          return NONE
+      end,
+   },
+   ["ffi_cdef"] = {
+      after = function(self, node)
+         return check_ffi_declaration(self, node, node)
       end,
    },
    ["local_type"] = {
@@ -8965,8 +9055,9 @@ visit_node.cbs = {
 
                local rt = self:to_structural(t)
 
-               local native_number = self.native_ffi and rt.typename == "number" and self:to_structural(infertype).typename == "integer"
-               if not native_number and (not (rt.typename == "enum")) and
+               local ffi_number = (self.native_ffi or self.lua_ffi) and rt.typename == "number" and
+               self:to_structural(infertype).typename == "integer"
+               if not ffi_number and (not (rt.typename == "enum")) and
                   ((not (t.typename == "nominal")) or (rt.typename == "union")) and
                   not self:same_type(t, infertype) then
 
@@ -10100,26 +10191,11 @@ visit_node.cbs = {
 
          if node.op.op == "@funcall" then
             if self.native_ffi and ra.typeid == self.native_ffi.cdef.typeid then
-               if not node.native_top_level then
-                  return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
-               end
                if #node.e2 ~= 1 or node.e2[1].kind ~= "string" then
                   return self.errs:invalid_at(node, "ffi.cdef expects one string literal")
                end
-               local current = self:find_var("C", "check_only")
-               if current and current.t.typeid ~= self.native_ffi.namespace.typeid then
-                  return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
-               end
-               local source, literal_error = c_ffi.decode_string(node.e2[1].tk)
-               if not source then
-                  return self.errs:invalid_at(node.e2[1], literal_error)
-               end
-               local ok, err = c_ffi.declare(self.native_ffi, node, source)
-               if not ok then
-                  return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
-               end
-               if not current then self:add_var(nil, "C", self.native_ffi.namespace, "const") end
-               node.native_cdef = true
+               local t = check_ffi_declaration(self, node, node.e2[1])
+               if t.typename == "invalid" then return t end
                return a_type(node, "tuple", { tuple = {} })
             end
             if not self.feat_strict_nil then ua = non_nil_type(self, node, ua) end
@@ -10129,6 +10205,11 @@ visit_node.cbs = {
                end
             end
             assert(gb.typename == "tuple")
+            node.ffi_call = nil
+            if not self.native_ffi and ra.typename == "function" and ra.ffi_fixed_params and
+               not node.optional_chain and not (node.e1.op and node.e1.op.op == ":") then
+               mark_ffi_call(self, node, ra.ffi_fixed_params + 1, gb)
+            end
             local t = self:type_check_funcall(node, ua, gb)
             return t
 
@@ -10169,6 +10250,11 @@ visit_node.cbs = {
             if rb.typename == "typedecl" and rb.def.typename == "record" then
                rb = rb.def
             end
+         end
+
+         if self.lua_ffi and node.is_lvalue and ra.typeid == self.lua_ffi.namespace.typeid and
+            (node.op.op == "." or node.op.op == "@index") then
+            return self.errs:invalid_at(node, "C symbols declared by ffi.cdef! are read-only")
          end
 
          if node.op.op == "." then
@@ -12144,7 +12230,12 @@ local types = require("teal.types")
 local a_type = types.a_type
 local util = require("teal.util")
 
-local c_ffi = { CType = {}, Symbol = {}, State = {} }
+local c_ffi = { CType = {}, Symbol = {}, DeclarationBatch = {}, State = {} }
+
+
+
+
+
 
 
 
@@ -12543,12 +12634,14 @@ function c_ffi.declare(state, w, source)
    local ok, result, aliases = pcall(parse_declarations, state, source)
    if not ok then
       local failure = result
-      if type(failure) == "table" and failure[1] == failure_tag then return false, failure[2] end
+      if type(failure) == "table" and failure[1] == failure_tag then return nil, failure[2] end
       error(result, 0)
    end
 
+   local symbols = result
+   local first = #state.declarations + 1
    state.aliases = aliases
-   for _, symbol in ipairs(result) do
+   for _, symbol in ipairs(symbols) do
       local c = symbol.result
       add_tag(state, c)
       if symbol.name then
@@ -12571,6 +12664,7 @@ function c_ffi.declare(state, w, source)
             local ret = teal_type(state, w, c, true)
             t = types.a_function(w, {
                min_arity = #symbol.params, args = tuple(w, args, symbol.variadic),
+               ffi_fixed_params = symbol.variadic and #symbol.params or nil,
                rets = tuple(w, ret and { ret } or {}),
             })
          else
@@ -12584,7 +12678,7 @@ function c_ffi.declare(state, w, source)
          table.insert(state.declarations, symbol.declaration)
       end
    end
-   return true
+   return { code = table.concat(state.declarations, "\n", first), symbols = symbols }
 end
 
 return c_ffi
@@ -13639,6 +13733,134 @@ return lua_compat
 
 end
 
+-- module teal.gen.lua_ffi from teal/gen/lua_ffi.lua
+package.preload["teal.gen.lua_ffi"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
+
+local traversal = require("teal.traversal")
+
+local lua_ffi = {}
+
+
+
+
+local runtime = [[
+(function()
+   local require = require
+   local unpack = table.unpack or unpack
+   local ffi
+   local function module()
+      ffi = ffi or require('ffi')
+      return ffi
+   end
+   local entries, functions = {}, {}
+   local function convert(name, kind, nonnull, value)
+      if kind == "string" or kind == "pointer" then
+         if value == nil then
+            if nonnull then error("C." .. name .. " returned a null pointer", 2) end
+            return nil
+         end
+         if kind == "string" then return ffi.string(value) end
+      elseif kind == "integer" and type(value) == "cdata" then
+         local integer = tonumber(value)
+         if integer < -9007199254740991 or integer > 9007199254740991 then
+            error("C." .. name .. " returned an integer outside LuaJIT's safe integer range", 2)
+         end
+         return integer
+      end
+      return value
+   end
+   local C = setmetatable({}, {
+      __index = function(_, name)
+         local entry = entries[name]
+         if not entry then return nil end
+         if not entry[1] then return convert(name, entry[2], entry[3], ffi.C[name]) end
+         local wrapper = functions[name]
+         if not wrapper then
+            local native, kind, nonnull = ffi.C[name], entry[2], entry[3]
+            if kind == "void" then
+               wrapper = function(...) native(...) end
+            else
+               wrapper = function(...) return convert(name, kind, nonnull, native(...)) end
+            end
+            functions[name] = wrapper
+         end
+         return wrapper
+      end,
+      __newindex = function()
+         error("C symbols declared by ffi.cdef! are read-only", 2)
+      end,
+   })
+   local function cdef(code, batch)
+      module().cdef(code)
+      for name, entry in pairs(batch) do entries[name] = entry end
+   end
+   local function call(fn, first, promotions, repeat_last, ...)
+      local args, count = {...}, select("#", ...)
+      local ffi = module()
+      for i = first, count do
+         local index = i - first + 1
+         local promotion = promotions:sub(index, index)
+         if promotion == "" and repeat_last then promotion = promotions:sub(-1) end
+         local value = args[i]
+         if value ~= nil then
+            if promotion == "i" then
+               local integer = ffi.cast("int", value)
+               if tonumber(integer) ~= value then error("C variadic integer does not fit in int", 2) end
+               args[i] = integer
+            elseif promotion == "b" then
+               args[i] = ffi.cast("int", value and 1 or 0)
+            end
+         end
+      end
+      return fn(unpack(args, 1, count))
+   end
+   local function istype(ctype, value)
+      return module().istype(ctype, value)
+   end
+   return { C = C, cdef = cdef, call = call, istype = istype }
+end)()
+]]
+
+function lua_ffi.local_name(ast)
+   local used = {}
+   traversal.traverse_nodes(used, ast, {
+      allow_missing_cbs = true,
+      after = function(names, node)
+         if node.tk then names[node.tk] = true end
+         return true
+      end,
+   }, {})
+   local name = "_tl_typed_ffi"
+   while used[name] do name = name .. "_" end
+   return name
+end
+
+function lua_ffi.preamble(name)
+
+   return "local " .. name .. " = " .. runtime:gsub("%s*\n%s*", " "):gsub(" $", "") .. "; "
+end
+
+function lua_ffi.declare(name, batch)
+   local descriptors = {}
+   for _, symbol in ipairs(batch.symbols) do
+      if symbol.name and not symbol.typedef then
+         local result = symbol.result
+         local kind = result.mutable_char and "string" or result.kind
+         table.insert(descriptors, ("[%q] = {%s, %q, %s}"):format(
+         symbol.name, tostring(symbol.params ~= nil), kind, tostring(result.nullability == "_Nonnull")))
+
+      end
+   end
+   local code = batch.code:gsub("\n", " ")
+   return ("%s.cdef(%q, {%s})"):format(name, code, table.concat(descriptors, ", "))
+end
+
+return lua_ffi
+
+end
+
 -- module teal.gen.lua_generator from teal/gen/lua_generator.lua
 package.preload["teal.gen.lua_generator"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack; local type = type; local utf8 = _tl_compat and _tl_compat.utf8 or utf8
@@ -13648,6 +13870,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+local lua_ffi = require("teal.gen.lua_ffi")
 local targets = require("teal.gen.targets")
 
 
@@ -13739,6 +13962,9 @@ lua_generator.fast_opts = {
 
 function lua_generator.generate(ast, gen_target, opts)
    local indent = 0
+   local ffi_name = ast.lua_ffi and lua_ffi.local_name(ast)
+   local ffi_defined = false
+   local gen_error
 
    opts = opts or lua_generator.default_opts
 
@@ -14003,6 +14229,21 @@ function lua_generator.generate(ast, gen_target, opts)
                   previous_statement = statement
                end
             end
+            return out
+         end,
+      },
+      ["ffi_cdef"] = {
+         after = function(_, node)
+            local out = { y = node.y, h = 0 }
+            if not node.lua_cdef or not ffi_name then
+               gen_error = ("%s:%d:%d: ffi.cdef! requires a checked declaration"):format(node.f, node.y, node.x)
+               return out
+            end
+            if not ffi_defined then
+               add_string(out, "local C = " .. ffi_name .. ".C; ")
+               ffi_defined = true
+            end
+            add_string(out, lua_ffi.declare(ffi_name, node.lua_cdef))
             return out
          end,
       },
@@ -14299,8 +14540,15 @@ function lua_generator.generate(ast, gen_target, opts)
                table.insert(children[1], "?.")
             end
             if node.op.op == "@funcall" then
-               add_child(out, children[1], "", indent)
-               table.insert(out, "(")
+               if ffi_name and node.ffi_call then
+                  local call = node.ffi_call
+                  add_string(out, ffi_name .. ".call(")
+                  add_child(out, children[1], "", indent)
+                  add_string(out, (", %d, %q, %s, "):format(call.first, call.promotions, tostring(not not call.repeat_last)))
+               else
+                  add_child(out, children[1], "", indent)
+                  table.insert(out, "(")
+               end
                add_child(out, children[3], "", indent)
                table.insert(out, ")")
             elseif node.op.op == "@index" then
@@ -14319,7 +14567,12 @@ function lua_generator.generate(ast, gen_target, opts)
                while ct.typename == "nominal" and ct.resolved do
                   ct = ct.resolved
                end
-               if ct.typename == "integer" then
+               if ct.typename == "record" and ct.native_pointer then
+                  local istype = ffi_name and ffi_name .. ".istype" or "require('ffi').istype"
+                  add_string(out, istype .. "(" .. string.format("%q", ct.native_pointer) .. ", ")
+                  add_child(out, children[1], "", indent)
+                  table.insert(out, ")")
+               elseif ct.typename == "integer" then
                   table.insert(out, "math.type(")
                   add_child(out, children[1], "", indent)
                   table.insert(out, ") == \"integer\"")
@@ -14552,6 +14805,7 @@ function lua_generator.generate(ast, gen_target, opts)
       return out
    end
    local out = traversal.traverse_nodes(nil, ast, visit_node, visit_type)
+   if gen_error then return nil, gen_error end
 
    local code
    if opts.preserve_newlines then
@@ -14560,7 +14814,17 @@ function lua_generator.generate(ast, gen_target, opts)
    else
       code = out
    end
-   return (concat_output(code):gsub(" *\n", "\n"))
+   local output = concat_output(code):gsub(" *\n", "\n")
+   if ffi_name then
+      local preamble = lua_ffi.preamble(ffi_name)
+      if opts.preserve_hashbang and ast.hashbang then
+         local rest = output:sub(#ast.hashbang + 1):gsub("^\n", "", 1)
+         output = ast.hashbang .. "\n" .. preamble .. rest
+      else
+         output = preamble .. output
+      end
+   end
+   return output
 end
 
 return lua_generator
@@ -16029,7 +16293,8 @@ function loader.load(teal_code, chunkname, mode, ...)
 
    lua_compat.apply(result)
 
-   local lua_code = lua_generator.generate(result.ast, package_loader.env.opts.gen_target, lua_generator.fast_opts)
+   local lua_code, gen_error = lua_generator.generate(result.ast, package_loader.env.opts.gen_target, lua_generator.fast_opts)
+   if not lua_code then return nil, gen_error end
 
    return load(lua_code, chunkname, mode, ...)
 end
@@ -16290,7 +16555,7 @@ local function is_statement_kind(k)
    return k == "assignment" or k == "local_declaration" or k == "global_declaration" or
    k == "return" or k == "if" or k == "while" or k == "fornum" or k == "forin" or
    k == "do" or k == "repeat" or k == "local_function" or k == "global_function" or
-   k == "record_function" or k == "newtype" or k == "pragma" or
+   k == "record_function" or k == "newtype" or k == "pragma" or k == "ffi_cdef" or
    k == "local_type" or k == "global_type" or k == "goto" or k == "label" or
    k == "break" or k == "continue" or k == ";" or k == "comment" or k == "hashbang" or
    k == "local_macroexp" or k == "local_macro"
@@ -16423,7 +16688,11 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       host_name = "__teal_operator_macro";
       (mast)[1].name.tk = host_name
    end
-   local code = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
+   local code, gen_error = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
+   if not code then
+      table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = gen_error })
+      return
+   end
    local chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })
@@ -21576,6 +21845,7 @@ local no_traverse_nodes = {
    ["label"] = true,
    ["number"] = true,
    ["pragma"] = true,
+   ["ffi_cdef"] = true,
    ["string"] = true,
    ["boolean"] = true,
    ["integer"] = true,
@@ -23286,6 +23556,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -23888,6 +24159,7 @@ types.map = function(self, ty, fns)
          copy.args, same = resolve(t.args, same)
          copy.rets, same = resolve(t.rets, same)
          copy.special_function_handler = t.special_function_handler
+         copy.ffi_fixed_params = t.ffi_fixed_params
       elseif t.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = t.declname
@@ -24378,6 +24650,7 @@ function types.drop_constant_values(t, keep_typedecls)
          copy.args = drop(typ.args, in_typedecl)
          copy.rets = drop(typ.rets, in_typedecl)
          copy.special_function_handler = typ.special_function_handler
+         copy.ffi_fixed_params = typ.ffi_fixed_params
       elseif typ.fields then
          assert(copy.typename == "record" or copy.typename == "interface")
          copy.declname = typ.declname
