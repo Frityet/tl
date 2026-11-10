@@ -106,7 +106,7 @@ function require_file.search_and_load(env: Env, module_name: string, extension_s
    local w = { f = found, x = 1, y = 1 }
    env.modules[module_name] = a_circular_require(w)
 
-   local found_result = input.check(env, found, code)
+   local found_result = input.check(env, found, code, true)
    if not found_result then
       return nil, nil, tried
    end

@@ -310,7 +310,9 @@ function lua_compat.apply(result)
    local gen_compat = result.env.opts.gen_compat or environment.DEFAULT_GEN_COMPAT
    local gen_target = result.env.opts.gen_target or environment.DEFAULT_GEN_TARGET
 
-   adjust_code(result.ast, result.needs_compat, gen_compat, gen_target)
+   if gen_target ~= "c" then
+      adjust_code(result.ast, result.needs_compat, gen_compat, gen_target)
+   end
 end
 
 return lua_compat

@@ -431,10 +431,19 @@ local special_functions <total>: {SpecialFunctionName : function(NodeChecker, No
          return self:invalid_at(node, "require expects one literal argument")
       end
       if node.e2[1].kind ~= "string" then
+         if self.native_ffi then
+            return self:invalid_at(node, "the C target only supports a literal runtime require of 'ffi'")
+         end
          return a_tuple(node, { a_type(node, "any", {}) })
       end
 
       local module_name = assert(node.e2[1].conststr)
+      if self.native_ffi and not node.type_require then
+         if module_name == "ffi" then
+            return a_tuple(node, { self.native_ffi.ffi })
+         end
+         return self:invalid_at(node, "the C target only supports runtime require('ffi'); use 'local type' for type imports")
+      end
       local t, module_filename = self.env:require_module(module_name)
       if not t then
          return self:invalid_at(node, "module not found: '" .. module_name .. "'")

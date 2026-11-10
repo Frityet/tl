@@ -418,6 +418,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -1045,6 +1046,7 @@ types.map = function(self, ty, fns)
          end
 
          copy.is_userdata = t.is_userdata
+         copy.native_pointer = t.native_pointer
 
          copy.fields = {}
          copy.field_order = {}
@@ -1523,6 +1525,7 @@ function types.drop_constant_values(t, keep_typedecls)
             end
          end
          copy.is_userdata = typ.is_userdata
+         copy.native_pointer = typ.native_pointer
          copy.fields = {}
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do

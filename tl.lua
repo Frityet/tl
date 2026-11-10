@@ -6,6 +6,7 @@ local environment = require("teal.environment")
 local errors = require("teal.errors")
 local lexer = require("teal.lexer")
 local loader = require("teal.loader")
+local c_generator = require("teal.gen.c_generator")
 local lua_generator = require("teal.gen.lua_generator")
 local lua_compat = require("teal.gen.lua_compat")
 local package_loader = require("teal.package_loader")
@@ -179,11 +180,13 @@ v2.gen = function(teal_code, env, opts, parse_lang)
       return nil, result
    end
    lua_compat.apply(result)
-   local code = lua_generator.generate(result.ast, env.opts.gen_target, opts)
+   local code, gen_error = v2.generate(result.ast, env.opts.gen_target, opts)
+   result.gen_error = gen_error
    return code, result
 end
 
 v2.generate = function(ast, gen_target, opts)
+   if gen_target == "c" then return c_generator.generate(ast) end
    return lua_generator.generate(ast, gen_target, opts)
 end
 
@@ -258,6 +261,7 @@ end
 -- module teal.ast from teal/ast.lua
 package.preload["teal.ast"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
 
 local reader = require("teal.block")
 
@@ -364,6 +368,15 @@ local lexer = require("teal.lexer")
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
+
+
+
+
+
+
+
+
 
 
 
@@ -3100,9 +3113,10 @@ end
 
 -- module teal.check.check from teal/check/check.lua
 package.preload["teal.check.check"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 local context = require("teal.check.context")
 local Context = context.Context
+local c_ffi = require("teal.gen.c_ffi")
 
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
@@ -3229,10 +3243,34 @@ local function patch_visitors(my_visit_node,
    return my_visit_node, my_visit_type
 end
 
-function check.check(ast, env, filename)
+function check.check(ast, env, filename, dependency)
    assert(filename)
 
-   local self = Context.new(env, filename)
+   local strict_pragma
+   for _, stmt in ipairs(ast) do
+      if stmt.kind == "pragma" then
+         if stmt.pkey == "strict" and stmt.pvalue == "on" then
+            strict_pragma = stmt
+            break
+         end
+      else
+         break
+      end
+   end
+   local self = Context.new(env, filename, strict_pragma)
+   ast.native_checked = nil
+   ast.native_ffi = nil
+   if env.opts.gen_target == "c" and not dependency then
+      if not strict_pragma then
+         self.errs:add(ast, "the C generation target requires '--#pragma strict on'")
+      end
+      if filename:match("%.lua$") or filename:match("%.d%.tl$") then
+         self.errs:add(ast, "the C generation target expects a Teal source file")
+      end
+      self.native_ffi = c_ffi.new(ast)
+      ast.native_ffi = self.native_ffi
+      for _, stmt in ipairs(ast) do stmt.native_top_level = true end
+   end
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
@@ -3261,6 +3299,7 @@ function check.check(ast, env, filename)
    self.errs:check_var_usage(global_scope)
 
    errors.clear_redundant_errors(self.errs.errors)
+   if self.native_ffi then ast.native_checked = #self.errs.errors == 0 end
 
    local result = {
       ast = ast,
@@ -3289,6 +3328,7 @@ end
 -- module teal.check.context from teal/check/context.lua
 package.preload["teal.check.context"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+
 
 
 
@@ -3467,7 +3507,78 @@ local context = { Context = {} }
 
 
 
+
+
 local Context = context.Context
+
+
+
+function Context:contains_dynamic(t, receiver)
+   local seen = {}
+   local function has_dynamic(typ)
+      if not typ or seen[typ] then return false end
+      seen[typ] = true
+      if typ.typename == "any" or typ.typename == "unknown" then return true end
+      if typ.typename == "tuple" or typ.typename == "union" then
+         local members = typ.typename == "tuple" and typ.tuple or (typ).types
+         for _, member in ipairs(members) do
+            if has_dynamic(member) then return true end
+         end
+      elseif typ.typename == "typedecl" then
+         return has_dynamic(typ.def)
+      elseif typ.typename == "nominal" then
+         for _, typearg in ipairs(typ.typevals or {}) do
+            if has_dynamic(typearg) then return true end
+         end
+         return has_dynamic(typ.resolved or (typ.found and typ.found.def))
+      elseif typ.typename == "generic" then
+         for _, typearg in ipairs(typ.typeargs) do
+            if has_dynamic(typearg.constraint) then return true end
+         end
+         return has_dynamic(typ.t)
+      elseif typ.typename == "typevar" or typ.typename == "typearg" then
+         return has_dynamic(typ.constraint)
+      elseif not receiver then
+         if typ.typename == "function" then
+            return has_dynamic(typ.args) or has_dynamic(typ.rets)
+         elseif typ.typename == "map" then
+            return has_dynamic(typ.keys) or has_dynamic(typ.values)
+         elseif typ.fields then
+            for _, fields in ipairs({ typ.fields, typ.meta_fields or {} }) do
+               for _, member in pairs(fields) do
+                  if has_dynamic(member) then return true end
+               end
+            end
+            for _, member in ipairs(typ.types or {}) do
+               if has_dynamic(member) then return true end
+            end
+            return has_dynamic(typ.elements)
+         elseif typ.typename == "array" then
+            return has_dynamic(typ.elements)
+         elseif typ.types then
+            for _, member in ipairs(typ.types) do
+               if has_dynamic(member) then return true end
+            end
+         end
+      end
+      return false
+   end
+   return has_dynamic(t)
+end
+
+function context.block_returns(body)
+   local last = body[#body]
+   if not last then return false end
+   if last.kind == "return" then return true end
+   if last.kind == "do" then return context.block_returns(last.body) end
+   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
+      for _, branch in ipairs(last.if_blocks) do
+         if not context.block_returns(branch.body) then return false end
+      end
+      return true
+   end
+   return false
+end
 
 
 
@@ -5211,6 +5322,20 @@ function Context:add_function_definition_for_recursion(node, fnargs, feat_arity,
 end
 
 function Context:end_function_scope(node)
+   local rets = node.rets
+   if self.strict_pragma and node.body and rets and #rets.tuple > 0 and
+      not context.block_returns(node.body) then
+      local nil_type = a_type(node, "nil", {})
+      for _, ret in ipairs(rets.tuple) do
+         if not self:is_a(nil_type, ret) then
+            self.errs:add(node, "strict mode: function may end without returning a non-nil result")
+            break
+         end
+      end
+   end
+   if self.native_ffi and rets and rets.tuple[1] then
+      node.native_return_type = self:to_structural(rets.tuple[1])
+   end
    self.errs:fail_unresolved_labels(self.st[#self.st])
    self:end_scope(node)
 end
@@ -5597,6 +5722,9 @@ function Context:determine_declaration_type(var, node, infertypes, i)
          if not ok then
             self.errs:add_prefixing(w, errs, self.errs:get_context(node, name))
          end
+      elseif self.strict_pragma and not self:is_a(a_type(var, "nil", {}), decltype) then
+         self.errs:add(var, "strict mode: non-nil variable '" .. name .. "' requires an initializer")
+         ok = false
       end
    else
       if infertype then
@@ -5726,6 +5854,7 @@ do
 
    local function recurse_type_declaration(self, n)
       if n.kind == "op" then
+         if self.native_ffi or self.strict_pragma then n.type_require = true end
 
          if n.op.op == "." then
             local ty = recurse_type_declaration(self, n.e1)
@@ -5800,10 +5929,11 @@ do
       end
    end
 
-   function Context.new(env, filename)
+   function Context.new(env, filename, strict_pragma)
       local self = {
          filename = filename,
          env = env,
+         strict_pragma = strict_pragma,
          st = {
             {
                vars = env.globals,
@@ -5826,9 +5956,9 @@ do
 
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t).def
 
-      self.feat_arity = set_feat(env.opts.feat_arity, true)
-      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
-      self.feat_lax = not not filename:match("%.lua$")
+      self.feat_arity = strict_pragma ~= nil or set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = strict_pragma ~= nil or set_feat(env.opts.feat_strict_nil, true)
+      self.feat_lax = not strict_pragma and not not filename:match("%.lua$")
 
       if self.feat_lax then
          self.feat_arity = false
@@ -6090,6 +6220,9 @@ local function compare_or_infer_typevar(ck, typevar, a, b, cmp)
 end
 
 local function subtype_record(ck, a, b)
+   if (a.native_pointer or b.native_pointer) and a.native_pointer ~= b.native_pointer then
+      return false, { types.error("%s is not compatible with %s", a, b) }
+   end
    if a.elements and b.elements then
       if not ck:is_a(a.elements, b.elements) then
          return false, { errors.new("array parts have incompatible element types") }
@@ -7120,7 +7253,7 @@ function require_file.search_and_load(env, module_name, extension_set)
    local w = { f = found, x = 1, y = 1 }
    env.modules[module_name] = a_circular_require(w)
 
-   local found_result = input.check(env, found, code)
+   local found_result = input.check(env, found, code, true)
    if not found_result then
       return nil, nil, tried
    end
@@ -7584,10 +7717,19 @@ local special_functions = {
          return self:invalid_at(node, "require expects one literal argument")
       end
       if node.e2[1].kind ~= "string" then
+         if self.native_ffi then
+            return self:invalid_at(node, "the C target only supports a literal runtime require of 'ffi'")
+         end
          return a_type(node, "tuple", { tuple = { a_type(node, "any", {}) } })
       end
 
       local module_name = assert(node.e2[1].conststr)
+      if self.native_ffi and not node.type_require then
+         if module_name == "ffi" then
+            return a_type(node, "tuple", { tuple = { self.native_ffi.ffi } })
+         end
+         return self:invalid_at(node, "the C target only supports runtime require('ffi'); use 'local type' for type imports")
+      end
       local t, module_filename = self.env:require_module(module_name)
       if not t then
          return self:invalid_at(node, "module not found: '" .. module_name .. "'")
@@ -7924,7 +8066,8 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
-
+local context = require("teal.check.context")
+local c_ffi = require("teal.gen.c_ffi")
 
 
 local tldebug = require("teal.debug")
@@ -8861,20 +9004,6 @@ local function assert_is_a(ctx, w, t1, t2, ectx, name)
    return ok
 end
 
-local function short_block_returns(body)
-   local last = body[#body]
-   if not last then return false end
-   if last.kind == "return" then return true end
-   if last.kind == "do" then return short_block_returns(last.body) end
-   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
-      for _, branch in ipairs(last.if_blocks) do
-         if not short_block_returns(branch.body) then return false end
-      end
-      return true
-   end
-   return false
-end
-
 local function contextual_function(self, expected)
    if not expected then return nil end
    local resolved = self:resolve_typevars(expected)
@@ -9068,6 +9197,10 @@ visit_node.cbs = {
             end
 
             assert(var)
+            if self.strict_pragma and self:contains_dynamic(t) then
+               t = self.errs:invalid_at(var, "strict mode: a declaration cannot have type 'any' or 'unknown'")
+            end
+            if self.native_ffi then var.native_type = t end
             local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
             if not keep_literal and node.exps and node.exps[i] then
                local exp = node.exps[i]
@@ -9091,7 +9224,9 @@ visit_node.cbs = {
                local w = node.exps[i] or node.exps
 
                local rt = self:to_structural(t)
-               if (not (rt.typename == "enum")) and
+
+               local native_number = self.native_ffi and rt.typename == "number" and self:to_structural(infertype).typename == "integer"
+               if not native_number and (not (rt.typename == "enum")) and
                   ((not (t.typename == "nominal")) or (rt.typename == "union")) and
                   not self:same_type(t, infertype) then
 
@@ -9386,7 +9521,7 @@ visit_node.cbs = {
          self:begin_scope(node)
          local from_t = self:to_structural(untuple(children[2]))
          local to_t = self:to_structural(untuple(children[3]))
-         local step_t = children[4] and self:to_structural(children[4])
+         local step_t = children[4] and self:to_structural(untuple(children[4]))
          if self.feat_strict_nil then
             local numeric = a_type(node, "number", {})
             if not self:is_a(from_t, numeric) then
@@ -9408,7 +9543,9 @@ visit_node.cbs = {
          (not step_t or step_t.typename == "integer")) and
          "integer" or
          "number"
-         self:add_var(node.var, node.var.tk, a_type(node.var, typename, {}))
+         local t = a_type(node.var, typename, {})
+         if self.native_ffi then node.var.native_type = t end
+         self:add_var(node.var, node.var.tk, t)
       end,
       after = function(self, node, _children)
          local var = self:find_var(node.var.tk)
@@ -10018,7 +10155,7 @@ visit_node.cbs = {
          assert(rets.typename == "tuple")
          if node.infer_returns then
             rets = node.inferred_rets or a_type(node, "tuple", { tuple = {} })
-            if not short_block_returns(node.body) then
+            if not context.block_returns(node.body) then
                local nullable = a_type(node, "tuple", { tuple = {} })
                for i, member in ipairs(rets.tuple) do
                   nullable.tuple[i] = unite(node, { member, a_type(node, "nil", {}) }, true, not self.feat_strict_nil)
@@ -10070,6 +10207,7 @@ visit_node.cbs = {
    ["paren"] = {
       before = function(_self, node)
          node.e1.expected = node.expected
+         node.e1.strict_receiver = node.strict_receiver
       end,
       after = function(self, node, children)
          self.fdb:set_from(node, node.e1)
@@ -10099,6 +10237,10 @@ visit_node.cbs = {
    ["op"] = {
       before = function(self, node)
          self:begin_implied_scope()
+         if self.strict_pragma then
+            local op = node.op.op
+            node.e1.strict_receiver = op == "." or op == ":" or op == "@index" or op == "@funcall"
+         end
          if node.expected then
             if node.op.op == "and" then
                node.e2.expected = node.expected
@@ -10217,6 +10359,29 @@ visit_node.cbs = {
          end
 
          if node.op.op == "@funcall" then
+            if self.native_ffi and ra.typeid == self.native_ffi.cdef.typeid then
+               if not node.native_top_level then
+                  return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
+               end
+               if #node.e2 ~= 1 or node.e2[1].kind ~= "string" then
+                  return self.errs:invalid_at(node, "ffi.cdef expects one string literal")
+               end
+               local current = self:find_var("C", "check_only")
+               if current and current.t.typeid ~= self.native_ffi.namespace.typeid then
+                  return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
+               end
+               local source, literal_error = c_ffi.decode_string(node.e2[1].tk)
+               if not source then
+                  return self.errs:invalid_at(node.e2[1], literal_error)
+               end
+               local ok, err = c_ffi.declare(self.native_ffi, node, source)
+               if not ok then
+                  return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
+               end
+               if not current then self:add_var(nil, "C", self.native_ffi.namespace, "const") end
+               node.native_cdef = true
+               return a_type(node, "tuple", { tuple = {} })
+            end
             if not self.feat_strict_nil then ua = non_nil_type(self, node, ua) end
             if self.feat_lax and is_unknown(ua) then
                if node.e1.op and node.e1.op.op == ":" and node.e1.e1.kind == "variable" then
@@ -10231,6 +10396,12 @@ visit_node.cbs = {
             local ok, err = ensure_not_abstract(ra)
             if not ok then
                return self.errs:invalid_at(node.e1, err)
+            end
+            if self.strict_pragma then
+               local source = gb.typename == "tuple" and ga or ua
+               if self:contains_dynamic(source) or self:contains_dynamic(gb) or not self:is_a(source, gb) then
+                  return self.errs:invalid_at(node, "strict mode: 'as' requires a widening conversion, got %s as %s", source, gb)
+               end
             end
             return gb
 
@@ -10729,7 +10900,17 @@ visit_node.cbs = {
    },
    ["pragma"] = {
       after = function(self, node, _children)
-         if node.pkey == "arity" then
+         if node.pkey == "strict" then
+            if node.pvalue ~= "on" then
+               return self.errs:invalid_at(node, "pragma 'strict' expects 'on'")
+            elseif self.strict_pragma ~= node then
+               return self.errs:invalid_at(node, "pragma 'strict on' must appear once at the beginning of the file")
+            end
+         elseif self.strict_pragma and (node.pkey == "arity" or node.pkey == "strict_nil") then
+            if node.pvalue ~= "on" then
+               return self.errs:invalid_at(node, "strict mode: pragma '" .. node.pkey .. "' must be 'on'")
+            end
+         elseif node.pkey == "arity" then
             if node.pvalue == "on" then
                self.feat_arity = true
                self.env.opts.feat_arity = "on"
@@ -10853,11 +11034,15 @@ visit_node.cbs["expression_list"] = {
    end,
 }
 
-visit_node.after = function(_self, node, _children, t)
+visit_node.after = function(self, node, _children, t)
    if node.expanded then
       macroexps.apply(node)
    end
 
+   if self.native_ffi and t ~= NONE then node.native_type = t end
+   if self.strict_pragma and not node.type_require and self:contains_dynamic(t, node.strict_receiver) then
+      return self.errs:invalid_at(node, "strict mode: a value cannot have type 'any' or 'unknown'")
+   end
    return t
 end
 
@@ -11123,7 +11308,14 @@ visit_type.cbs["literal_table_item"] = default_type_visitor
 visit_type.cbs["unresolved_emptytable_value"] = default_type_visitor
 visit_type.cbs["tuple"] = default_type_visitor
 visit_type.cbs["poly"] = default_type_visitor
-visit_type.cbs["any"] = default_type_visitor
+visit_type.cbs["any"] = {
+   after = function(self, t, _children)
+      if self.strict_pragma then
+         return self.errs:invalid_at(t, "strict mode: type 'any' is not allowed")
+      end
+      return t
+   end,
+}
 visit_type.cbs["unknown"] = default_type_visitor
 visit_type.cbs["invalid"] = default_type_visitor
 visit_type.cbs["none"] = default_type_visitor
@@ -12199,6 +12391,1191 @@ return facts
 
 end
 
+-- module teal.gen.c_ffi from teal/gen/c_ffi.lua
+package.preload["teal.gen.c_ffi"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local utf8 = _tl_compat and _tl_compat.utf8 or utf8
+local types = require("teal.types")
+
+
+
+
+
+
+local a_type = types.a_type
+local util = require("teal.util")
+
+local c_ffi = { CType = {}, Symbol = {}, State = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local function record_type(w, name)
+   return a_type(w, "record", { declname = name, fields = {}, field_order = {} })
+end
+
+local function tuple(w, members, variadic)
+   return a_type(w, "tuple", { tuple = members, is_va = variadic })
+end
+
+function c_ffi.new(w)
+   local ffi = record_type(w, "ffi")
+   local namespace = record_type(w, "C")
+   local cdef = types.a_function(w, {
+      min_arity = 1,
+      args = tuple(w, { a_type(w, "string", {}) }),
+      rets = tuple(w, {}),
+   })
+   ffi.fields = { C = namespace, cdef = cdef }
+   ffi.field_order = { "C", "cdef" }
+   return {
+      ffi = ffi, namespace = namespace, cdef = cdef,
+      symbols = {}, aliases = {}, pointers = {}, tags = {}, declarations = {},
+   }
+end
+
+local escapes = {
+   a = "\a", b = "\b", f = "\f", n = "\n", r = "\r", t = "\t", v = "\v",
+   ["\\"] = "\\", ["'"] = "'", ['"'] = '"',
+}
+
+
+function c_ffi.decode_string(token)
+   local opening = token:match("^%[=*%[")
+   if opening then
+      local text = token:sub(#opening + 1, -#opening - 1)
+      text = text:gsub("\r\n", "\n"):gsub("\n\r", "\n"):gsub("\r", "\n")
+      return (text:gsub("^\n", ""))
+   end
+
+   local text = token:sub(2, -2)
+   local parts = {}
+   local pos = 1
+   while pos <= #text do
+      local slash = text:find("\\", pos, true)
+      if not slash then
+         table.insert(parts, text:sub(pos))
+         break
+      end
+      table.insert(parts, text:sub(pos, slash - 1))
+      local c = text:sub(slash + 1, slash + 1)
+      pos = slash + 2
+      if escapes[c] then
+         table.insert(parts, escapes[c])
+      elseif c == "\n" or c == "\r" then
+         local following = text:sub(pos, pos)
+         if (following == "\n" or following == "\r") and following ~= c then pos = pos + 1 end
+         table.insert(parts, "\n")
+      elseif c == "z" then
+         pos = text:find("%S", pos) or (#text + 1)
+      elseif c == "u" then
+         local hex = text:match("^%{(%x+)%}", pos)
+         local codepoint = hex and tonumber(hex, 16)
+         if not codepoint or codepoint > 0x10ffff then return nil, "invalid Unicode string escape" end
+         table.insert(parts, utf8.char(codepoint))
+         pos = pos + #hex + 2
+      elseif c == "x" then
+         local hex = text:match("^%x%x", pos)
+         if not hex then return nil, "invalid hexadecimal string escape" end
+         table.insert(parts, string.char(tonumber(hex, 16)))
+         pos = pos + 2
+      else
+         local decimal = text:match("^%d%d?%d?", slash + 1)
+         local byte = decimal and tonumber(decimal)
+         if not byte or byte > 255 then return nil, "unsupported string escape" end
+         table.insert(parts, string.char(byte))
+         pos = slash + 1 + #decimal
+      end
+   end
+   return table.concat(parts)
+end
+
+local failure_tag = {}
+local function fail(message)
+   error({ failure_tag, message }, 0)
+end
+
+local function tokenize(source)
+   local tokens = {}
+   local pos = 1
+   while pos <= #source do
+      local space = source:match("^%s+", pos)
+      local start = source:sub(pos, pos + 1)
+      if space then
+         pos = pos + #space
+      elseif start == "//" then
+         pos = source:find("\n", pos + 2, true) or (#source + 1)
+      elseif start == "/*" then
+         local close = source:find("*/", pos + 2, true)
+         if not close then fail("unterminated C comment") end
+         pos = close + 2
+      else
+         local token = source:match("^[a-zA-Z_][a-zA-Z_0-9]*", pos) or
+         source:match("^%.%.%.", pos) or source:match("^[*(),;]", pos)
+         if not token then
+            fail("unexpected character " .. string.format("%q", source:sub(pos, pos)))
+         end
+         table.insert(tokens, token)
+         pos = pos + #token
+      end
+   end
+   return tokens
+end
+
+local integer_spellings = {
+   ["char"] = "char",
+   ["signed char"] = "signed char",
+   ["unsigned char"] = "unsigned char",
+   ["short"] = "short",
+   ["short int"] = "short",
+   ["signed short"] = "short",
+   ["signed short int"] = "short",
+   ["unsigned short"] = "unsigned short",
+   ["unsigned short int"] = "unsigned short",
+   ["int"] = "int",
+   ["signed"] = "int",
+   ["signed int"] = "int",
+   ["unsigned"] = "unsigned int",
+   ["unsigned int"] = "unsigned int",
+   ["long"] = "long",
+   ["long int"] = "long",
+   ["signed long"] = "long",
+   ["signed long int"] = "long",
+   ["unsigned long"] = "unsigned long",
+   ["unsigned long int"] = "unsigned long",
+   ["long long"] = "long long",
+   ["long long int"] = "long long",
+   ["signed long long"] = "long long",
+   ["signed long long int"] = "long long",
+   ["unsigned long long"] = "unsigned long long",
+   ["unsigned long long int"] = "unsigned long long",
+}
+for _, name in ipairs({ "size_t", "ptrdiff_t", "intptr_t", "uintptr_t",
+   "int8_t", "uint8_t", "int16_t", "uint16_t",
+   "int32_t", "uint32_t", "int64_t", "uint64_t", }) do
+   integer_spellings[name] = name
+end
+
+local reserved = {}
+for name in ("auto break case char const continue default do double else enum extern float for goto if inline " ..
+   "int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile " ..
+   "while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local " ..
+   "_Nonnull _Nullable alignas alignof bool constexpr false nullptr static_assert thread_local true typeof " ..
+   "typeof_unqual NULL main"):gmatch("%S+") do
+   reserved[name] = true
+end
+
+local function identifier(name)
+   return name and name:match("^[a-zA-Z_][a-zA-Z_0-9]*$") ~= nil and
+   not reserved[name] and not name:match("^tl_native_")
+end
+
+local function parse_type(aliases, words)
+   local base = {}
+   local is_const = false
+   local is_pointer = false
+   local nullability
+   for _, word in ipairs(words) do
+      if word == "*" and not is_pointer then
+         is_pointer = true
+      elseif (word == "_Nullable" or word == "_Nonnull") and not nullability then
+         nullability = word
+      elseif word == "const" and not is_pointer and not is_const then
+         is_const = true
+      elseif is_pointer and (word == "const" or word == "restrict") then
+
+      elseif not is_pointer then
+         table.insert(base, word)
+      else
+         return nil
+      end
+   end
+
+   local name = table.concat(base, " ")
+   local integer = integer_spellings[name]
+   local kind
+   local spelling, tag
+   local aliased = aliases[name]
+   if aliased then
+      if aliased.pointer then
+         if is_pointer or is_const then return nil end
+         local copy = util.shallow_copy_table(aliased)
+         copy.nullability = nullability or copy.nullability
+         copy.spelling = name
+         return copy
+      end
+      kind, spelling, tag = aliased.kind, aliased.spelling, aliased.tag
+   elseif integer then
+      kind, spelling = "integer", integer
+   elseif name == "double" or name == "float" then
+      kind, spelling = "number", name
+   elseif name == "_Bool" or name == "bool" then
+      kind, spelling = "boolean", "_Bool"
+   elseif name == "void" then
+      kind, spelling = "void", name
+   elseif #base == 2 and (base[1] == "struct" or base[1] == "union") and identifier(base[2]) then
+      kind, spelling, tag = "tag", name, name
+   else
+      return nil
+   end
+
+   if is_pointer then
+      local pointer = (is_const and "const " or "") .. spelling .. " *"
+      return {
+         kind = is_const and spelling == "char" and "string" or "pointer",
+         spelling = pointer,
+         pointer = pointer,
+         nullability = nullability,
+         tag = tag,
+         mutable_char = not is_const and spelling == "char",
+      }
+   elseif not nullability and not (is_const and kind == "void") then
+      return { kind = kind, spelling = (is_const and "const " or "") .. spelling, tag = tag }
+   end
+end
+
+local function declared_type(aliases, words, needs_name)
+   local text = table.concat(words, " ")
+   if not needs_name then
+      local t = parse_type(aliases, words)
+      if t then return t, nil end
+   end
+   local name = table.remove(words)
+   local t = identifier(name) and parse_type(aliases, words)
+   if not t then fail("unsupported C declarator '" .. text .. "'") end
+   return t, name
+end
+
+local function parse_declarations(state, source)
+   local tokens = tokenize(source)
+   local aliases = util.shallow_copy_table(state.aliases)
+   local symbols = {}
+   local names = {}
+   local i = 1
+
+   local function consume(token)
+      if tokens[i] ~= token then
+         fail("expected '" .. token .. "' before '" .. (tokens[i] or "end of declaration") .. "'")
+      end
+      i = i + 1
+   end
+
+   local function words_until(delimiters)
+      local words = {}
+      while tokens[i] and not delimiters[tokens[i]] do
+         table.insert(words, tokens[i])
+         i = i + 1
+      end
+      return words
+   end
+
+   while tokens[i] do
+      local is_extern = tokens[i] == "extern"
+      local is_typedef = tokens[i] == "typedef"
+      if is_extern or is_typedef then i = i + 1 end
+      local head = words_until({ ["("] = true, [";"] = true })
+      local is_function = tokens[i] == "("
+      local tag = not is_function and not is_typedef and not is_extern and parse_type(aliases, head)
+      if tag and tag.kind == "tag" then
+         table.insert(symbols, { result = tag })
+         consume(";")
+      else
+         local t, name = declared_type(aliases, head, true)
+         if names[name] or state.symbols[name] or integer_spellings[name] then
+            fail("duplicate or reserved C name '" .. name .. "'")
+         end
+         names[name] = true
+         local symbol = { name = name, result = t, typedef = is_typedef }
+         if is_function then
+            if is_typedef or t.kind == "tag" then fail("unsupported C function declaration for '" .. name .. "'") end
+            consume("(")
+            symbol.params = {}
+            local spellings = {}
+            if tokens[i] == "void" and tokens[i + 1] == ")" then i = i + 1 end
+            if tokens[i] ~= ")" then
+               while true do
+                  if tokens[i] == "..." then
+                     if #symbol.params == 0 then fail("a variadic C function needs a fixed parameter") end
+                     symbol.variadic = true
+                     table.insert(spellings, "...")
+                     i = i + 1
+                     break
+                  end
+                  local param = declared_type(aliases, words_until({ [","] = true, [")"] = true }), false)
+                  if param.kind == "tag" or param.kind == "void" then
+                     fail("unsupported parameter type '" .. param.spelling .. "' for '" .. name .. "'")
+                  end
+                  table.insert(symbol.params, param)
+                  table.insert(spellings, param.spelling)
+                  if tokens[i] ~= "," then break end
+                  consume(",")
+               end
+            end
+            consume(")")
+            local args = #spellings > 0 and table.concat(spellings, ", ") or "void"
+            symbol.declaration = t.spelling .. " " .. name .. "(" .. args .. ");"
+         elseif is_typedef then
+            aliases[name] = t
+            symbol.declaration = "typedef " .. t.spelling .. " " .. name .. ";"
+         elseif is_extern and t.kind ~= "void" and t.kind ~= "tag" then
+            symbol.declaration = "extern " .. t.spelling .. " " .. name .. ";"
+         else
+            fail("expected a function prototype, typedef, or extern object declaration for '" .. name .. "'")
+         end
+         consume(";")
+         table.insert(symbols, symbol)
+      end
+   end
+   if #symbols == 0 then fail("expected at least one C declaration") end
+   return symbols, aliases
+end
+
+local function teal_type(state, w, c, output)
+   local t
+   if c.kind == "pointer" and not (output and c.mutable_char) then
+      t = state.pointers[c.pointer]
+      if not t then
+         local pointer = record_type(w, c.pointer)
+         pointer.is_userdata = true
+         pointer.native_pointer = c.pointer
+         state.pointers[c.pointer] = pointer
+         t = pointer
+      end
+   elseif c.kind == "string" or (output and c.mutable_char) then
+      t = a_type(w, "string", {})
+   elseif c.kind == "integer" or c.kind == "number" or c.kind == "boolean" then
+      t = a_type(w, c.kind, {})
+   end
+   if t and c.pointer and (c.nullability == "_Nullable" or (output and c.nullability ~= "_Nonnull")) then
+      t = types.unite(w, { t, a_type(w, "nil", {}) }, true, false)
+   end
+   return t
+end
+
+local function add_tag(state, c)
+   if c.tag and not state.tags[c.tag] then
+      state.tags[c.tag] = true
+      table.insert(state.declarations, c.tag .. ";")
+   end
+end
+
+function c_ffi.declare(state, w, source)
+   local ok, result, aliases = pcall(parse_declarations, state, source)
+   if not ok then
+      local failure = result
+      if type(failure) == "table" and failure[1] == failure_tag then return false, failure[2] end
+      error(result, 0)
+   end
+
+   state.aliases = aliases
+   for _, symbol in ipairs(result) do
+      local c = symbol.result
+      add_tag(state, c)
+      if symbol.name then
+         local t
+         if symbol.typedef then
+            local def = teal_type(state, w, c)
+            if def then t = a_type(w, "typedecl", { def = def, closed = true }) end
+         elseif symbol.params then
+            local args = {}
+            for _, param in ipairs(symbol.params) do
+               add_tag(state, param)
+               table.insert(args, teal_type(state, w, param))
+            end
+            if symbol.variadic then
+               table.insert(args, types.unite(w, {
+                  a_type(w, "number", {}), a_type(w, "boolean", {}),
+                  a_type(w, "string", {}), a_type(w, "nil", {}),
+               }, true, false))
+            end
+            local ret = teal_type(state, w, c, true)
+            t = types.a_function(w, {
+               min_arity = #symbol.params, args = tuple(w, args, symbol.variadic),
+               rets = tuple(w, ret and { ret } or {}),
+            })
+         else
+            t = teal_type(state, w, c, true)
+         end
+         state.symbols[symbol.name] = symbol
+         if t then
+            state.namespace.fields[symbol.name] = t
+            table.insert(state.namespace.field_order, symbol.name)
+         end
+         table.insert(state.declarations, symbol.declaration)
+      end
+   end
+   return true
+end
+
+return c_ffi
+
+end
+
+-- module teal.gen.c_generator from teal/gen/c_generator.lua
+package.preload["teal.gen.c_generator"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
+local ffi = require("teal.gen.c_ffi")
+
+
+local types = require("teal.types")
+
+
+local generator = {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local integer = { kind = "integer", ctype = "int64_t" }
+local number = { kind = "number", ctype = "double" }
+local boolean = { kind = "boolean", ctype = "_Bool" }
+local string_type = { kind = "string", ctype = "const char *" }
+local nil_type = { kind = "nil", ctype = "void *", nullable = true }
+local void = { kind = "void", ctype = "void" }
+
+local failure_tag = {}
+local function fail(node, message)
+   local position = ("%s:%d:%d"):format(node.f or "<input>", node.y or 1, node.x or 1)
+   error({ failure_tag, position .. ": C target: " .. message }, 0)
+end
+
+local function resolve(t)
+   if not (t.typename == "nominal" or t.typename == "typedecl") then return t end
+   local seen = {}
+   while t.typename == "nominal" or t.typename == "typedecl" do
+      if seen[t] then return nil end
+      seen[t] = true
+      if t.typename == "nominal" then
+         t = t.resolved or (t.found and t.found.def)
+      else
+         t = t.def
+      end
+   end
+   return t
+end
+
+local function representation(t)
+   t = resolve(t)
+   if not t then return nil end
+   if t.typename == "tuple" then
+      if t.is_va or #t.tuple > 1 then return nil end
+      if #t.tuple == 0 then return nil_type end
+      return representation(t.tuple[1])
+   elseif t.typename == "union" then
+      local value
+      local nullable = false
+      for _, member in ipairs(t.types) do
+         local r = representation(member)
+         if not r then return nil end
+         if r.kind == "nil" then
+            nullable = true
+         elseif not value or value.ctype == r.ctype then
+            value = r
+            nullable = nullable or r.nullable
+         else
+            return nil
+         end
+      end
+      if not value then return nil_type end
+      if nullable then
+         if value.kind ~= "string" and value.kind ~= "pointer" then return nil end
+         return { kind = value.kind, ctype = value.ctype, nullable = true }
+      end
+      return value
+   elseif t.typename == "record" and t.native_pointer then
+      return { kind = "pointer", ctype = t.native_pointer }
+   end
+   if t.typename == "integer" then return integer end
+   if t.typename == "number" then return number end
+   if t.typename == "boolean" then return boolean end
+   if t.typename == "string" or t.typename == "enum" then return string_type end
+   if t.typename == "nil" then return nil_type end
+end
+
+local function repr(node, t)
+   t = t or node.native_type
+   local r = representation(t)
+   if not r then fail(node, "unsupported value type " .. (t and types.show_type(t) or node.kind)) end
+   return r
+end
+
+local function emit(s, line)
+   table.insert(s.out, ("   "):rep(s.indent) .. line)
+end
+
+local function fresh(s)
+   s.next_id = s.next_id + 1
+   return "tl_native_" .. tostring(s.next_id)
+end
+
+local function lookup(s, name)
+   for i = #s.scopes, 1, -1 do
+      local binding = s.scopes[i][name]
+      if binding then return binding end
+   end
+end
+
+local function c_string(node)
+   local value, err = ffi.decode_string(node.tk)
+   if not value then fail(node, err) end
+   if value:find("\0", 1, true) then
+      fail(node, "strings containing NUL bytes are unsupported")
+   end
+   local parts = { '"' }
+   for i = 1, #value do
+      local byte = value:byte(i)
+      if byte >= 32 and byte <= 126 and byte ~= 34 and byte ~= 92 and byte ~= 63 then
+         table.insert(parts, string.char(byte))
+      else
+         table.insert(parts, ("\\%03o"):format(byte))
+      end
+   end
+   table.insert(parts, '"')
+   return table.concat(parts)
+end
+
+local helpers = {
+   int = [[
+#define tl_native_int(type, value) __extension__ ({ \
+   type tl_native_converted; \
+   if (__builtin_add_overflow((value), 0, &tl_native_converted)) __builtin_trap(); \
+   tl_native_converted; \
+})
+]],
+   idiv = [[
+static int64_t tl_native_idiv(int64_t a, int64_t b) {
+   if (b == 0) __builtin_trap();
+   if (b == -1) return (int64_t)(0 - (uint64_t)a);
+   int64_t quotient = a / b;
+   if (a % b != 0 && (a < 0) != (b < 0)) --quotient;
+   return quotient;
+}
+]],
+   imod = [[
+static int64_t tl_native_imod(int64_t a, int64_t b) {
+   if (b == 0) __builtin_trap();
+   if (b == -1) return 0;
+   int64_t remainder = a % b;
+   if (remainder != 0 && (remainder < 0) != (b < 0)) remainder += b;
+   return remainder;
+}
+]],
+   fmod = [[
+static double tl_native_fmod(double a, double b) {
+   double remainder = __builtin_fmod(a, b);
+   if ((remainder > 0 && b < 0) || (remainder < 0 && b > 0)) remainder += b;
+   return remainder;
+}
+]],
+   shift = [[
+static int64_t tl_native_shift(uint64_t value, int64_t amount, _Bool left) {
+   uint64_t count = (uint64_t)amount;
+   if (amount < 0) {
+      count = 0 - count;
+      left = !left;
+   }
+   if (count >= 64) return 0;
+   return (int64_t)(left ? value << count : value >> count);
+}
+]],
+   compare = [[
+/* 2 denotes an unordered comparison with NaN. */
+static int tl_native_compare(int64_t a, double b) {
+   if (__builtin_isnan(b)) return 2;
+   if (b >= 0x1p63) return -1;
+   if (b < -0x1p63) return 1;
+   int64_t integral = (int64_t)b;
+   if (a != integral) return a < integral ? -1 : 1;
+   return ((double)integral > b) - ((double)integral < b);
+}
+]],
+}
+
+local function int_conversion(s, ctype, value)
+   s.helpers.int = true
+   return "tl_native_int(" .. ctype .. ", " .. value .. ")"
+end
+
+local function ffi_result(s, typ, value)
+   if typ.kind == "void" then return "((void)(" .. value .. "), (void *)0)" end
+   if typ.kind == "integer" then return int_conversion(s, integer.ctype, value) end
+   if typ.kind == "number" then return "(double)(" .. value .. ")" end
+   if typ.mutable_char then return "(const char *)(" .. value .. ")" end
+   return value
+end
+
+local function is_ffi_reference(s, node)
+   if not node.native_type then return false end
+   local t = types.untuple(node.native_type)
+   if t.typeid ~= s.ffi.ffi.typeid and t.typeid ~= s.ffi.namespace.typeid then return false end
+   if node.kind == "variable" then
+      local b = lookup(s, node.tk)
+      return (b and b.virtual) or (not b and node.tk == "C" and t.typeid == s.ffi.namespace.typeid)
+   elseif node.kind == "paren" then
+      return is_ffi_reference(s, node.e1)
+   elseif node.kind == "op" then
+      if node.op.op == "." then return is_ffi_reference(s, node.e1) end
+      return t.typeid == s.ffi.ffi.typeid and node.op.op == "@funcall" and node.e1.kind == "variable" and
+      node.e1.tk == "require" and #node.e2 == 1 and node.e2[1].conststr == "ffi"
+   end
+   return false
+end
+
+local function foreign_symbol(s, node)
+   if node.kind == "op" and node.op.op == "." and node.e1.native_type and
+      types.untuple(node.e1.native_type).typeid == s.ffi.namespace.typeid and is_ffi_reference(s, node.e1) then
+      return s.ffi.symbols[node.e2.tk]
+   end
+end
+
+local expression
+
+local function returns_no_values(node)
+   local t = node.native_type
+   return t.typename == "tuple" and #t.tuple == 0 and not t.is_va
+end
+
+local function vararg(s, node, value)
+   local r = repr(node)
+   if r.kind == "integer" then return int_conversion(s, "int", value) end
+   if r.kind == "boolean" then return "(int)(" .. value .. ")" end
+   return value
+end
+
+local function call(s, node)
+   local callee = node.e1
+   while callee.kind == "paren" do callee = callee.e1 end
+   local foreign = foreign_symbol(s, callee)
+   local binding = callee.kind == "variable" and lookup(s, callee.tk)
+   if not (foreign and foreign.params) and not (binding and binding.params) then
+      fail(node, "only direct calls to local functions and declared C functions are supported")
+   end
+
+   local params = {}
+   local temps = {}
+   for i, argument in ipairs(node.e2) do
+      local value = expression(s, argument)
+      if i == #node.e2 and returns_no_values(argument) then
+         table.insert(temps, "(void)(" .. value .. ");")
+         break
+      end
+      local fixed = foreign and foreign.params[i]
+      local r = repr(argument)
+      if fixed and fixed.kind == "integer" then
+         value = int_conversion(s, fixed.spelling:gsub("^const ", ""), value)
+         r = { kind = "integer", ctype = fixed.spelling }
+      elseif foreign and not fixed then
+         value = vararg(s, argument, value)
+         if r.kind == "integer" or r.kind == "boolean" then r = { kind = "integer", ctype = "int" } end
+      end
+
+
+      if argument.kind ~= "string" and argument.kind ~= "integer" and argument.kind ~= "number" and
+         argument.kind ~= "boolean" and argument.kind ~= "nil" then
+         local tmp = fresh(s)
+         table.insert(temps, r.ctype .. " " .. tmp .. " = " .. value .. ";")
+         value = tmp
+      end
+      table.insert(params, value)
+   end
+
+   if binding then
+      for i = #params + 1, #binding.params do
+         if not binding.params[i].nullable then fail(node, "missing argument " .. tostring(i)) end
+         params[i] = "NULL"
+      end
+   end
+   local name = foreign and foreign.name or binding.name
+   local value = name .. "(" .. table.concat(params, ", ") .. ")"
+   if foreign then
+      value = ffi_result(s, foreign.result, value)
+   elseif representation(node.native_type) == nil_type then
+      value = "((void)(" .. value .. "), (void *)0)"
+   end
+   if #temps > 0 then
+      value = "__extension__ ({ " .. table.concat(temps, " ") .. " " .. value .. "; })"
+   end
+   return value
+end
+
+local function truth(r, value)
+   if r.kind == "boolean" then return value end
+   if r.kind == "nil" then return "((void)(" .. value .. "), 0)" end
+   if r.nullable then return value .. " != NULL" end
+   return "((void)(" .. value .. "), 1)"
+end
+
+local function condition(s, node)
+   return truth(repr(node), expression(s, node))
+end
+
+local function numeric(r)
+   return r.kind == "integer" or r.kind == "number"
+end
+
+local comparison_ops = {
+   ["=="] = "==", ["~="] = "!=", ["<"] = "<", [">"] = ">", ["<="] = "<=", [">="] = ">=",
+}
+local reversed_comparison = { ["<"] = ">", [">"] = "<", ["<="] = ">=", [">="] = "<=" }
+local function compare(s, node, op, a, b, left, right)
+   local equality = op == "==" or op == "!="
+   if a.kind == "string" and b.kind == "string" then
+      local compare_strings = "__builtin_strcmp(" .. left .. ", " .. right .. ")"
+      if equality then
+         local same = "(" .. left .. " == " .. right .. " || (" .. left .. " && " .. right .. " && " .. compare_strings .. " == 0))"
+         return op == "!=" and "!" .. same or same
+      end
+      return compare_strings .. " " .. op .. " 0"
+   elseif numeric(a) and numeric(b) and a.kind ~= b.kind then
+      s.helpers.compare = true
+      if a.kind == "number" then
+         left, right = right, left
+         op = reversed_comparison[op] or op
+      end
+      local tmp = fresh(s)
+      local test = tmp .. " " .. op .. " 0"
+      if not equality then test = tmp .. " != 2 && " .. test end
+      return "__extension__ ({ int " .. tmp .. " = tl_native_compare(" .. left .. ", " .. right .. "); " .. test .. "; })"
+   elseif numeric(a) and numeric(b) or (a.kind == "boolean" and b.kind == "boolean") then
+      return left .. " " .. op .. " " .. right
+   elseif equality then
+      local ap = a.kind == "pointer" or a.kind == "nil" or a.kind == "string"
+      local bp = b.kind == "pointer" or b.kind == "nil" or b.kind == "string"
+      if ap and bp then return "(const void *)" .. left .. " " .. op .. " (const void *)" .. right end
+      return op == "==" and "0" or "1"
+   end
+   fail(node, "unsupported comparison '" .. node.op.op .. "'")
+end
+
+local arithmetic = { ["+"] = true, ["-"] = true, ["*"] = true }
+local bitwise = { ["&"] = true, ["|"] = true, ["~"] = true }
+local function binary(s, node, op)
+   local a, b = repr(node.e1), repr(node.e2)
+   local left, right = fresh(s), fresh(s)
+   local operands = a.ctype .. " " .. left .. " __attribute__((unused)) = " .. expression(s, node.e1) .. "; " ..
+   b.ctype .. " " .. right .. " __attribute__((unused)) = " .. expression(s, node.e2) .. "; "
+   local result
+   if comparison_ops[op] then
+      result = compare(s, node, comparison_ops[op], a, b, left, right)
+   elseif arithmetic[op] and numeric(a) and numeric(b) then
+      if a.kind == "integer" and b.kind == "integer" then
+         result = "(int64_t)((uint64_t)" .. left .. " " .. op .. " (uint64_t)" .. right .. ")"
+      else
+         result = left .. " " .. op .. " " .. right
+      end
+   elseif (op == "/" or op == "//" or op == "%" or op == "^") and numeric(a) and numeric(b) then
+      local ints = a.kind == "integer" and b.kind == "integer"
+      if (op == "//" and ints) or op == "%" then
+         local name = op == "//" and "idiv" or (ints and "imod" or "fmod")
+         s.helpers[name] = true
+         result = "tl_native_" .. name .. "(" .. left .. ", " .. right .. ")"
+      elseif op == "^" then
+         result = "__builtin_pow(" .. left .. ", " .. right .. ")"
+      else
+         result = "(double)" .. left .. " / (double)" .. right
+         if op == "//" then result = "__builtin_floor(" .. result .. ")" end
+      end
+   elseif (bitwise[op] or op == "<<" or op == ">>") and a.kind == "integer" and b.kind == "integer" then
+      if bitwise[op] then
+         result = "(int64_t)((uint64_t)" .. left .. " " .. (op == "~" and "^" or op) .. " (uint64_t)" .. right .. ")"
+      else
+         s.helpers.shift = true
+         result = "tl_native_shift((uint64_t)" .. left .. ", " .. right .. ", " .. (op == "<<" and "1" or "0") .. ")"
+      end
+   else
+      fail(node, "unsupported binary operator '" .. op .. "'")
+   end
+   return "__extension__ ({ " .. operands .. result .. "; })"
+end
+
+local function operator(s, node)
+   local op = node.op.op
+   if op == "@funcall" then return call(s, node) end
+   if op == "." then
+      local foreign = foreign_symbol(s, node)
+      if foreign and not foreign.params and not foreign.typedef then
+         return ffi_result(s, foreign.result, foreign.name)
+      end
+      fail(node, "only declared C objects can be read through a field access")
+   end
+   if op == "as" then
+      local r = repr(node)
+      return "(" .. r.ctype .. ")(" .. expression(s, node.e1) .. ")"
+   end
+
+   local a = repr(node.e1)
+   if op == "is" then
+      local tested = resolve(node.e2.casttype)
+      if not tested or tested.typename == "union" or tested.typename == "enum" then
+         fail(node, "union and enum type tests are unsupported")
+      end
+      local b = repr(node.e2, tested)
+      local value = expression(s, node.e1)
+      if a.nullable and a.kind ~= "nil" and (b.kind == "nil" or a.ctype == b.ctype) then
+         return value .. (b.kind == "nil" and " == " or " != ") .. "NULL"
+      end
+      local is_type = a.ctype == b.ctype or (a.kind == "integer" and b.kind == "number")
+      return "((void)(" .. value .. "), " .. (is_type and "1" or "0") .. ")"
+   elseif op == "and" or op == "or" then
+      local value = expression(s, node.e1)
+      local r = repr(node)
+      local first = resolve(types.untuple(node.e1.native_type))
+      local known_truth
+      if first.typename == "boolean" then
+         known_truth = first.literal
+      elseif a.kind == "nil" then
+         known_truth = false
+      elseif not a.nullable then
+         known_truth = true
+      end
+      if known_truth ~= nil then
+         if (op == "or") == known_truth then return "(" .. r.ctype .. ")(" .. value .. ")" end
+         return "((void)(" .. value .. "), (" .. r.ctype .. ")(" .. expression(s, node.e2) .. "))"
+      end
+      local tmp = fresh(s)
+      local right = "(" .. r.ctype .. ")(" .. expression(s, node.e2) .. ")"
+      local left = "(" .. r.ctype .. ")" .. tmp
+      return "__extension__ ({ " .. a.ctype .. " " .. tmp .. " = " .. value .. "; " ..
+      truth(a, tmp) .. " ? " .. (op == "and" and right or left) .. " : " .. (op == "and" and left or right) .. "; })"
+   elseif node.op.arity == 1 then
+      local value = expression(s, node.e1)
+      if op == "not" then return "!(" .. truth(a, value) .. ")" end
+      if op == "#" and a.kind == "string" and not a.nullable then return "(int64_t)__builtin_strlen(" .. value .. ")" end
+      if op == "-" and a.kind == "integer" then return "(int64_t)(0 - (uint64_t)(" .. value .. "))" end
+      if op == "-" and a.kind == "number" then return "-(" .. value .. ")" end
+      if op == "~" and a.kind == "integer" then return "(int64_t)(~(uint64_t)(" .. value .. "))" end
+      fail(node, "unsupported unary operator '" .. op .. "'")
+   end
+   return binary(s, node, op)
+end
+
+expression = function(s, node)
+   if node.kind == "string" then
+      return c_string(node)
+   elseif node.kind == "integer" then
+      local lexeme = node.tk
+      if lexeme:match("^%d+$") then
+         lexeme = lexeme:gsub("^0+", "")
+         if lexeme == "" then lexeme = "0" end
+         if #lexeme > 20 or (#lexeme == 20 and lexeme > "18446744073709551615") then
+            fail(node, "integer literal exceeds 64 bits")
+         end
+      elseif lexeme:match("^0[xX]") then
+         local digits = lexeme:sub(3):gsub("^0+", "")
+         if #digits > 16 then fail(node, "integer literal exceeds 64 bits") end
+         lexeme = "0x" .. (#digits > 0 and digits or "0")
+      end
+      return "((int64_t)" .. lexeme .. "ULL)"
+   elseif node.kind == "number" then
+      local lexeme = node.tk
+      if lexeme:match("^0[xX]") and not lexeme:match("[pP]") then lexeme = lexeme .. "p0" end
+      return "((double)" .. lexeme .. ")"
+   elseif node.kind == "boolean" then
+      return node.tk == "true" and "((_Bool)1)" or "((_Bool)0)"
+   elseif node.kind == "nil" then
+      return "NULL"
+   elseif node.kind == "variable" then
+      local b = lookup(s, node.tk)
+      if b and not b.params and not b.virtual then return b.name end
+      fail(node, "unsupported value '" .. node.tk .. "'")
+   elseif node.kind == "paren" then
+      return "(" .. expression(s, node.e1) .. ")"
+   elseif node.kind == "op" then
+      return operator(s, node)
+   end
+   fail(node, "unsupported expression '" .. node.kind .. "'")
+end
+
+local statement
+
+local function statements(s, body)
+   for _, node in ipairs(body) do statement(s, node) end
+end
+
+local function block(s, header, body)
+   emit(s, header .. "{")
+   s.indent = s.indent + 1
+   table.insert(s.scopes, {})
+   statements(s, body)
+   table.remove(s.scopes)
+   s.indent = s.indent - 1
+   emit(s, "}")
+end
+
+local function rhs(s, exps, count)
+   local values = {}
+   for i, e in ipairs(exps or {}) do
+      local value = expression(s, e)
+      if i <= count then
+         local tmp = fresh(s)
+         emit(s, repr(e).ctype .. " " .. tmp .. " = " .. value .. ";")
+         values[i] = tmp
+      else
+         emit(s, "(void)(" .. value .. ");")
+      end
+   end
+   return values
+end
+
+local function local_declaration(s, node, top_level)
+   if #node.vars == 1 and node.exps and #node.exps == 1 and is_ffi_reference(s, node.exps[1]) then
+      s.scopes[#s.scopes][node.vars[1].tk] = { virtual = true }
+      return
+   end
+   local values = rhs(s, node.exps, #node.vars)
+   for i, var in ipairs(node.vars) do
+      local r = repr(var)
+      local name = fresh(s)
+      local declaration = r.ctype .. " " .. name .. " __attribute__((unused))"
+      local value = values[i] or "NULL"
+      if top_level then
+         table.insert(s.globals, "static " .. declaration .. ";")
+         emit(s, name .. " = " .. value .. ";")
+      else
+         emit(s, declaration .. " = " .. value .. ";")
+      end
+      s.scopes[#s.scopes][var.tk] = { name = name }
+   end
+end
+
+local function local_function(s, node, top_level)
+   if not top_level then fail(node, "local functions must be declared at the top level") end
+   if (node.typeargs and #node.typeargs > 0) or node.rets.is_va or #node.rets.tuple > 1 then
+      fail(node, "generic functions and multiple return values are unsupported")
+   end
+
+   local name = fresh(s)
+   local binding = { name = name, params = {} }
+   s.scopes[#s.scopes][node.name.tk] = binding
+   local ret = node.native_return_type and repr(node, node.native_return_type) or void
+   local params = {}
+   local scope = {}
+   for i, argument in ipairs(node.args) do
+      if argument.tk == "..." then fail(argument, "variadic Teal functions are unsupported") end
+      local r = repr(argument)
+      local param = fresh(s)
+      binding.params[i] = r
+      params[i] = r.ctype .. " " .. param .. " __attribute__((unused))"
+      scope[argument.tk] = { name = param }
+   end
+
+   local saved = s.out
+   s.out, s.indent, s.return_type = s.functions, 0, ret
+   emit(s, "static __attribute__((unused)) " .. ret.ctype .. " " .. name ..
+   "(" .. (#params > 0 and table.concat(params, ", ") or "void") .. ") {")
+   table.insert(s.scopes, scope)
+   s.indent = 1
+   statements(s, node.body)
+   if ret.nullable then emit(s, "return NULL;") end
+   table.remove(s.scopes)
+   s.indent = 0
+   emit(s, "}")
+   emit(s, "")
+   s.out, s.indent, s.return_type = saved, 1, nil
+end
+
+local function numeric_for(s, node)
+   local r = repr(node.var)
+   local start, limit, step, variable = fresh(s), fresh(s), fresh(s), fresh(s)
+   emit(s, "{")
+   s.indent = s.indent + 1
+   emit(s, r.ctype .. " " .. start .. " = " .. expression(s, node.from) .. ";")
+   emit(s, r.ctype .. " " .. limit .. " = " .. expression(s, node.to) .. ";")
+   emit(s, r.ctype .. " " .. step .. " = " .. (node.step and expression(s, node.step) or "1") .. ";")
+   emit(s, "if (" .. step .. " == 0) __builtin_trap();")
+   emit(s, "while (" .. step .. " > 0 ? " .. start .. " <= " .. limit .. " : " .. start .. " >= " .. limit .. ") {")
+   s.indent = s.indent + 1
+   emit(s, r.ctype .. " " .. variable .. " __attribute__((unused)) = " .. start .. ";")
+   table.insert(s.scopes, { [node.var.tk] = { name = variable } })
+   statements(s, node.body)
+   table.remove(s.scopes)
+   if r.kind == "integer" then
+      emit(s, "if (__builtin_add_overflow(" .. start .. ", " .. step .. ", &" .. start .. ")) break;")
+   else
+      emit(s, start .. " += " .. step .. ";")
+   end
+   s.indent = s.indent - 1
+   emit(s, "}")
+   s.indent = s.indent - 1
+   emit(s, "}")
+end
+
+statement = function(s, node, top_level)
+   if node.kind == "pragma" or node.kind == "local_type" or node.kind == "global_type" or
+      node.kind == "local_macroexp" or node.native_cdef then
+      return
+   elseif node.kind == "local_declaration" then
+      local_declaration(s, node, top_level)
+   elseif node.kind == "assignment" then
+      local values = rhs(s, node.exps, #node.vars)
+      for i, var in ipairs(node.vars) do
+         local binding = var.kind == "variable" and lookup(s, var.tk)
+         if not binding or binding.virtual or binding.params then
+            fail(var, "only local variables can be assigned")
+         end
+         emit(s, binding.name .. " = " .. (values[i] or "NULL") .. ";")
+      end
+   elseif node.kind == "local_function" then
+      local_function(s, node, top_level)
+   elseif node.kind == "if" then
+      for i, branch in ipairs(node.if_blocks) do
+         local header = i == 1 and "if " or "else "
+         if branch.exp then
+            if i > 1 then header = header .. "if " end
+            header = header .. "(" .. condition(s, branch.exp) .. ") "
+         end
+         block(s, header, branch.body)
+      end
+   elseif node.kind == "while" then
+      block(s, "while (" .. condition(s, node.exp) .. ") ", node.body)
+   elseif node.kind == "repeat" then
+      emit(s, "for (;;) {")
+      s.indent = s.indent + 1
+      table.insert(s.scopes, {})
+      statements(s, node.body)
+      emit(s, "if (" .. condition(s, node.exp) .. ") break;")
+      table.remove(s.scopes)
+      s.indent = s.indent - 1
+      emit(s, "}")
+   elseif node.kind == "fornum" then
+      numeric_for(s, node)
+   elseif node.kind == "do" then
+      block(s, "", node.body)
+   elseif node.kind == "break" then
+      emit(s, "break;")
+   elseif node.kind == "return" then
+      local value = node.exps[1]
+      if #node.exps > 1 then fail(node, "multiple return values are unsupported") end
+      if not s.return_type then
+         if value and returns_no_values(value) then
+            emit(s, "(void)(" .. expression(s, value) .. ");")
+            value = nil
+         end
+         if value and repr(value).kind ~= "integer" then fail(node, "the program exit status must be an integer") end
+         emit(s, "return " .. (value and int_conversion(s, "int", expression(s, value)) or "0") .. ";")
+      elseif s.return_type.kind == "void" then
+         if value then emit(s, "(void)(" .. expression(s, value) .. ");") end
+         emit(s, "return;")
+      else
+         emit(s, "return " .. (value and expression(s, value) or "NULL") .. ";")
+      end
+   elseif node.kind == "op" and node.op.op == "@funcall" then
+      emit(s, "(void)(" .. expression(s, node) .. ");")
+   else
+      fail(node, "unsupported statement '" .. node.kind .. "'")
+   end
+end
+
+local function generate(ast)
+   local s = {
+      ffi = ast.native_ffi, scopes = { {} }, globals = {}, functions = {},
+      out = {}, indent = 1, next_id = 0, helpers = {},
+   }
+   for _, node in ipairs(ast) do statement(s, node, true) end
+
+   local out = { "/* Generated by Teal's experimental C target. */", "#include <stddef.h>", "#include <stdint.h>", "" }
+   for _, decl in ipairs(s.ffi.declarations) do table.insert(out, decl) end
+   if #s.ffi.declarations > 0 then table.insert(out, "") end
+   for _, name in ipairs({ "int", "idiv", "imod", "fmod", "shift", "compare" }) do
+      if s.helpers[name] then table.insert(out, helpers[name]) end
+   end
+   for _, decl in ipairs(s.globals) do table.insert(out, decl) end
+   if #s.globals > 0 then table.insert(out, "") end
+   for _, line in ipairs(s.functions) do table.insert(out, line) end
+   table.insert(out, "int main(void) {")
+   for _, line in ipairs(s.out) do table.insert(out, line) end
+   if not ast[#ast] or ast[#ast].kind ~= "return" then table.insert(out, "   return 0;") end
+   table.insert(out, "}")
+   return table.concat(out, "\n")
+end
+
+function generator.generate(ast)
+   if not ast.native_checked then
+      return nil, "the C target requires a Teal file successfully checked with target 'c' and '--#pragma strict on'"
+   end
+   local ok, result = pcall(generate, ast)
+   if ok then return result, nil end
+   local failure = result
+   if type(failure) == "table" and failure[1] == failure_tag then return nil, failure[2] end
+   error(result, 0)
+end
+
+return generator
+
+end
+
 -- module teal.gen.lua_compat from teal/gen/lua_compat.lua
 package.preload["teal.gen.lua_compat"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
@@ -12513,7 +13890,9 @@ function lua_compat.apply(result)
    local gen_compat = result.env.opts.gen_compat or environment.DEFAULT_GEN_COMPAT
    local gen_target = result.env.opts.gen_target or environment.DEFAULT_GEN_TARGET
 
-   adjust_code(result.ast, result.needs_compat, gen_compat, gen_target)
+   if gen_target ~= "c" then
+      adjust_code(result.ast, result.needs_compat, gen_compat, gen_target)
+   end
 end
 
 return lua_compat
@@ -13461,6 +14840,7 @@ local targets = {}
 
 
 
+
 function targets.detect(override)
    local version = override or _VERSION
    if version == "Lua 5.1" or
@@ -13494,7 +14874,7 @@ local environment = require("teal.environment")
 local input = {}
 
 
-function input.check(env, filename, code)
+function input.check(env, filename, code, dependency)
    if env.loaded and env.loaded[filename] then
       return env.loaded[filename]
    end
@@ -13505,7 +14885,7 @@ function input.check(env, filename, code)
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program, env, filename)
+   local result = check.check(program, env, filename, dependency)
 
    result.syntax_errors = syntax_errors
 
@@ -21744,6 +23124,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -22371,6 +23752,7 @@ types.map = function(self, ty, fns)
          end
 
          copy.is_userdata = t.is_userdata
+         copy.native_pointer = t.native_pointer
 
          copy.fields = {}
          copy.field_order = {}
@@ -22849,6 +24231,7 @@ function types.drop_constant_values(t, keep_typedecls)
             end
          end
          copy.is_userdata = typ.is_userdata
+         copy.native_pointer = typ.native_pointer
          copy.fields = {}
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do

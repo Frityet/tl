@@ -11,7 +11,7 @@ local environment = require("teal.environment")
 local input = {}
 
 
-function input.check(env, filename, code)
+function input.check(env, filename, code, dependency)
    if env.loaded and env.loaded[filename] then
       return env.loaded[filename]
    end
@@ -22,7 +22,7 @@ function input.check(env, filename, code)
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program, env, filename)
+   local result = check.check(program, env, filename, dependency)
 
    result.syntax_errors = syntax_errors
 

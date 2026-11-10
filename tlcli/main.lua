@@ -46,8 +46,8 @@ local function get_args_parser()
    default("optional"):
    defmode("a")
 
-   parser:option("--gen-target", "Minimum targeted Lua version for generated code."):
-   choices({ "5.1", "5.3", "5.4", "5.5", "luajit" })
+   parser:option("--gen-target", "Target Lua version, or experimental native C."):
+   choices({ "5.1", "5.3", "5.4", "5.5", "luajit", "c" })
 
    parser:flag("--skip-compat53", "Skip compat53 insertions."):
    hidden(true):
@@ -65,7 +65,7 @@ local function get_args_parser()
    local check_command = parser:command("check", "Type-check one or more Teal files.")
    check_command:argument("file", "The Teal source file."):args("+")
 
-   local gen_command = parser:command("gen", "Generate a Lua file for one or more Teal files.")
+   local gen_command = parser:command("gen", "Generate Lua or C from Teal source.")
    gen_command:argument("file", "The Teal source file."):args("+")
    gen_command:option("--root", "Interpret module paths relative to given root directory."):
    argname("<dir>")
@@ -80,8 +80,7 @@ local function get_args_parser()
    "of the input files is preserved."):
    argname("<dir>")
    gen_command:option("--custom-ext", "Use a custom filename extension for generated output."):
-   argname("<.ext>"):
-   default(".lua")
+   argname("<.ext>")
 
    local run_command = parser:command("run", "Run a Teal script.")
    run_command:argument("script", "The Teal script."):args("+")

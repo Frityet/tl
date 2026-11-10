@@ -26,6 +26,7 @@ build = {
    modules = {
       -- Ship the compiled Lua module `tl` for API compatibility:
       tl = "tl.lua",
+      ["auxlib.ffi"] = "extras/auxlib/ffi.lua",
 
       -- Ship the compiled Lua modules from the `teal` namespace for runtime use:
       --[[ Generated via
@@ -56,6 +57,8 @@ build = {
       ["teal.environment"] = "teal/environment.lua",
       ["teal.errors"] = "teal/errors.lua",
       ["teal.facts"] = "teal/facts.lua",
+      ["teal.gen.c_ffi"] = "teal/gen/c_ffi.lua",
+      ["teal.gen.c_generator"] = "teal/gen/c_generator.lua",
       ["teal.gen.lua_compat"] = "teal/gen/lua_compat.lua",
       ["teal.gen.lua_generator"] = "teal/gen/lua_generator.lua",
       ["teal.gen.targets"] = "teal/gen/targets.lua",
@@ -102,6 +105,7 @@ build = {
       lua = {
          -- Ship the `tl` Teal module for API compatibility:
          "tl.tl",
+         ["auxlib.ffi"] = "extras/auxlib/ffi.tl",
 
          -- Ship the Teal modules in the `teal` namespace for requiring the Teal API:
          --[[ Generated via
@@ -132,6 +136,8 @@ build = {
          ["teal.environment"] = "teal/environment.tl",
          ["teal.errors"] = "teal/errors.tl",
          ["teal.facts"] = "teal/facts.tl",
+         ["teal.gen.c_ffi"] = "teal/gen/c_ffi.tl",
+         ["teal.gen.c_generator"] = "teal/gen/c_generator.tl",
          ["teal.gen.lua_compat"] = "teal/gen/lua_compat.tl",
          ["teal.gen.lua_generator"] = "teal/gen/lua_generator.tl",
          ["teal.gen.targets"] = "teal/gen/targets.tl",

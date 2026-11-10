@@ -38,6 +38,9 @@ local function type_check_and_load(tlconfig: TlConfig, filename: string): functi
 end
 
 return function(tlconfig: TlConfig, args: Args): any
+   if tlconfig["gen_target"] == "c" then
+      common.die("the C target requires tl gen followed by a C compiler")
+   end
    -- the script is loaded into the Lua running tl, so target that version
    local runtime_target = teal.runtime_target()
    if runtime_target and not tlconfig["gen_target"] then

@@ -1,4 +1,5 @@
 --#pragma strict_nil off
+local type c_ffi = require("teal.gen.c_ffi")
 local type attributes = require("teal.attributes")
 local type Attribute = attributes.Attribute
 
@@ -165,6 +166,8 @@ local record context
       feat_arity: boolean
       feat_lax: boolean
       feat_strict_nil: boolean
+      strict_pragma: Node
+      native_ffi: c_ffi.State
 
       type_check_funcall: function(self, node: Node, a: Type, b: TupleType, argdelta?: integer): InvalidOrTupleType
 
@@ -178,6 +181,75 @@ end
 --------------------------------------------------------------------------------
 
 local type Context = context.Context
+
+-- A receiver can be a library record with dynamic members. Only the
+-- selected member enters the expression, so do not inspect unused members.
+function Context:contains_dynamic(t: Type, receiver?: boolean): boolean
+   local seen: {Type:boolean} = {}
+   local function has_dynamic(typ: Type): boolean
+      if not typ or seen[typ] then return false end
+      seen[typ] = true
+      if typ.typename == "any" or typ.typename == "unknown" then return true end
+      if typ is TupleType or typ is UnionType then
+         local members = typ is TupleType and typ.tuple or (typ as UnionType).types
+         for _, member in ipairs(members) do
+            if has_dynamic(member) then return true end
+         end
+      elseif typ is TypeDeclType then
+         return has_dynamic(typ.def)
+      elseif typ is NominalType then
+         for _, typearg in ipairs(typ.typevals or {}) do
+            if has_dynamic(typearg) then return true end
+         end
+         return has_dynamic(typ.resolved or (typ.found and typ.found.def))
+      elseif typ is GenericType then
+         for _, typearg in ipairs(typ.typeargs) do
+            if has_dynamic(typearg.constraint) then return true end
+         end
+         return has_dynamic(typ.t)
+      elseif typ is TypeVarType or typ is TypeArgType then
+         return has_dynamic(typ.constraint)
+      elseif not receiver then
+         if typ is FunctionType then
+            return has_dynamic(typ.args) or has_dynamic(typ.rets)
+         elseif typ is MapType then
+            return has_dynamic(typ.keys) or has_dynamic(typ.values)
+         elseif typ is RecordLikeType then
+            for _, fields in ipairs({ typ.fields, typ.meta_fields or {} }) do
+               for _, member in pairs(fields) do
+                  if has_dynamic(member) then return true end
+               end
+            end
+            for _, member in ipairs(typ.types or {}) do
+               if has_dynamic(member) then return true end
+            end
+            return has_dynamic(typ.elements)
+         elseif typ is ArrayType then
+            return has_dynamic(typ.elements)
+         elseif typ is types.AggregateType then
+            for _, member in ipairs(typ.types) do
+               if has_dynamic(member) then return true end
+            end
+         end
+      end
+      return false
+   end
+   return has_dynamic(t)
+end
+
+function context.block_returns(body: Node): boolean
+   local last = body[#body]
+   if not last then return false end
+   if last.kind == "return" then return true end
+   if last.kind == "do" then return context.block_returns(last.body) end
+   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
+      for _, branch in ipairs(last.if_blocks) do
+         if not context.block_returns(branch.body) then return false end
+      end
+      return true
+   end
+   return false
+end
 
 --------------------------------------------------------------------------------
 
@@ -1921,6 +1993,20 @@ function Context:add_function_definition_for_recursion(node: Node, fnargs: Tuple
 end
 
 function Context:end_function_scope(node: Node)
+   local rets = node.rets
+   if self.strict_pragma and node.body and rets and #rets.tuple > 0
+      and not context.block_returns(node.body) then
+      local nil_type = a_type(node, "nil", {})
+      for _, ret in ipairs(rets.tuple) do
+         if not self:is_a(nil_type, ret) then
+            self.errs:add(node, "strict mode: function may end without returning a non-nil result")
+            break
+         end
+      end
+   end
+   if self.native_ffi and rets and rets.tuple[1] then
+      node.native_return_type = self:to_structural(rets.tuple[1])
+   end
    self.errs:fail_unresolved_labels(self.st[#self.st])
    self:end_scope(node)
 end
@@ -2307,6 +2393,9 @@ function Context:determine_declaration_type(var: Node, node: Node, infertypes: T
          if not ok then
             self.errs:add_prefixing(w, errs, self.errs:get_context(node, name))
          end
+      elseif self.strict_pragma and not self:is_a(a_type(var, "nil", {}), decltype) then
+         self.errs:add(var, "strict mode: non-nil variable '" .. name .. "' requires an initializer")
+         ok = false
       end
    else
       if infertype then
@@ -2436,6 +2525,7 @@ do
 
    local function recurse_type_declaration(self: Context, n: Node): InvalidOrTypeDeclType, Variable
       if n.kind == "op" then
+         if self.native_ffi or self.strict_pragma then n.type_require = true end
          -- recursive case: e1.e2
          if n.op.op == "." then
             local ty = recurse_type_declaration(self, n.e1)
@@ -2510,10 +2600,11 @@ do
       end
    end
 
-   function Context.new(env: Env, filename: string): Context
+   function Context.new(env: Env, filename: string, strict_pragma?: Node): Context
       local self: Context = {
          filename = filename,
          env = env,
+         strict_pragma = strict_pragma,
          st = {
             {
                vars = env.globals,
@@ -2536,9 +2627,9 @@ do
 
       self.cache_std_metatable_type = env.globals["metatable"] and (env.globals["metatable"].t as TypeDeclType).def
 
-      self.feat_arity = set_feat(env.opts.feat_arity, true)
-      self.feat_strict_nil = set_feat(env.opts.feat_strict_nil, true)
-      self.feat_lax = not not filename:match("%.lua$")
+      self.feat_arity = strict_pragma ~= nil or set_feat(env.opts.feat_arity, true)
+      self.feat_strict_nil = strict_pragma ~= nil or set_feat(env.opts.feat_strict_nil, true)
+      self.feat_lax = not strict_pragma and not not filename:match("%.lua$")
 
       if self.feat_lax then
          self.feat_arity = false

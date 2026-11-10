@@ -1,4 +1,5 @@
 --#pragma strict_nil off
+local type c_ffi = require("teal.gen.c_ffi")
 
 local reader = require("teal.block")
 local type Block = reader.Block
@@ -233,6 +234,15 @@ local record Node
    -- pragma
    pkey: string
    pvalue: string
+
+   strict_receiver: boolean
+   type_require: boolean
+   native_top_level: boolean
+   native_type: Type
+   native_return_type: Type
+   native_cdef: boolean
+   native_ffi: c_ffi.State
+   native_checked: boolean
 
    opt: boolean
 

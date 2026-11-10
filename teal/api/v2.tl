@@ -4,6 +4,7 @@ local type environment = require("teal.environment")
 local type errors = require("teal.errors")
 local type lexer = require("teal.lexer")
 local type loader = require("teal.loader")
+local c_generator = require("teal.gen.c_generator")
 local type lua_generator = require("teal.gen.lua_generator")
 local type lua_compat = require("teal.gen.lua_compat")
 local type package_loader = require("teal.package_loader")
@@ -177,11 +178,13 @@ v2.gen = function(teal_code: string, env?: Env, opts?: GenerateOptions, parse_la
       return nil, result
    end
    lua_compat.apply(result)
-   local code = lua_generator.generate(result.ast, env.opts.gen_target, opts)
+   local code, gen_error = v2.generate(result.ast as v2.Node, env.opts.gen_target, opts)
+   result.gen_error = gen_error
    return code, result
 end
 
 v2.generate = function(ast: Node, gen_target: GenTarget, opts?: GenerateOptions): string, string
+   if gen_target == "c" then return c_generator.generate(ast as parser.Node) end
    return lua_generator.generate(ast as parser.Node, gen_target, opts)
 end
 

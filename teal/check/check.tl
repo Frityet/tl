@@ -1,6 +1,7 @@
 --#pragma strict_nil off
 local context = require("teal.check.context")
 local type Context = context.Context
+local c_ffi = require("teal.gen.c_ffi")
 
 local tldebug = require("teal.debug")
 local TL_DEBUG = tldebug.TL_DEBUG
@@ -36,7 +37,7 @@ local visit_node = visitors.visit_node
 local visit_type = visitors.visit_type
 
 local record check
-   check: function(ast: Node, env: Env, filename: string): Result
+   check: function(ast: Node, env: Env, filename: string, dependency?: boolean): Result
 end
 
 local function extension_type_after(fn: VisitorAfter<Context, Node, Type>): VisitorAfter<Context, Node, Type>
@@ -127,10 +128,34 @@ local function patch_visitors(my_visit_node: Visitor<Context, NodeKind, Node, Ty
    return my_visit_node, my_visit_type
 end
 
-function check.check(ast: Node, env: Env, filename: string): Result
+function check.check(ast: Node, env: Env, filename: string, dependency?: boolean): Result
    assert(filename)
 
-   local self = Context.new(env, filename)
+   local strict_pragma: Node
+   for _, stmt in ipairs(ast) do
+      if stmt.kind == "pragma" then
+         if stmt.pkey == "strict" and stmt.pvalue == "on" then
+            strict_pragma = stmt
+            break
+         end
+      else
+         break
+      end
+   end
+   local self = Context.new(env, filename, strict_pragma)
+   ast.native_checked = nil
+   ast.native_ffi = nil
+   if env.opts.gen_target == "c" and not dependency then
+      if not strict_pragma then
+         self.errs:add(ast, "the C generation target requires '--#pragma strict on'")
+      end
+      if filename:match("%.lua$") or filename:match("%.d%.tl$") then
+         self.errs:add(ast, "the C generation target expects a Teal source file")
+      end
+      self.native_ffi = c_ffi.new(ast)
+      ast.native_ffi = self.native_ffi
+      for _, stmt in ipairs(ast) do stmt.native_top_level = true end
+   end
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
@@ -159,6 +184,7 @@ function check.check(ast: Node, env: Env, filename: string): Result
    self.errs:check_var_usage(global_scope)
 
    errors.clear_redundant_errors(self.errs.errors)
+   if self.native_ffi then ast.native_checked = #self.errs.errors == 0 end
 
    local result = {
       ast = ast,

@@ -2,7 +2,8 @@
 local type type_checker = require("teal.check.type_checker")
 local type VarUse = type_checker.VarUse
 
-local type context = require("teal.check.context")
+local context = require("teal.check.context")
+local c_ffi = require("teal.gen.c_ffi")
 local type Context = context.Context
 
 local tldebug = require("teal.debug")
@@ -939,20 +940,6 @@ local function assert_is_a(ctx: Context, w: Where, t1: Type, t2: Type, ectx?: No
    return ok
 end
 
-local function short_block_returns(body: Node): boolean
-   local last = body[#body]
-   if not last then return false end
-   if last.kind == "return" then return true end
-   if last.kind == "do" then return short_block_returns(last.body) end
-   if last.kind == "if" and not last.if_blocks[#last.if_blocks].exp then
-      for _, branch in ipairs(last.if_blocks) do
-         if not short_block_returns(branch.body) then return false end
-      end
-      return true
-   end
-   return false
-end
-
 local function contextual_function(self: Context, expected: Type): FunctionType
    if not expected then return nil end
    local resolved = self:resolve_typevars(expected)
@@ -1146,6 +1133,10 @@ visit_node.cbs = {
             end
 
             assert(var)
+            if self.strict_pragma and self:contains_dynamic(t) then
+               t = self.errs:invalid_at(var, "strict mode: a declaration cannot have type 'any' or 'unknown'")
+            end
+            if self.native_ffi then var.native_type = t end
             local keep_literal = node.decltuple and node.decltuple.tuple[i] ~= nil
             if not keep_literal and node.exps and node.exps[i] then
                local exp = node.exps[i]
@@ -1169,7 +1160,9 @@ visit_node.cbs = {
                local w = node.exps[i] or node.exps
 
                local rt = self:to_structural(t)
-               if (not rt is EnumType)
+               -- The C target stores numbers as double, even when initialized by an integer.
+               local native_number = self.native_ffi and rt is NumberType and self:to_structural(infertype).typename == "integer"
+               if not native_number and (not rt is EnumType)
                   and ((not t is NominalType) or (rt is UnionType))
                   and not self:same_type(t, infertype)
                then
@@ -1464,7 +1457,7 @@ visit_node.cbs = {
          self:begin_scope(node)
          local from_t = self:to_structural(untuple(children[2]))
          local to_t = self:to_structural(untuple(children[3]))
-         local step_t = children[4] and self:to_structural(children[4])
+         local step_t = children[4] and self:to_structural(untuple(children[4]))
          if self.feat_strict_nil then
             local numeric = a_type(node, "number", {})
             if not self:is_a(from_t, numeric) then
@@ -1486,7 +1479,9 @@ visit_node.cbs = {
                                      (not step_t or step_t is IntegerType))
                                     and "integer"
                                     or  "number"
-         self:add_var(node.var, node.var.tk, a_type(node.var, typename, {}))
+         local t = a_type(node.var, typename, {})
+         if self.native_ffi then node.var.native_type = t end
+         self:add_var(node.var, node.var.tk, t)
       end,
       after = function(self: Context, node: Node, _children: {Type}): Type
          local var = self:find_var(node.var.tk)
@@ -2096,7 +2091,7 @@ visit_node.cbs = {
          assert(rets is TupleType)
          if node.infer_returns then
             rets = node.inferred_rets or a_tuple(node, {})
-            if not short_block_returns(node.body) then
+            if not context.block_returns(node.body) then
                local nullable = a_tuple(node, {})
                for i, member in ipairs(rets.tuple) do
                   nullable.tuple[i] = unite(node, { member, a_type(node, "nil", {}) }, true, not self.feat_strict_nil)
@@ -2148,6 +2143,7 @@ visit_node.cbs = {
    ["paren"] = {
       before = function(_self: Context, node: Node)
          node.e1.expected = node.expected
+         node.e1.strict_receiver = node.strict_receiver
       end,
       after = function(self: Context, node: Node, children: {Type}): Type
          self.fdb:set_from(node, node.e1)
@@ -2177,6 +2173,10 @@ visit_node.cbs = {
    ["op"] = {
       before = function(self: Context, node: Node)
          self:begin_implied_scope()
+         if self.strict_pragma then
+            local op = node.op.op
+            node.e1.strict_receiver = op == "." or op == ":" or op == "@index" or op == "@funcall"
+         end
          if node.expected then
             if node.op.op == "and" then
                node.e2.expected = node.expected
@@ -2295,6 +2295,29 @@ visit_node.cbs = {
          end
 
          if node.op.op == "@funcall" then
+            if self.native_ffi and ra.typeid == self.native_ffi.cdef.typeid then
+               if not node.native_top_level then
+                  return self.errs:invalid_at(node, "ffi.cdef must be a standalone top-level statement")
+               end
+               if #node.e2 ~= 1 or node.e2[1].kind ~= "string" then
+                  return self.errs:invalid_at(node, "ffi.cdef expects one string literal")
+               end
+               local current = self:find_var("C", "check_only")
+               if current and current.t.typeid ~= self.native_ffi.namespace.typeid then
+                  return self.errs:invalid_at(node, "ffi.cdef cannot declare C because that name is already in use")
+               end
+               local source, literal_error = c_ffi.decode_string(node.e2[1].tk)
+               if not source then
+                  return self.errs:invalid_at(node.e2[1], literal_error)
+               end
+               local ok, err = c_ffi.declare(self.native_ffi, node, source)
+               if not ok then
+                  return self.errs:invalid_at(node, "ffi.cdef: " .. err:gsub("%%", "%%%%"))
+               end
+               if not current then self:add_var(nil, "C", self.native_ffi.namespace, "const") end
+               node.native_cdef = true
+               return a_tuple(node, {})
+            end
             if not self.feat_strict_nil then ua = non_nil_type(self, node, ua) end
             if self.feat_lax and is_unknown(ua) then
                if node.e1.op and node.e1.op.op == ":" and node.e1.e1.kind == "variable" then
@@ -2309,6 +2332,12 @@ visit_node.cbs = {
             local ok, err = ensure_not_abstract(ra)
             if not ok then
                return self.errs:invalid_at(node.e1, err)
+            end
+            if self.strict_pragma then
+               local source = gb is TupleType and ga or ua
+               if self:contains_dynamic(source) or self:contains_dynamic(gb) or not self:is_a(source, gb) then
+                  return self.errs:invalid_at(node, "strict mode: 'as' requires a widening conversion, got %s as %s", source, gb)
+               end
             end
             return gb
 
@@ -2807,7 +2836,17 @@ visit_node.cbs = {
    },
    ["pragma"] = {
       after = function(self: Context, node: Node, _children: {Type}): Type
-         if node.pkey == "arity" then
+         if node.pkey == "strict" then
+            if node.pvalue ~= "on" then
+               return self.errs:invalid_at(node, "pragma 'strict' expects 'on'")
+            elseif self.strict_pragma ~= node then
+               return self.errs:invalid_at(node, "pragma 'strict on' must appear once at the beginning of the file")
+            end
+         elseif self.strict_pragma and (node.pkey == "arity" or node.pkey == "strict_nil") then
+            if node.pvalue ~= "on" then
+               return self.errs:invalid_at(node, "strict mode: pragma '" .. node.pkey .. "' must be 'on'")
+            end
+         elseif node.pkey == "arity" then
             if node.pvalue == "on" then
                self.feat_arity = true
                self.env.opts.feat_arity = "on"
@@ -2931,11 +2970,15 @@ visit_node.cbs["expression_list"] = {
    end,
 }
 
-visit_node.after = function(_self: Context, node: Node, _children: {Type}, t: Type): Type
+visit_node.after = function(self: Context, node: Node, _children: {Type}, t: Type): Type
    if node.expanded then
       macroexps.apply(node)
    end
 
+   if self.native_ffi and t ~= NONE then node.native_type = t end
+   if self.strict_pragma and not node.type_require and self:contains_dynamic(t, node.strict_receiver) then
+      return self.errs:invalid_at(node, "strict mode: a value cannot have type 'any' or 'unknown'")
+   end
    return t
 end
 
@@ -3201,7 +3244,14 @@ visit_type.cbs["literal_table_item"] = default_type_visitor
 visit_type.cbs["unresolved_emptytable_value"] = default_type_visitor
 visit_type.cbs["tuple"] = default_type_visitor
 visit_type.cbs["poly"] = default_type_visitor
-visit_type.cbs["any"] = default_type_visitor
+visit_type.cbs["any"] = {
+   after = function(self: Context, t: Type, _children: {Type}): Type
+      if self.strict_pragma then
+         return self.errs:invalid_at(t, "strict mode: type 'any' is not allowed")
+      end
+      return t
+   end,
+}
 visit_type.cbs["unknown"] = default_type_visitor
 visit_type.cbs["invalid"] = default_type_visitor
 visit_type.cbs["none"] = default_type_visitor

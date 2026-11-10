@@ -39,6 +39,8 @@ local function write_out(tlconfig, module, output_file, gen_opts, tree)
    assert(module)
    local is_stdout = output_file == "-"
    local prettyname = is_stdout and "<stdout>" or output_file
+   local code, gen_error = module:gen(gen_opts)
+   if not code then common.die(gen_error) end
    if tlconfig["pretend"] then
       print("Would Write: " .. prettyname)
       return
@@ -57,10 +59,8 @@ local function write_out(tlconfig, module, output_file, gen_opts, tree)
       end
    end
 
-   local lua_code = module:gen(gen_opts)
-
    local _
-   _, err = ofd:write(lua_code, "\n")
+   _, err = ofd:write(code, "\n")
    if err then
       common.die("error writing " .. prettyname .. ": " .. err)
    end
@@ -69,12 +69,18 @@ local function write_out(tlconfig, module, output_file, gen_opts, tree)
       ofd:close()
    end
 
-   if not tlconfig["quiet"] then
+   if not tlconfig["quiet"] and (not is_stdout or tlconfig["gen_target"] ~= "c") then
       print("Wrote: " .. prettyname)
    end
 end
 
 return function(tlconfig, args)
+   local native = tlconfig["gen_target"] == "c"
+   if native then
+      if #args["file"] ~= 1 then common.die("the C target requires a single Teal input file") end
+      if args["no_check"] then common.die("--no-check is incompatible with the C target") end
+   end
+   local ext = args["custom_ext"] or (native and ".c" or ".lua")
    if args["output"] and #args["file"] ~= 1 then
       print("Error: --output can only be used to map one input to one output")
       os.exit(1)
@@ -98,7 +104,7 @@ return function(tlconfig, args)
 
       table.insert(mods, {
          input_file = input_file,
-         output_file = common.get_output_filename(input_file, args["root"], args["output_dir"], args["custom_ext"]),
+         output_file = common.get_output_filename(input_file, args["root"], args["output_dir"], ext),
          module = module,
          check_err = check_err,
       })

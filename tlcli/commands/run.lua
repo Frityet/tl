@@ -38,6 +38,9 @@ local function type_check_and_load(tlconfig, filename)
 end
 
 return function(tlconfig, args)
+   if tlconfig["gen_target"] == "c" then
+      common.die("the C target requires tl gen followed by a C compiler")
+   end
 
    local runtime_target = teal.runtime_target()
    if runtime_target and not tlconfig["gen_target"] then

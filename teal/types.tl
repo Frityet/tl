@@ -195,6 +195,7 @@ local record types
       meta_field_comments: {string: {{Comment}}}
       meta_field_locations: {string: Where}
       is_userdata: boolean
+      native_pointer: string
    end
 
    record RecordType
@@ -1045,6 +1046,7 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          end
 
          copy.is_userdata = t.is_userdata
+         copy.native_pointer = t.native_pointer
 
          copy.fields = {}
          copy.field_order = {}
@@ -1523,6 +1525,7 @@ function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
             end
          end
          copy.is_userdata = typ.is_userdata
+         copy.native_pointer = typ.native_pointer
          copy.fields = {}
          copy.field_order = {}
          for i, k in ipairs(typ.field_order) do

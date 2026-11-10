@@ -11,7 +11,7 @@ local type Result = environment.Result
 local record input
 end
 
-function input.check(env: Env, filename: string, code: string): Result
+function input.check(env: Env, filename: string, code: string, dependency?: boolean): Result
    if env.loaded and env.loaded[filename] then
       return env.loaded[filename]
    end
@@ -22,7 +22,7 @@ function input.check(env: Env, filename: string, code: string): Result
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program as Node, env, filename)
+   local result = check.check(program as Node, env, filename, dependency)
 
    result.syntax_errors = syntax_errors
 

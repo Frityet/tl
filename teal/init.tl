@@ -1,4 +1,5 @@
 --#pragma strict_nil off
+local c_generator = require("teal.gen.c_generator")
 local type check = require("teal.check.check")
 local type environment = require("teal.environment")
 local type Env = environment.Env
@@ -45,6 +46,7 @@ local record teal
       syntax_errors: {Error}
       type_errors: {Error}
       warnings: {Error}
+      gen_error: string
    end
 
    ----------------------------------------
@@ -107,7 +109,7 @@ local record teal
       filename: string
       parse_tree: ParseTree
 
-      gen: function(self, opts?: GenOptions): string
+      gen: function(self, opts?: GenOptions): string, string
 
       -- private:
       env: Env
@@ -290,7 +292,8 @@ function Input:gen(opts?: GenOptions): string, Module, CheckError
    if #check_error.syntax_errors > 0 then
       return nil, module, check_error
    end
-   local output = module:gen(opts)
+   local output, gen_error = module:gen(opts)
+   check_error.gen_error = gen_error
    return output, module, check_error
 end
 
@@ -352,8 +355,15 @@ end
 -- Module
 --------------------------------------------------------------------------------
 
-function Module:gen(opts?: GenOptions): string
-   return lua_generator.generate(self.parse_tree.ast as parser.Node, self.env.opts.gen_target, opts)
+function Module:gen(opts?: GenOptions): string, string
+   local ast = self.parse_tree.ast as parser.Node
+   if self.env.opts.gen_target == "c" then
+      if self.parse_tree.syntax_errors and #self.parse_tree.syntax_errors > 0 then
+         return nil, "cannot generate C with syntax errors"
+      end
+      return c_generator.generate(ast)
+   end
+   return lua_generator.generate(ast, self.env.opts.gen_target, opts)
 end
 
 --------------------------------------------------------------------------------
