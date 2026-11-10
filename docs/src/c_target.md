@@ -1,8 +1,8 @@
 # Experimental C target
 
-Generate a standalone C program from one Teal file with
-[`--#pragma strict on`](./pragmas.md#strict-mode). Compile the resulting
-translation unit with Clang.
+Generate a standalone C program from a Teal entry file with
+[`--#pragma strict on`](./pragmas.md#strict-mode) and its Teal imports.
+Each runtime source file produces its own C translation unit for Clang.
 
 ```lua
 -- hello.tl
@@ -22,16 +22,16 @@ clang -std=c11 -O2 hello.c -o hello
 ./hello
 ```
 
-Use `-o -` to emit C on standard output. You can also set `gen_target = "c"`
+For programs with one translation unit, use `-o -` to emit C on standard
+output. You can also set `gen_target = "c"`
 in `tlconfig.lua`. With the Teal API, pass the same option to `teal.compiler`
 or to the defaults for `tl.new_env`.
 
 ## Foreign declarations
 
 The `auxlib.ffi` import in the example is expanded at compile time. Type
-imports such as `local type Types = require("types")` are also allowed. The only
-runtime require syntax accepted by the target is `require("ffi")`, which the
-compiler resolves to its built-in FFI namespace. You can also use its
+imports such as `local type Types = require("types")` are also allowed.
+`require("ffi")` resolves to the built-in FFI namespace. You can use its
 `ffi.cdef` directly when targeting C.
 
 Each `ffi.cdef!` must be a top-level statement with a string literal. Use
@@ -81,17 +81,86 @@ boolean arguments to C `int`, as in the C target. Fixed arguments use
 LuaJIT's FFI conversions. For declarations that use the full LuaJIT FFI
 syntax, you can call the raw `ffi.cdef` with its dynamic `ffi.C` namespace.
 
+## Teal modules
+
+Use a literal `require("name")` for a Teal module. The compiler looks for
+`name.tl` and `name/init.tl` beside the importing file, then searches the
+usual Teal module path, including directories passed with `-I`. A dotted
+name such as `app.stats` searches a nested directory. Runtime imports use
+`.tl` implementations and undergo strict checking automatically.
+Type-only imports can also use `.d.tl` declarations.
+
+Each required file initializes at its first runtime use. Repeated imports of the same resolved
+path reuse its export value and state. Circular runtime imports produce a compiler
+error. A module can export a non-nil value such as a record of functions,
+or return implicitly to provide `true`.
+
+```lua
+-- stats.tl
+local function sum(values: {integer}): integer
+   local total = 0
+   for _, value in ipairs(values) do
+      total = total + value
+   end
+   return total
+end
+
+return { sum = sum }
+```
+
+```lua
+-- main.tl
+--#pragma strict on
+local stats = require("stats")
+local values: {integer} = {2, 3, 5}
+table.insert(values, 7)
+print("Total: " .. tostring(stats.sum(values)))
+```
+
+```sh
+tl gen --gen-target=c main.tl
+clang -std=c11 -O2 main.c main.modules/tl_*.c -o main
+./main
+```
+
+This emits `main.c`, `main.modules/tl_stats.c`, and the shared
+`main.modules/abi.h` header. The module directory follows the entry output
+name if you use `-o`. Compile the C sources together or compile them into
+separate object files and link the objects.
+
+The programmatic API exposes these outputs through `Module:gen_c()` or
+`tl.generate_c(checked_ast)`. The result holds the `entry` source and, for
+multi-file programs, the module `directory`, `header` source for `abi.h`,
+and a `modules` list with each unit's `source` path, output `filename`,
+and generated `code`.
+
+## Standard library
+
+| Area | Supported functions and values |
+| --- | --- |
+| Core | `print`, `tostring` for scalars, `tonumber(value)`, `type`, `assert`, `error`, `ipairs` in a generic loop |
+| Math | `abs`, `acos`, `asin`, `atan`, `atan2`, `ceil`, `cos`, `cosh`, `deg`, `exp`, `floor`, `fmod`, `log`, `log10`, `max`, `min`, `pow`, `rad`, `sin`, `sinh`, `sqrt`, `tan`, `tanh`, `huge`, `maxinteger`, `mininteger`, `pi` |
+| Strings | `len`, `lower`, `rep`, `reverse`, `sub`, `upper`, and the corresponding string methods |
+| Tables | `insert` and `remove` for dense arrays, `concat` for string arrays |
+
+Access the supported library namespaces directly or through a literal
+`require` of `math`, `string`, or `table`. On platforms with a separate
+math library, link with `-lm` for math functions, power, floating-point
+modulo, or floor division.
+
 ## Supported Teal code
 
-The target supports scalar locals, top-level local functions, assignments,
-conditionals, loops, and scalar arithmetic. A top-level integer return is
-the process exit status. The generated program includes its helpers and
-needs no Lua runtime. On platforms with a separate math library, link with
-`-lm` if your program uses power, floating-point modulo, or floor division.
+The target supports scalars, nullable scalars, opaque pointers, fixed-field
+records, and dense one-based arrays. Arrays support indexing, assignment,
+length, and appending at `#array + 1`. Runtime checks report out-of-bounds
+access. Initialize required data fields with a record literal. Top-level
+functions and function fields use statically known parameter and return
+types, with at most one return value.
 
-The initial subset excludes runtime Lua modules and libraries, tables,
-closures, multiple return values, and nullable numeric and boolean values.
-Strings use C's NUL-terminated representation. C struct bodies, function
-pointers, arrays, and preprocessor directives are outside the supported
-`cdef` declaration syntax. Declare the ABI of any additional C functions
-you use and link their implementation with Clang.
+A top-level integer return in the entry file is the process exit status.
+The generated program includes its runtime helpers. Strings are
+NUL-terminated. Allocations for records, arrays, and constructed strings
+live until process exit. C struct bodies, function pointers, arrays, and
+preprocessor directives are outside the supported `cdef` declaration
+syntax. Declare the ABI of additional C functions and link their
+implementation with Clang.

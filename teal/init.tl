@@ -16,6 +16,7 @@ local type type_reporter = require("teal.type_reporter")
 local type util = require("teal.util")
 
 local record teal
+   type COutput = c_generator.COutput
    type Error = errors.Error
    type Extension = require_file.Extension
    type Feat = environment.Feat
@@ -110,6 +111,7 @@ local record teal
       parse_tree: ParseTree
 
       gen: function(self, opts?: GenOptions): string, string
+      gen_c: function(self, directory?: string): COutput, string
 
       -- private:
       env: Env
@@ -354,6 +356,13 @@ end
 --------------------------------------------------------------------------------
 -- Module
 --------------------------------------------------------------------------------
+
+function Module:gen_c(directory?: string): teal.COutput, string
+   if self.parse_tree.syntax_errors and #self.parse_tree.syntax_errors > 0 then
+      return nil, "cannot generate C with syntax errors"
+   end
+   return c_generator.generate_program(self.parse_tree.ast as parser.Node, directory)
+end
 
 function Module:gen(opts?: GenOptions): string, string
    local ast = self.parse_tree.ast as parser.Node

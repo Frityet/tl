@@ -1,4 +1,6 @@
 --#pragma strict_nil off
+local c_ffi = require("teal.gen.c_ffi")
+local c_runtime = require("teal.gen.c_runtime")
 local type node_checker = require("teal.check.node_checker")
 local type NodeChecker = node_checker.NodeChecker
 
@@ -432,17 +434,29 @@ local special_functions <total>: {SpecialFunctionName : function(NodeChecker, No
       end
       if node.e2[1].kind ~= "string" then
          if self.native_ffi then
-            return self:invalid_at(node, "the C target only supports a literal runtime require of 'ffi'")
+            return self:invalid_at(node, "the C target requires a literal module name")
          end
          return a_tuple(node, { a_type(node, "any", {}) })
       end
 
       local module_name = assert(node.e2[1].conststr)
       if self.native_ffi and not node.type_require then
+         local decoded, literal_error = c_ffi.decode_string(node.e2[1].tk)
+         if not decoded then return self:invalid_at(node, literal_error) end
+         module_name = decoded
          if module_name == "ffi" then
+            node.native_builtin = "ffi"
             return a_tuple(node, { self.native_ffi.ffi })
          end
-         return self:invalid_at(node, "the C target only supports runtime require('ffi'); use 'local type' for type imports")
+         if c_runtime.namespaces[module_name] and self.env.modules[module_name] then
+            node.native_builtin = module_name
+            return a_tuple(node, { self.env.modules[module_name] })
+         end
+         local t, module_filename, err = self.env:require_module(module_name, node.f)
+         if not t then return self:invalid_at(node, (err:gsub("%%", "%%%%"))) end
+         self.dependencies[module_name] = module_filename
+         node.native_module = self.env.loaded[module_filename].ast
+         return a_tuple(node, { t })
       end
       local t, module_filename = self.env:require_module(module_name)
       if not t then

@@ -11,9 +11,10 @@ local type Result = environment.Result
 local record input
 end
 
-function input.check(env: Env, filename: string, code: string, dependency?: boolean): Result
-   if env.loaded and env.loaded[filename] then
-      return env.loaded[filename]
+function input.check(env: Env, filename: string, code: string, mode?: environment.CheckMode): Result
+   local cached = env.loaded and env.loaded[filename]
+   if cached and (mode ~= "native_import" or not cached.ast or cached.ast.native_checked ~= nil) then
+      return cached
    end
 
    local program, syntax_errors = parser.parse(code, filename)
@@ -22,7 +23,7 @@ function input.check(env: Env, filename: string, code: string, dependency?: bool
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program as Node, env, filename, dependency)
+   local result = check.check(program as Node, env, filename, mode)
 
    result.syntax_errors = syntax_errors
 

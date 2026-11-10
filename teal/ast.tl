@@ -249,6 +249,10 @@ local record Node
    end
 
    ffi_call: FfiCall
+   native_builtin: string
+   native_module: Node
+   native_module_type: Type
+   native_module_returns: boolean
    native_type: Type
    native_return_type: Type
    native_cdef: boolean

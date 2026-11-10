@@ -77,6 +77,8 @@ local v2 = { CheckOptions = {}, EnvOptions = {} }
 
 
 
+
+
 environment.set_require_module_fn(require_file.require_module)
 
 v2.warning_kinds = errors.warning_kinds
@@ -181,6 +183,10 @@ v2.gen = function(teal_code, env, opts, parse_lang)
    local code, gen_error = v2.generate(result.ast, env.opts.gen_target, opts)
    result.gen_error = gen_error
    return code, result
+end
+
+v2.generate_c = function(ast, directory)
+   return c_generator.generate_program(ast, directory)
 end
 
 v2.generate = function(ast, gen_target, opts)

@@ -136,6 +136,8 @@ local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, Parse
 
 
 
+
+
 local Compiler = teal.Compiler
 local Module = teal.Module
 
@@ -354,6 +356,13 @@ end
 
 
 
+
+function Module:gen_c(directory)
+   if self.parse_tree.syntax_errors and #self.parse_tree.syntax_errors > 0 then
+      return nil, "cannot generate C with syntax errors"
+   end
+   return c_generator.generate_program(self.parse_tree.ast, directory)
+end
 
 function Module:gen(opts)
    local ast = self.parse_tree.ast

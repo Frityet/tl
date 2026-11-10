@@ -4,6 +4,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 local context = require("teal.check.context")
 local c_ffi = require("teal.gen.c_ffi")
+local c_runtime = require("teal.gen.c_runtime")
 
 
 local tldebug = require("teal.debug")
@@ -1123,6 +1124,7 @@ visit_node.cbs = {
          local name = node.var.tk
          local resolved, aliasing = self:get_typedecl(node.value)
          local var = self:add_var(node.var, name, resolved, node.var.attribute, nil, true)
+         if self.native_ffi then node.var.native_type = resolved end
          if aliasing then
             var.aliasing = aliasing
          end
@@ -1197,7 +1199,8 @@ visit_node.cbs = {
             end
 
             assert(var)
-            if self.strict_pragma and self:contains_dynamic(t) then
+            local initializer = node.exps and node.exps[i]
+            if self.strict_pragma and not (initializer and initializer.native_builtin) and self:contains_dynamic(t) then
                t = self.errs:invalid_at(var, "strict mode: a declaration cannot have type 'any' or 'unknown'")
             end
             if self.native_ffi then var.native_type = t end
@@ -1487,6 +1490,7 @@ visit_node.cbs = {
                   end
                end
                self:add_var(v, v.tk, r)
+               if self.native_ffi then v.native_type = r end
 
                if self.collector then
                   self.collector.store_type(v.y, v.x, r)
@@ -2072,6 +2076,8 @@ visit_node.cbs = {
             is_record_function = true,
          }))
 
+         if self.native_ffi then node.native_type = fn_type end
+
          local open_t, open_v, owner_name = self:find_record_to_extend(node.fn_owner)
          local open_k = owner_name .. "." .. node.name.tk
          local rfieldtype = rtype.fields[node.name.tk]
@@ -2238,6 +2244,10 @@ visit_node.cbs = {
    ["op"] = {
       before = function(self, node)
          self:begin_implied_scope()
+         if self.native_ffi then
+            node.native_builtin = nil
+            node.native_module = nil
+         end
          if self.strict_pragma then
             local op = node.op.op
             node.e1.strict_receiver = op == "." or op == ":" or op == "@index" or op == "@funcall"
@@ -2814,6 +2824,12 @@ visit_node.cbs = {
             return self.errs:invalid_at(node, "unknown variable: " .. node.tk)
          end
 
+         if self.native_ffi then
+            node.native_builtin = nil
+            if c_runtime.builtins[node.tk] and self:find_var(node.tk, "check_only") == self.env.globals[node.tk] then
+               node.native_builtin = node.tk
+            end
+         end
          if t.typename == "typedecl" then
             t = typedecl_to_nominal(node, node.tk, t, t)
          end
@@ -3036,7 +3052,9 @@ visit_node.after = function(self, node, _children, t)
    end
 
    if self.native_ffi and t ~= NONE then node.native_type = t end
-   if self.strict_pragma and not node.type_require and self:contains_dynamic(t, node.strict_receiver) then
+   local builtin = node.native_builtin or
+   (node.kind == "expression_list" and #node == 1 and node[1].native_builtin)
+   if self.strict_pragma and not node.type_require and not builtin and self:contains_dynamic(t, node.strict_receiver) then
       return self.errs:invalid_at(node, "strict mode: a value cannot have type 'any' or 'unknown'")
    end
    return t
