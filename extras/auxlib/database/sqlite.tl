@@ -7,6 +7,14 @@ local type DatabaseProvider = database.DatabaseProvider
 --- Use `?` for positional parameters. SQLite stores booleans as 0 or 1.
 --- Pass one statement per call and give result columns distinct names.
 --- Row counts include changes made by triggers.
+---
+--- ```teal
+--- local db = sqlite.open(":memory:")
+--- db:execute("CREATE TABLE people (name TEXT)")
+--- db:execute("INSERT INTO people VALUES (?)", {"Ada"})
+--- print(db:scalar("SELECT name FROM people WHERE name = ?", "name", {"Ada"}))
+--- db:close()
+--- ```
 local record SQLiteAdapter end
 
 -- Declare the part of the native binding that the adapter calls.

@@ -77,17 +77,17 @@ Macros that you import from another module are attached to the record, just as `
 
 ## Aliasing a macro
 
-Use a local macro alias when an imported macro is used frequently:
+Use a local alias to give an imported macro a name in the current scope.
 
 ```lua
-local format = require("auxlib.format")
-local macro f! = format.f!
+local m = require("macros")
+local macro double! = m.double!
 
-local message = f!"Hello, {name}!"
+double!(print("hi"))
 ```
 
-Aliases are resolved at compile time, produce no Lua code, and retain the
-target macro's argument signature.
+The compiler resolves the alias before it generates Lua. The alias uses the
+same arguments as the imported macro.
 
 ## Invoking a macro
 

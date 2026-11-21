@@ -1,12 +1,15 @@
 --#pragma strict_nil on
 
---- Process tables and arrays. The operators also let you pipe values and bind fields.
+--- Process tables and arrays. Use operators to pass values and bind fields.
 --- Array operations read dense sequences with indices that start at 1.
 --- Operations that use `pairs` have no specified order.
 local record Tables end
 
 --- Pass a value as the first argument of a call.
 --- `value |> transform(extra)` calls `transform(value, extra)`.
+--- `value |> (factory())` calls the function that `factory()` returns.
+--- A chain of pipes runs from left to right. Pipes bind more tightly than
+--- comparisons.
 --- @param value Expression to evaluate once and pass to the call.
 --- @param target Function or call that receives the value.
 --- @return The result of the call.
@@ -142,6 +145,7 @@ function Tables.values<K, V>(source: {K:V}): {V}
 end
 
 --- Call a function with a value, then pass the value on.
+--- `21 |> tables.tap(print)` prints 21 and returns 21.
 --- @param value Value to pass to the function.
 --- @param inspect Function that receives the value once.
 --- @return The input value.
@@ -158,7 +162,7 @@ end
 --- -- labels is {"1:3", "2:5"}
 --- ```
 ---
---- Evaluate each operand once.
+--- The generated code evaluates each operand once.
 --- @param source Dense input array.
 --- @param transform Function that receives `(value, index)` and returns the new value.
 --- @return A new array with each result at its input index.
@@ -207,8 +211,18 @@ macro Tables.(?>)!(source: Expression, predicate: Expression): Operator<infix, s
    return `require("auxlib.tables").filter($source, $predicate)`
 end
 
---- Bind fields to const locals. Evaluate the source once.
---- Use `as` to give a local a different name, as in `{ width as w, height } from row`.
+--- Bind fields to const locals. Evaluate the source once. Read the fields
+--- in the order in the list. Use `as` to change the name of a local.
+---
+--- ```teal
+--- local row = { width = 3, height = 4 };
+--- { width as w, height } from row
+--- print(w * height)
+---
+--- { some_function as fn, version } from require "module.name"
+--- ```
+---
+--- Add `;` if the previous statement can take the opening brace as an argument.
 --- @param fields One or more field names in braces, with optional aliases.
 --- @param source Table expression.
 --- @return Statements that declare the const locals.

@@ -34,8 +34,10 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	tlcli/driver.tl \
 	tlcli/perf.tl \
 	tlcli/main.tl \
+	tlcli/pack_native.tl \
 	tlcli/commands/lsp.tl \
 	tlcli/commands/run.tl \
+	tlcli/commands/pack.tl \
 	tlcli/commands/warnings.tl \
 	tlcli/commands/dump_blocks.tl \
 	tlcli/commands/types.tl \

@@ -23,6 +23,9 @@ local Tables = {}
 
 
 
+
+
+
 function Tables.map(source, transform)
    local output = {}
    for idx, value in ipairs(source) do
@@ -145,10 +148,21 @@ end
 
 
 
+
 function Tables.tap(value, inspect)
    inspect(value)
    return value
 end
+
+
+
+
+
+
+
+
+
+
 
 
 

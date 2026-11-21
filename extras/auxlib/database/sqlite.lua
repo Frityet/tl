@@ -7,6 +7,14 @@ local database = require("auxlib.database")
 
 
 
+
+
+
+
+
+
+
+
 local SQLiteAdapter = {}
 
 

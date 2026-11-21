@@ -5,6 +5,16 @@ local type RunLoop = Async.RunLoop
 
 --- Connect an async scheduler to the default libuv loop from `luv`.
 --- The host owns the loop. All adapters use the same loop as `luv.run()`.
+---
+--- ```teal
+--- local scheduler = tasks.new(luv.new())
+--- local task = scheduler:start(function(): string
+---    tasks.sleep(0.01):await()
+---    return "timer fired"
+--- end)
+--- luv.run()
+--- print(task:result())
+--- ```
 local record Luv
    record LuvLoop is RunLoop where self.__name == "luv"
       __name: string

@@ -49,74 +49,6 @@ JavaScript, so everything runs on the client.
 
 ## Running
 
-### Bundled auxiliary library
-
-The strict-nil library in `extras/auxlib` includes `auxlib.tables`, `auxlib.async`,
-`auxlib.database`, `auxlib.struct`, and `auxlib.format`. The checkout's `tl`
-launcher adds `extras/` to the module search path. When embedding the compiler
-or running generated Lua separately, add `<tl>/extras/?.lua` and
-`<tl>/extras/?/init.lua` to `package.path`.
-Public APIs and macros carry TealDoc comments in their `.tl` sources; library
-tests live in `extras/auxlib/tests/`.
-
-`tables.map` and `||>` map arrays `{TFrom}` to `{TTo}`. Their callback receives
-`(value, idx)` with a one-based index and returns one mapped value.
-Other table projections and predicates receive `(value, key)`; reducers receive
-`(accumulator, value, key)`.
-
-`auxlib.async` schedules coroutine tasks. Call `task:await()` inside a task to
-wait for another task. Use `all` to collect results, `race` to take the first
-completion, and `timeout` to set a time limit. `yield` pauses the current task
-until a later scheduler step.
-
-Step a scheduler by hand or pass a record that implements `RunLoop`. The record
-can supply `defer` to post a callback and `after` to start a one-shot timer.
-The bundled libuv adapter uses the optional `luv` module.
-
-```teal
-local tasks = require("auxlib.async")
-local luv = require("auxlib.async.luv")
-local scheduler = tasks.new(luv.new())
-local task = scheduler:start(function(): string
-   tasks.sleep(0.01):await()
-   return "timer fired"
-end)
-luv.run()
-print(task:result())
-```
-
-`auxlib.database` provides parameter binding, query helpers, and transactions
-through a `DatabaseProvider`. To integrate another database, implement that
-interface in a record and pass an instance to `database.connect`. Use
-`database.NULL` for SQL nulls. The SQLite provider uses the optional
-`lsqlite3` module.
-
-```teal
-local sqlite = require("auxlib.database.sqlite")
-local db = sqlite.open(":memory:")
-db:execute("CREATE TABLE people (name TEXT)")
-db:execute("INSERT INTO people VALUES (?)", {"Ada"})
-print(db:scalar("SELECT name FROM people WHERE name = ?", "name", {"Ada"}))
-db:close()
-```
-
-`auxlib.format` supplies `f!` interpolation with printf-style field specs:
-
-```teal
-local format = require("auxlib.format")
-local macro f! = format.f!
-local name = "Ada"
-local price = 12.345
-print(f!"Hello {name}, price {price:.2f}")
-```
-
-Escape literal braces as `{{` and `}}`. Plain fields use `tostring`; specs such
-as `04d`, `08x`, `+8.2f`, `10s`, `-10s` and `q` select numeric/string formatting.
-The macro emits concatenation for plain templates and a single `string.format`
-call when a field has a format spec. The reproducible benchmark is
-`extras/auxlib/tests/format_bench.lua`; run it with the target LuaJIT executable
-and `LUA_PATH='./?.lua;./?/init.lua;./extras/?.lua;;'`.
-
 ### Using the compiler directly
 
 Once `tl` is in your path, there are a few subcommands:
@@ -139,15 +71,12 @@ Once `tl` is in your path, there are a few subcommands:
   workspace root supplied by the editor and caches its workspace file manifest
   in `.cache/tl-lsp/workspace-index.paths`.
 
-Hover documentation uses [TealDoc-style comments](https://github.com/teal-language/tealdoc#tealdoc-comments)
-attached directly to declarations: start with `---`, continue with `--` or `---`,
-or use a `--[[-- ... ]]--` block. Markdown paragraphs, lists and fenced examples
-retain their layout; `@param`, `@typearg`, `@field`, `@return` and other tags are
-rendered as readable documentation. The LSP renders this itself and does not
-require TealDoc. Macro and operator hovers follow imported aliases back to their
-definition, so usage documentation also appears when hovering `+=>`, `?>` and
-other activated operators, including every character of a multi-character symbol.
-Open, unsaved documentation buffers take precedence over the file on disk.
+Put TealDoc comments next to declarations. Start with `---`. Continue with
+`--` or `---`, or use a `--[[-- ... ]]--` block. Hover shows the original
+Markdown and renders tags such as `@param` and `@return`. The server follows
+macro aliases to their definitions. You can hover over each character of an
+operator. The server reads open buffers before it reads files on disk.
+[TealDoc comment syntax](https://github.com/teal-language/tealdoc#tealdoc-comments)
 
 LSP features can be disabled per project in `tlconfig.lua`:
 

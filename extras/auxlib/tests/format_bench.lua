@@ -1,5 +1,6 @@
--- Run with the target LuaJIT executable; this measures generated code, not parsing.
--- Store outputs in a persistent ring so JIT allocation sinking cannot discard them.
+-- Measure generated code. Run with the target LuaJIT executable.
+-- From the repository root, set LUA_PATH='./?.lua;./?/init.lua;./extras/?.lua;;'.
+-- Keep outputs in a ring so LuaJIT keeps their allocations.
 local rounds = tonumber(arg[1]) or 7
 local iterations = tonumber(arg[2]) or 200000
 assert(rounds >= 1 and rounds % 1 == 0, 'rounds must be a positive integer')
