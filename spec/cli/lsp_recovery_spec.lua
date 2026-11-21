@@ -114,6 +114,25 @@ describe('LSP parser recovery', function()
       end
    end)
 
+   it('still reports a real invalid numeric for bound', function()
+      local document = lsp.document(finally, 'for i = 1, nil do end')
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic',
+            params = {textDocument = {uri = document.uri}}},
+         {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      local found = false
+      for _, item in ipairs(responses[2].items) do
+         if item.code == 'type' and item.message == 'numeric for limit must be a non-nil number' then
+            found = true
+         end
+      end
+      assert.is_true(found)
+   end)
+
    it('reuses a complete workspace manifest and rebuilds a partial one', function()
       local lfs = require('lfs')
       local dir = util.write_tmp_dir(finally, {

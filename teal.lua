@@ -9132,13 +9132,13 @@ visit_node.cbs = {
          local step_t = children[4] and self:to_structural(children[4])
          if self.feat_strict_nil then
             local numeric = a_type(node, "number", {})
-            if not self:is_a(from_t, numeric) then
+            if node.from.kind ~= "error_node" and not self:is_a(from_t, numeric) then
                self:add_error(node, "numeric for initial value must be a non-nil number")
             end
-            if not self:is_a(to_t, numeric) then
+            if node.to.kind ~= "error_node" and not self:is_a(to_t, numeric) then
                self:add_error(node, "numeric for limit must be a non-nil number")
             end
-            if step_t and not self:is_a(step_t, numeric) then
+            if step_t and node.step.kind ~= "error_node" and not self:is_a(step_t, numeric) then
                self:add_error(node, "numeric for step must be a non-nil number")
             end
          else
