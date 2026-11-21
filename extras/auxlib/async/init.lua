@@ -1,5 +1,36 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local coroutine = _tl_compat and _tl_compat.coroutine or coroutine; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local pcall = _tl_compat and _tl_compat.pcall or pcall; local table = _tl_compat and _tl_compat.table or table
+
+
+
+
+
+
+
+
+
 local Async = { Loop = {}, Scheduler = {}, Task = {}, Scope = {}, Job = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -116,9 +147,6 @@ local function enqueue(scheduler, callback)
    request_turn(scheduler)
 end
 
-
-
-
 function Async.Scheduler:step(limit)
    assert(not current_job(), "async scheduler must be stepped from its host loop")
    assert(not self._stepping, "async scheduler is already stepping")
@@ -166,45 +194,6 @@ function Async.new(loop)
 end
 
 local default_scheduler = Async.new()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -314,7 +303,7 @@ local function resume_job(job)
       job.co, job.body_done, job.value = nil, true, value
       if not next(job.children) then finish(job, "fulfilled", value) end
    elseif value ~= suspended then
-      finish(job, "rejected", "async tasks must suspend through await")
+      finish(job, "rejected", "async tasks must suspend through Task:await() or async.yield()")
    end
 end
 
@@ -331,11 +320,13 @@ local function depends_on(target, job)
    while #pending > 0 do
       local dependency = assert(table.remove(pending))
       if dependency == job then return true end
-      if not seen[dependency] then
+      if dependency.status == "pending" and not seen[dependency] then
          seen[dependency] = true
          local waiting_on = dependency.waiting_on
          if waiting_on then
-            table.insert(pending, waiting_on)
+            for _, source in ipairs(waiting_on) do
+               table.insert(pending, source)
+            end
          end
          for child in pairs(dependency.children) do
             table.insert(pending, child)
@@ -353,7 +344,7 @@ local function await_task(self)
       assert(job, "await of a pending task requires an async coroutine")
       assert(job.scheduler == target.scheduler, "cannot await a pending task on a different async scheduler")
       assert(not depends_on(target, job), "cyclic async task dependency")
-      job.waiting_on = target
+      job.waiting_on = { target }
       job.unlisten = listen(target, function()
          job.waiting_on, job.unlisten = nil, nil
          resume_job(job)
@@ -361,6 +352,15 @@ local function await_task(self)
       coroutine.yield(suspended)
    end
    return read_result(self)
+end
+
+
+
+function Async.yield()
+   local job = assert(current_job(), "async.yield requires an async coroutine")
+   if job.status ~= "pending" then error(job.value, 0) end
+   enqueue(job.scheduler, function() resume_job(job) end)
+   coroutine.yield(suspended)
 end
 
 local function task_handle(job)
@@ -388,9 +388,6 @@ local function start_job(scheduler, parent, supervised, body)
    return job
 end
 
-
-
-
 function Async.Scheduler:start(body)
    return task_handle(start_job(self, current_job(), false, body))
 end
@@ -411,9 +408,6 @@ function Async.start_void(body)
    end))
 end
 
-
-
-
 function Async.Scope:spawn(factory)
    local job = self._job
    assert(self._open and job.status == "pending", "async nursery scope is closed")
@@ -422,7 +416,6 @@ function Async.Scope:spawn(factory)
       return factory():await()
    end))
 end
-
 
 
 
@@ -457,46 +450,86 @@ end
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 function Async.from_callback(register)
    return task_handle(callback_job(register))
 end
 
+local function timer_for(scheduler, seconds)
+   assert(seconds >= 0 and seconds < math.huge, "async timer delay must be finite and non-negative")
+   local loop = scheduler._loop
+   return assert(loop and loop.after, "async timers require a run loop with an after function")
+end
 
 
 
 
 function Async.sleep(seconds)
-   local loop = Async.current()._loop
-   local after = assert(loop and loop.after, "async.sleep requires a loop.after adapter")
-   assert(seconds >= 0 and seconds < math.huge, "async sleep duration must be finite and non-negative")
+   local after = timer_for(Async.current(), seconds)
    return task_handle(callback_job(function(resolve)
       return after(seconds, function() resolve(nil) end)
    end))
+end
+
+local function watch_tasks(tasks, settle)
+   local scheduler, parent = Async.current(), current_job()
+   local targets = {}
+   for index, task in ipairs(tasks) do
+      local target = task._job
+      if target.status == "pending" then
+         assert(target.scheduler == scheduler, "cannot wait for a pending task on a different async scheduler")
+         assert(not parent or not depends_on(target, parent), "cyclic async task dependency")
+      end
+      targets[index] = target
+   end
+
+   local job = new_job(scheduler, parent, false)
+   local removals = {}
+   job.waiting_on = targets
+   job.unlisten = function()
+      for _, remove in ipairs(removals) do remove() end
+   end
+   for index, target in ipairs(targets) do
+      if target.status == "pending" then
+         table.insert(removals, listen(target, function() settle(job, index, target) end))
+      else
+         settle(job, index, target)
+         if job.status ~= "pending" then break end
+      end
+   end
+   return job
+end
+
+
+
+
+
+function Async.all(tasks)
+   local remaining = #tasks
+   local values = {}
+   local job = watch_tasks(tasks, function(group, index, target)
+      if target.status == "fulfilled" then
+         values[index] = target.value
+         remaining = remaining - 1
+         if remaining == 0 then finish(group, "fulfilled", values) end
+      else
+         finish(group, target.status, target.value)
+      end
+   end)
+   if #tasks == 0 then finish(job, "fulfilled", values) end
+   return task_handle(job)
+end
+
+local function forward_result(job, _, target)
+   finish(job, target.status, target.value)
+end
+
+
+
+
+
+function Async.race(tasks)
+   assert(#tasks > 0, "async.race requires at least one task")
+   return task_handle(watch_tasks(tasks, forward_result))
 end
 
 
@@ -504,59 +537,37 @@ end
 
 
 
+function Async.timeout(task, seconds)
+   local target = task._job
+   if target.status ~= "pending" then return task end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+   local scheduler = Async.current()
+   local after = timer_for(scheduler, seconds)
+   local job = watch_tasks({ task }, forward_result)
+   local remove_listeners = assert(job.unlisten)
+   local stop_timer
+   local timer_fired = false
+   job.unlisten = function()
+      remove_listeners()
+      if stop_timer and not timer_fired then run_cleanup(scheduler, stop_timer) end
+   end
+   local ok, cancel_timer = pcall(after, seconds, function()
+      timer_fired = true
+      if target.status == "pending" then
+         finish(job, "rejected", "async task timed out")
+      else
+         forward_result(job, 1, target)
+      end
+   end)
+   if not ok then
+      finish(job, "rejected", cancel_timer)
+   elseif job.status == "pending" then
+      stop_timer = cancel_timer
+   elseif cancel_timer and not timer_fired then
+      run_cleanup(scheduler, cancel_timer)
+   end
+   return task_handle(job)
+end
 
 
 

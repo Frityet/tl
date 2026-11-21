@@ -283,30 +283,22 @@ local function double(value: integer): integer return value * 2 end
 local answer = 21 |> tables.tap(print) |> double -- prints 21, returns 42
 ```
 
-### Destructuring and imports
+### Destructuring fields
 
-`from` takes a list of bare field names and declares them as locals in the
-surrounding scope. It evaluates the source once and reads the fields in order.
+`from` declares const locals in the surrounding scope. It evaluates the
+source once and reads the fields in order. Use `as` to give a local a
+different name.
 
 ```lua
 local row = { width = 3, height = 4 };
-{ width, height } from row
-print(width * height) -- 12
+{ width as w, height } from row
+print(w * height) -- 12
 ```
 
-Use a semicolon after a preceding expression when its parser could consume
-the opening brace as a table argument.
-
-`from` recognizes `import { ... }` as an ordinary call-shaped marker and selects
-fields from a required module. Only the `from` macro needs activating; there is
-no separate `import` macro or global function to define. The module name can be
-dotted or quoted, and `as` gives an imported field a different local name.
+Use a semicolon after a preceding expression if the parser could read the
+opening brace as a table argument. The source can be a module returned by
+`require`.
 
 ```lua
-import { some_function as fn, version } from module.name
-import { load as load_file } from "module name"
+{ some_function as fn, version } from require "module.name"
 ```
-
-A selection produced by another macro uses ordinary call parentheses:
-`import(selection!()) from module.name`. Outside a `from` expression, `import`
-remains an ordinary identifier.

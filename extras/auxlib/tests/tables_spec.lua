@@ -238,8 +238,8 @@ local macro (from)! = tables.(from)!
             calls = calls + 1
             return {id = 7, name = "item", enabled = false}
          end
-         { id, name, enabled } from row()
-         local typed_id: integer = id
+         { id as item_id, name, enabled } from row()
+         local typed_id: integer = item_id
          local typed_name: string = name
          local typed_enabled: boolean | nil = enabled
          return typed_id, typed_name, typed_enabled, calls
@@ -255,7 +255,7 @@ local macro (from)! = tables.(from)!
       ]])})
    end)
 
-   it('imports from dotted and quoted module names with optional aliases', function()
+   it('selects fields from require calls with optional aliases', function()
       local declaration = [[
          local record Export
             some_function: function(integer): integer
@@ -278,18 +278,29 @@ local macro (from)! = tables.(from)!
          package.loaded[dotted], package.loaded[quoted] = nil, nil
       end)
       assert.same({6, 8, 10}, {run([[
-         import { some_function as fn, number } from utility_fixture.source
+         { some_function as fn, number } from require "utility_fixture.source"
          local macro selection!() return `{ some_function as other, number as table }` end
-         import(selection!()) from "utility fixture"
+         (selection!()) from require("utility fixture")
          return fn(3), other(4), number + table
       ]])})
    end)
 
-   it('keeps import as an ordinary identifier outside from expressions', function()
-      assert.equals(7, run([[
-         local function import(fields: {integer}): integer return fields[1] end
-         return import {7}
-      ]], true))
+   it('makes every binding const, including aliases', function()
+      local source = imports .. [[
+         local row = { width = 3, height = 4 };
+         { width as w, height } from row
+         w = 5
+         height = 6
+      ]]
+      local ast, errors = tl.parse(source, 'tables-fixture.tl')
+      assert.same({}, errors)
+      local result = tl.check(ast, 'tables-fixture.tl', {
+         gen_target = '5.1', gen_compat = 'off', feat_strict_nil = 'on',
+      })
+      assert.equals(2, #result.type_errors)
+      for _, err in ipairs(result.type_errors) do
+         assert.matches('cannot assign to <const> variable', err.msg, 1, true)
+      end
    end)
 
    it('rejects malformed field lists and expression-position destructuring', function()
@@ -300,13 +311,10 @@ local macro (from)! = tables.(from)!
          {'{key = a} from row', 'bare field names'},
          {'{row.a} from row', 'bare field names'},
          {'local value = {a} from row', 'returned statements in an expression context'},
-         {'import() from source', 'exactly one field selection'},
-         {'import({a}, {b}) from source', 'exactly one field selection'},
-         {'other.import {a} from source', 'nonempty list'},
-         {'import {[1] = a} from source', 'bare field names'},
-         {'import {a} from get_module()', 'dotted module name or a string literal'},
-         {'import {a as b, b} from source', "duplicate binding 'b'"},
-         {'import {a as other.name} from source', 'alias must be a bare name'},
+         {'import {a} from source', 'nonempty list'},
+         {'{a as b, b} from source', "duplicate binding 'b'"},
+         {'{a as other.name} from source', 'alias must be a bare name'},
+         {'{a as T<integer>} from source', 'alias must be a bare name'},
       }
       for _, case in ipairs(cases) do
          local _, errors = tl.parse(imports .. case[1], 'tables-fixture.tl')

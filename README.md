@@ -51,10 +51,11 @@ JavaScript, so everything runs on the client.
 
 ### Bundled auxiliary library
 
-The strict-nil library lives in `extras/auxlib`: require `auxlib.tables`,
-`auxlib.async`, `auxlib.struct` or `auxlib.format`. The checkout's `tl` launcher adds `extras/`
-to the module search path. When embedding the compiler or running generated Lua
-separately, add `<tl>/extras/?.lua` and `<tl>/extras/?/init.lua` to `package.path`.
+The strict-nil library in `extras/auxlib` includes `auxlib.tables`, `auxlib.async`,
+`auxlib.database`, `auxlib.struct`, and `auxlib.format`. The checkout's `tl`
+launcher adds `extras/` to the module search path. When embedding the compiler
+or running generated Lua separately, add `<tl>/extras/?.lua` and
+`<tl>/extras/?/init.lua` to `package.path`.
 Public APIs and macros carry TealDoc comments in their `.tl` sources; library
 tests live in `extras/auxlib/tests/`.
 
@@ -62,6 +63,42 @@ tests live in `extras/auxlib/tests/`.
 `(value, idx)` with a one-based index and returns one mapped value.
 Other table projections and predicates receive `(value, key)`; reducers receive
 `(accumulator, value, key)`.
+
+`auxlib.async` schedules coroutine tasks. Call `task:await()` inside a task to
+wait for another task. Use `all` to collect results, `race` to take the first
+completion, and `timeout` to set a time limit. `yield` pauses the current task
+until a later scheduler step.
+
+Step a scheduler by hand or pass a record that implements `RunLoop`. The record
+can supply `defer` to post a callback and `after` to start a one-shot timer.
+The bundled libuv adapter uses the optional `luv` module.
+
+```teal
+local tasks = require("auxlib.async")
+local luv = require("auxlib.async.luv")
+local scheduler = tasks.new(luv.new())
+local task = scheduler:start(function(): string
+   tasks.sleep(0.01):await()
+   return "timer fired"
+end)
+luv.run()
+print(task:result())
+```
+
+`auxlib.database` provides parameter binding, query helpers, and transactions
+through a `DatabaseProvider`. To integrate another database, implement that
+interface in a record and pass an instance to `database.connect`. Use
+`database.NULL` for SQL nulls. The SQLite provider uses the optional
+`lsqlite3` module.
+
+```teal
+local sqlite = require("auxlib.database.sqlite")
+local db = sqlite.open(":memory:")
+db:execute("CREATE TABLE people (name TEXT)")
+db:execute("INSERT INTO people VALUES (?)", {"Ada"})
+print(db:scalar("SELECT name FROM people WHERE name = ?", "name", {"Ada"}))
+db:close()
+```
 
 `auxlib.format` supplies `f!` interpolation with printf-style field specs:
 
