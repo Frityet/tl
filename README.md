@@ -86,6 +86,8 @@ return {
       inlay_hints = false,
       -- Coalesce edits for up to this many milliseconds per batch (default: 35).
       diagnostics_debounce_ms = 35,
+      -- Enable workspace diagnostic requests (default: true).
+      workspace_diagnostics = true,
       semantic_highlighting = false,
       workspace_index = false,
       cache = false,
@@ -99,6 +101,8 @@ The available switches are `diagnostics`, `completion`, `hover`, `definitions`,
 `document_links`, `linked_editing`, `document_colors`, `code_lens`,
 `code_actions`, `call_hierarchy`, `type_hierarchy`, `monikers`,
 `workspace_index`, and `cache`. All default to enabled.
+Set `workspace_diagnostics = false` to disable advertising workspace diagnostic
+requests. These requests cover documents currently known to the server.
 
 `tl` also supports some [compiler options](https://teal-language.org/book/latest/compiler_options.html).
 These can either be specified on the command line or inside a tlconfig.lua file at the root of your project.

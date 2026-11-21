@@ -2366,7 +2366,7 @@ local function server_capabilities(server: Server): AnyObject
       capabilities.diagnosticProvider = {
          identifier = "teal",
          interFileDependencies = true,
-         workspaceDiagnostics = server.tlconfig.lsp and server.tlconfig.lsp.workspace_diagnostics == true or false,
+         workspaceDiagnostics = not server.tlconfig.lsp or server.tlconfig.lsp.workspace_diagnostics ~= false,
       }
    end
    if lsp_enabled(server, "code_actions") then capabilities.codeActionProvider = { codeActionKinds = mark_array({ "quickfix", "source" } as AnyArray) } end
