@@ -174,11 +174,41 @@ must be invoked as a standalone statement. Writing `local x = declare!()`
 does not turn the generated declaration into a value. These context errors
 are reported at the macro invocation before Lua is generated.
 
-### Record macros
+### Declaration decorators
 
-Use `local record<macro!> Name ... end` to pass a record declaration to a
-macro as one `Statement` argument. The macro expansion takes the declaration's
-place. Qualified macro names and `global record` work with the same syntax.
+Put a macro name in angle brackets to pass a declaration to that macro.
+The expansion takes the place of the declaration. You can use a qualified
+macro name.
+
+```teal
+local value<decorate!> = 4
+-- Same as decorate!(local value = 4)
+
+local function read()<decorate!>: integer
+   return value
+end
+-- Same as decorate!(local function read(): integer return value end)
+
+local record<decorate!> Reader end
+-- Same as decorate!(local record Reader end)
+```
+
+Declare the macro parameter as `Statement` to accept the declaration block.
+Declare it as `Function` to accept a local function declaration or a function
+literal. For example, import `async!` from `auxlib.async` to make a function
+return a task when called.
+
+```teal
+local tasks = require("auxlib.async")
+local macro async! = tasks.async!
+
+local function fetch(id: integer)<async!>: string
+   return tostring(id)
+end
+local fetch_default = async!(|| -> fetch(1):await())
+```
+
+#### Object records
 
 ```teal
 local Object = require("auxlib.Object")

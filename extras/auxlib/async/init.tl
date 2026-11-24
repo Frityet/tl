@@ -569,27 +569,30 @@ function Async.timeout<T>(task: Task<T>, seconds: number): Task<T>
    return task_handle(job)
 end
 
---- Turn a function literal into a function that schedules a task.
---- For example, `async |id: integer|: string -> tostring(id)` creates a function
---- that takes an integer and returns a `Task<string>`. Use `: nil` if an
---- expression body returns only nil.
---- @param fn Function literal with fixed parameters and at most one result type.
---- @return A function that starts the task. A body with no result gives a `Task<nil>`.
-macro Async.(async)!(fn: Expression): Operator<prefix, unary>
+--- Make a function schedule a task when called.
+--- Decorate a declaration with `local function name()<async!>: Result`.
+--- Use `async!(|| -> value)` to create a scheduler function from a literal.
+--- @param fn Local function declaration or function literal with fixed parameters.
+--- @return A function that starts a task. A body with no result gives a `Task<nil>`.
+macro Async.async!(fn: Function)
    local B = BLOCK_INDEXES
    local F = B.FUNCTION
-   assert(fn.kind == "function", "async expects a function literal")
-   assert(not fn[F.TYPEARGS], "async function literals cannot declare type parameters")
+   local named = fn.kind == "local_function"
+   assert(not fn[F.TYPEARGS], "async functions cannot declare type parameters")
    for _, arg in ipairs(fn[F.ARGS]) do
-      assert(arg.tk ~= "...", "async function literals cannot declare variadic parameters")
+      assert(arg.tk ~= "...", "async functions cannot declare variadic parameters")
    end
    local rets = fn[F.RETS]
-   assert(not rets or not rets[1] or #rets[1] <= 1, "async functions declare one result type")
+   local types = rets and rets[1]
+   assert(not types or #types <= 1, "async functions declare at most one result type")
+   local result_type = types and types[1]
    local inner = clone(fn)
+   inner.kind = "function"
    inner[F.ARGS] = block("argument_list")
    inner[F.SHORT] = block("short_function")
-   local void = rets and rets[1] and rets[1][1] and rets[1][1].kind == "nil"
-   if not rets or rets.tk ~= ":" then
+   if named then inner[B.LOCAL_FUNCTION.CONST] = nil end
+   local void = result_type and result_type.kind == "nil"
+   if not result_type then
       local function returns_value(node)
          if node.kind == "return" then
             local values = node[B.RETURN.EXPS]
@@ -607,9 +610,46 @@ macro Async.(async)!(fn: Expression): Operator<prefix, unary>
       void = not returns_value(inner[F.BODY])
    end
    local start = void and `require("auxlib.async").start_void($inner)` or `require("auxlib.async").start($inner)`
-   local wrapper = `|| -> $start`
+   if not named then
+      local wrapper = `|| -> $start`
+      wrapper[F.ARGS] = clone(fn[F.ARGS])
+      return wrapper
+   end
+
+   assert(result_type or void, "annotate the result type of an async function declaration")
+   local name = fn[B.LOCAL_FUNCTION.NAME]
+   local used = {}
+   local function collect(node)
+      if node.tk then used[node.tk] = true end
+      for index, child in pairs(node) do
+         if type(index) == "number" and type(child) == "table" and child.kind then collect(child) end
+      end
+   end
+   collect(fn)
+   local namespace = block("identifier")
+   namespace.tk = "__teal_async"
+   while used[namespace.tk] do namespace.tk = namespace.tk .. "_" end
+
+   -- Keep the recursive binding and generated type alias inside a private scope.
+   local declaration = ```
+      local $name = (|| -> do
+         local type $namespace = require("auxlib.async")
+         local function __teal_async_function(): $namespace.Task<nil>
+            return $start
+         end
+         return $name
+      end)()
+   ```
+   local binding = declaration[1]
+   local value = binding[B.LOCAL_DECLARATION.EXPS][1]
+   local scope = value[B.OP.E1][B.PAREN.EXP][F.BODY]
+   local wrapper = scope[2]
+   wrapper[B.LOCAL_FUNCTION.NAME] = clone(name)
    wrapper[F.ARGS] = clone(fn[F.ARGS])
-   return wrapper
+   local task_type = wrapper[F.RETS][1][1]
+   if result_type then task_type[#task_type][1] = clone(result_type) end
+   binding[B.LOCAL_DECLARATION.CONST] = fn[B.LOCAL_FUNCTION.CONST]
+   return declaration
 end
 
 return Async

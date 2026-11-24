@@ -3,7 +3,7 @@ local async = require('auxlib.async')
 
 local imports = [[
 local tasks = require("auxlib.async")
-local macro (async)! = tasks.(async)!
+local macro async! = tasks.async!
 local type Scope = tasks.Scope
 ]]
 
@@ -38,19 +38,19 @@ describe('auxlib async macros', function()
             alerts: {string}
          end
 
-         local load_profile = async function(id: integer): string
+         local function load_profile(id: integer)<async!>: string
             tasks.sleep(0):await()
             return "profile:" .. tostring(id)
          end
-         local load_alerts = async |id: integer|: {string} -> do
+         local load_alerts = async!(|id: integer|: {string} -> do
             tasks.sleep(0):await()
             return {"alert:" .. tostring(id)}
-         end
+         end)
 
-         local load_dashboard = async function(id: integer): Dashboard
+         local function load_dashboard(id: integer)<tasks.async!>: Dashboard
             return tasks.nursery(function(scope: Scope): Dashboard
                local profile = scope:spawn(|| -> load_profile(id))
-               local alerts = scope:spawn(async || -> load_alerts(id):await())
+               local alerts = scope:spawn(async!(|| -> load_alerts(id):await()))
                return { profile = profile:await(), alerts = alerts:await() }
             end):await()
          end
@@ -85,9 +85,9 @@ describe('auxlib async macros', function()
       assert.equals(7, run([[
          local loop = tasks.configure()
          local number = 5
-         local echo = async function(value: integer): integer return value end
-         local set = async function(value: integer) number = value end
-         local job = async ||: integer -> do
+         async!(local function echo(value: integer): integer return value end)
+         local function set(value: integer)<async!> number = value end
+         local job = async!(||: integer -> do
             local pending: tasks.Task<nil> = set(7)
             assert(pending:await() == nil)
             local empty: tasks.Task<string | nil> = tasks.from_callback(
@@ -97,22 +97,35 @@ describe('auxlib async macros', function()
                end)
             assert(empty:await() == nil)
             return echo(number):await()
-         end
+         end)
          local root = job()
          while loop:step() > 0 do end
          return root:result()
       ]]))
    end)
 
+   it('keeps decorated functions recursive', function()
+      assert.equals(7, run([[
+         local loop = tasks.configure()
+         local function count(value: integer)<async!>: integer
+            if value == 0 then return 4 end
+            return count(value - 1):await() + 1
+         end
+         local root = count(3)
+         while loop:step() > 0 do end
+         return root:result()
+      ]]))
+   end)
+
    it('checks the declared result of the original async function', function()
-      local result = compile([[local bad = async ||: integer -> "wrong"]])
+      local result = compile([[local bad = async!(||: integer -> "wrong")]])
       assert.matches('expected integer', result.type_errors[1].msg, 1, true)
    end)
 
    it('requires a function literal for async', function()
-      local _, errors = tl.parse(imports .. 'local bad = async 42', 'async-fixture.tl')
+      local _, errors = tl.parse(imports .. 'local bad = async!(42)', 'async-fixture.tl')
       assert.is_true(#errors > 0)
-      assert.matches('async expects a function literal', errors[1].msg, 1, true)
+      assert.matches('must be a Function literal or local function declaration', errors[1].msg, 1, true)
    end)
 end)
 

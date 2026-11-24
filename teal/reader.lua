@@ -452,6 +452,9 @@ local function build_macro_sig(args, errs, filename, macro_name)
          elseif tname == "Expression" then
             ok = true
             mode = "expr"
+         elseif tname == "Function" then
+            ok = true
+            mode = "function"
          end
       end
       if not ok then
@@ -459,7 +462,7 @@ local function build_macro_sig(args, errs, filename, macro_name)
             filename = filename,
             y = (annot and annot.y) or ab.y,
             x = (annot and annot.x) or ab.x,
-            msg = "macro '" .. macro_name .. "' argument type must be 'Statement' or 'Expression'",
+            msg = "macro '" .. macro_name .. "' argument type must be 'Statement', 'Expression', or 'Function'",
          })
       else
          if ab.tk == "..." then
@@ -1246,7 +1249,8 @@ local function read_macro_args_with_sig(ps, i, sig)
       if sig then
          expected = sig.kinds[n] or (sig.vararg ~= "" and sig.vararg or nil)
       end
-      if expected == "stmt" then
+      local first = ps2.tokens[ii].tk
+      if expected == "stmt" or (expected == "function" and (first == "local" or first == "const")) then
          if is_macro_quote_token(ps2.tokens[ii]) then
             local ni, q = read_macro_quote(ps2, ii)
             return ni, q, n + 1
@@ -1739,11 +1743,59 @@ read_type_list = function(ps, i, mode)
    return i, t
 end
 
-local function read_function_args_rets_body(ps, i, node)
+local function declaration_macro_at(ps, i)
+   if ps.tokens[i].tk ~= "<" then return false end
+   i = i + 1
+   while ps.tokens[i].kind == "identifier" do
+      local next_token = ps.tokens[i + 1].tk
+      if next_token == "!" then return true end
+      if next_token ~= "." then return false end
+      i = i + 2
+   end
+   return false
+end
+
+local function read_declaration_macro(ps, i)
+   if not declaration_macro_at(ps, i) then return i end
+   local decorator
+   i, decorator = read_macro_reference(ps, i + 1)
+   if not decorator then return i end
+   i = verify_tk(ps, i, "!")
+   i = verify_tk(ps, i, ">")
+   return i, decorator
+end
+
+local function decorate_declaration(ps, i, start, decorator, node)
+   if not decorator or not node then return i, node end
+   if forbidden_macro_invocation(ps, decorator.y, decorator.x) then return i end
+   local name = macro_target_key(decorator)
+   local alias = name and name:match("^([^.]+)%.")
+   if alias then ensure_required_alias_macros(ps, alias) end
+
+   if ps.tokens[start].tk == "const" then
+      local const_index = node.kind == "local_function" and BLOCK_INDEXES.LOCAL_FUNCTION.CONST or BLOCK_INDEXES.LOCAL_DECLARATION.CONST
+      node[const_index] = new_block(ps, start, "native_const")
+   end
+   ps.features.needs_macro_pass = true
+   local declaration = new_block(ps, start, "statements")
+   declaration[1] = node
+   end_at(declaration, ps.tokens[i - 1])
+   local args = new_block(ps, start, "expression_list")
+   args[1] = declaration
+   local invocation = new_block(ps, start, "macro_invocation")
+   invocation[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = decorator
+   invocation[BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args
+   end_at(invocation, ps.tokens[i - 1])
+   return i, invocation
+end
+
+local function read_function_args_rets_body(ps, i, node, declaration_start)
    local istart = i - 1
    i, node[BLOCK_INDEXES.FUNCTION.TYPEARGS] = read_typeargs_if_any(ps, i)
 
    i, node[BLOCK_INDEXES.FUNCTION.ARGS] = read_argument_list(ps, i)
+   local decorator
+   if declaration_start then i, decorator = read_declaration_macro(ps, i) end
    i, node[BLOCK_INDEXES.FUNCTION.RETS] = read_return_types(ps, i)
 
    local middle = ps.ternary_middle
@@ -1752,7 +1804,7 @@ local function read_function_args_rets_body(ps, i, node)
    ps.ternary_middle = middle
    end_at(node, ps.tokens[i])
    i = verify_end(ps, i, istart, node)
-   return i, node
+   return decorate_declaration(ps, i, declaration_start, decorator, node)
 end
 
 local function read_function_value(ps, i)
@@ -2512,7 +2564,7 @@ local function read_variable_name(ps, i)
       if not node then
          return i
       end
-      if ps.tokens[i].tk == "<" then
+      if ps.tokens[i].tk == "<" and not declaration_macro_at(ps, i) then
          i = i + 1
          local annotation
          i, annotation = verify_kind(ps, i, "identifier")
@@ -2670,11 +2722,12 @@ local function read_identifier(ps, i)
 end
 
 local function read_local_function(ps, i)
+   local istart = i
    i = verify_tk(ps, i, ps.tokens[i].tk == "const" and "const" or "local")
    i = verify_tk(ps, i, "function")
    local node = new_block(ps, i - 2, "local_function")
    i, node[BLOCK_INDEXES.LOCAL_FUNCTION.NAME] = read_identifier(ps, i)
-   return read_function_args_rets_body(ps, i, node)
+   return read_function_args_rets_body(ps, i, node, istart)
 end
 
 local function read_if_block(ps, i, node, is_else)
@@ -3306,6 +3359,7 @@ do
 end
 
 local function read_variable_declarations(ps, i, node_name)
+   local istart = i - 1
    local asgn = new_block(ps, i, node_name)
 
    asgn[BLOCK_INDEXES.LOCAL_DECLARATION.VARS] = new_block(ps, i, "variable_list")
@@ -3316,6 +3370,8 @@ local function read_variable_declarations(ps, i, node_name)
 
    end_at(asgn[BLOCK_INDEXES.LOCAL_DECLARATION.VARS], ps.tokens[i - 1])
 
+   local decorator
+   i, decorator = read_declaration_macro(ps, i)
    i, asgn[BLOCK_INDEXES.LOCAL_DECLARATION.DECL] = read_type_list(ps, i, "decltuple")
 
    if ps.tokens[i].tk == "=" then
@@ -3332,7 +3388,7 @@ local function read_variable_declarations(ps, i, node_name)
 
       i, asgn = read_assignment_expression_list(ps, i, asgn)
    end
-   return i, asgn
+   return decorate_declaration(ps, i, istart, decorator, asgn)
 end
 
 local function read_type_require(ps, i, asgn)
@@ -3416,18 +3472,6 @@ read_type_declaration = function(ps, i, node_name)
    return i, asgn
 end
 
-local function record_macro_at(ps, i)
-   if ps.tokens[i].tk ~= "<" then return false end
-   i = i + 1
-   while ps.tokens[i].kind == "identifier" do
-      local next_token = ps.tokens[i + 1].tk
-      if next_token == "!" then return true end
-      if next_token ~= "." then return false end
-      i = i + 2
-   end
-   return false
-end
-
 local function read_type_constructor(ps, i, node_name, tn)
    local asgn = new_block(ps, i, node_name)
    local nt = new_block(ps, i, "newtype")
@@ -3438,13 +3482,8 @@ local function read_type_constructor(ps, i, node_name, tn)
 
    i = i + 2
 
-   local record_macro
-   if tn == "record" and record_macro_at(ps, i) then
-      i, record_macro = read_macro_reference(ps, i + 1)
-      if not record_macro then return i end
-      i = verify_tk(ps, i, "!")
-      i = verify_tk(ps, i, ">")
-   end
+   local decorator
+   if tn == "record" then i, decorator = read_declaration_macro(ps, i) end
 
    if ps.allow_macro_vars and ps.tokens[i].tk == "$" then
       local dtk = ps.tokens[i]
@@ -3470,23 +3509,7 @@ local function read_type_constructor(ps, i, node_name, tn)
 
    table.insert(nt, new_typedecl(ps, istart, def))
 
-   if record_macro then
-      if forbidden_macro_invocation(ps, record_macro.y, record_macro.x) then return i end
-      local name = macro_target_key(record_macro)
-      local alias = name and name:match("^([^.]+)%.")
-      if alias then ensure_required_alias_macros(ps, alias) end
-      ps.features.needs_macro_pass = true
-      local declaration = new_block(ps, istart, "statements")
-      declaration[1] = asgn
-      local args = new_block(ps, istart, "expression_list")
-      args[1] = declaration
-      local invocation = new_block(ps, istart + 1, "macro_invocation")
-      invocation[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = record_macro
-      invocation[BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args
-      return i, invocation
-   end
-
-   return i, asgn
+   return decorate_declaration(ps, i, istart, decorator, asgn)
 end
 
 local function skip_type_declaration(ps, i)
@@ -3714,7 +3737,7 @@ local function read_local(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
    elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
-      (ntk == "record" and record_macro_at(ps, i + 2))) then
+      (ntk == "record" and declaration_macro_at(ps, i + 2))) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "local_type", ntk_kind)
    end
@@ -3738,7 +3761,7 @@ local function read_global(ps, i)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
    elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
-      (ntk == "record" and record_macro_at(ps, i + 2))) then
+      (ntk == "record" and declaration_macro_at(ps, i + 2))) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "global_type", ntk_kind)
    elseif ps.tokens[i + 1].kind == "identifier" then

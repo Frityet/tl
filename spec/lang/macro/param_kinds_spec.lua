@@ -2,7 +2,7 @@ local tl = require('tl')
 local lua_generator = require('teal.gen.lua_generator')
 
 describe('macro parameter kinds', function()
-   it('requires annotations Statement or Expression', function()
+   it('requires a supported parameter annotation', function()
       local code = [[
          local macro bad1!(x)
             return `$x`
@@ -18,6 +18,29 @@ describe('macro parameter kinds', function()
       ]]
       local _, errs2 = tl.parse(code2)
       assert.not_same({}, errs2)
+   end)
+
+   it('passes decorated variables, functions, and records as declarations', function()
+      local code = [=[
+         local count = 0
+         local macro decorate!(declaration: Statement): Statement
+            return ```
+               $declaration
+               count = count + 1
+            ```
+         end
+
+         local a<decorate!> = 4
+         local function f()<decorate!>: integer return a end
+         local record<decorate!> Rec end
+         decorate!(local b = 8)
+         return a, f(), b, count, Rec
+      ]=]
+      local ast, errors = tl.parse(code)
+      assert.same({}, errors)
+      local output = assert(lua_generator.generate(ast, '5.1'))
+      local a, value, b, count = assert(loadstring(output))()
+      assert.same({4, 4, 8, 4}, {a, value, b, count})
    end)
 
    it('accepts Expression arguments and rejects Statement blocks', function()
