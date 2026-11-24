@@ -1,5 +1,6 @@
 --#pragma strict_nil off
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local type errors = require("teal.errors")
@@ -928,24 +929,26 @@ function types.error(msg: string, t1: Type, t2?: Type, t3?: Type): Error
 end
 
 types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type, {Error}
+   if no_nested_types[ty.typename] or (ty is NominalType and not ty.typevals) then
+      return ty
+   end
    local errs: {Error}
    local seen: {Type:Type} = {}
    local resolve: function<T is Type>(t: T, all_same: boolean): T, boolean
 
    resolve = function<T is Type>(t: T, all_same: boolean): T, boolean
-      local same = true
-
-      -- avoid copies of types that do not contain type variables
-      if no_nested_types[t.typename] or (t is NominalType and not t.typevals) then
+      -- Keep leaf types in the original graph.
+      local typename = t.typename
+      if no_nested_types[typename] or (t is NominalType and not t.typevals) then
          return t, all_same
       end
 
-      if seen[t] then
-         return seen[t], all_same
+      local cached = seen[t]
+      if cached then
+         return cached, all_same
       end
 
-      local orig_t = t
-      local fn = fns[t.typename]
+      local fn = fns[typename]
       if fn then
          local rt, is_resolved = fn(self, t, resolve)
          if rt ~= t then
@@ -957,150 +960,145 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          end
       end
 
-      local copy: Type = {}
-      seen[orig_t] = copy
-
-      setmetatable(copy, type_mt)
-      copy.typename = t.typename
-      copy.f = t.f
-      copy.x = t.x
-      copy.y = t.y
+      local copy: Type = setmetatable({ typename = t.typename, f = t.f, x = t.x, y = t.y } as Type, type_mt)
+      seen[t] = copy
+      local same = true
 
       if t is GenericType then
-         assert(copy is GenericType)
+         local mapped = copy as GenericType
 
          local ct = {}
          for i, tf in ipairs(t.typeargs) do
             ct[i], same = resolve(tf, same)
          end
-         copy.typeargs = ct
-         copy.t, same = resolve(t.t, same)
+         mapped.typeargs = ct
+         mapped.t, same = resolve(t.t, same)
       elseif t is ArrayType then
-         assert(copy is ArrayType)
+         local mapped = copy as ArrayType
 
-         copy.elements, same = resolve(t.elements, same)
+         mapped.elements, same = resolve(t.elements, same)
          -- inferred_len is not propagated
       elseif t is TypeArgType then
-         assert(copy is TypeArgType)
-         copy.typearg = t.typearg
+         local mapped = copy as TypeArgType
+         mapped.typearg = t.typearg
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t is UnresolvableTypeArgType then
-         assert(copy is UnresolvableTypeArgType)
-         copy.typearg = t.typearg
+         local mapped = copy as UnresolvableTypeArgType
+         mapped.typearg = t.typearg
       elseif t is UnresolvedEmptyTableValueType then
-         assert(copy is UnresolvedEmptyTableValueType)
-         copy.emptytable_type = t.emptytable_type
+         local mapped = copy as UnresolvedEmptyTableValueType
+         mapped.emptytable_type = t.emptytable_type
       elseif t is TypeVarType then
-         assert(copy is TypeVarType)
-         copy.typevar = t.typevar
+         local mapped = copy as TypeVarType
+         mapped.typevar = t.typevar
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t is TypeDeclType then
-         assert(copy is TypeDeclType)
-         copy.def, same = resolve(t.def, same)
-         copy.is_alias = t.is_alias
-         copy.is_nested_alias = t.is_nested_alias
+         local mapped = copy as TypeDeclType
+         mapped.def, same = resolve(t.def, same)
+         mapped.is_alias = t.is_alias
+         mapped.is_nested_alias = t.is_nested_alias
       elseif t is NominalType then
-         assert(copy is NominalType)
-         copy.names = t.names
-         copy.typevals = {}
+         local mapped = copy as NominalType
+         mapped.names = t.names
+         mapped.typevals = {}
          for i, tf in ipairs(t.typevals) do
-            copy.typevals[i], same = resolve(tf, same)
+            mapped.typevals[i], same = resolve(tf, same)
          end
-         copy.found = t.found
+         mapped.found = t.found
       elseif t is FunctionType then
-         assert(copy is FunctionType)
-         copy.macroexp = t.macroexp
-         copy.min_arity = t.min_arity
-         copy.is_method = t.is_method
-         copy.is_record_function = t.is_record_function
-         copy.args, same = resolve(t.args, same) as (TupleType, boolean)
-         copy.rets, same = resolve(t.rets, same) as (TupleType, boolean)
-         copy.special_function_handler = t.special_function_handler
+         local mapped = copy as FunctionType
+         mapped.macroexp = t.macroexp
+         mapped.min_arity = t.min_arity
+         mapped.is_method = t.is_method
+         mapped.is_record_function = t.is_record_function
+         mapped.args, same = resolve(t.args, same) as (TupleType, boolean)
+         mapped.rets, same = resolve(t.rets, same) as (TupleType, boolean)
+         mapped.special_function_handler = t.special_function_handler
       elseif t is RecordLikeType then
-         assert(copy is RecordType or copy is InterfaceType)
-         copy.declname = t.declname
+         local mapped = copy as RecordLikeType
+         mapped.declname = t.declname
 
          -- checking array interface
          if t.elements then
-            copy.elements, same = resolve(t.elements, same)
+            mapped.elements, same = resolve(t.elements, same)
          end
 
          -- checking tuple interface
          if t.types then
-            copy.types = {}
+            mapped.types = {}
             for i, v in ipairs(t.types) do
-               copy.types[i], same = resolve(v, same)
+               mapped.types[i], same = resolve(v, same)
             end
          end
 
          if t.interface_list then
-            copy.interface_list = {}
+            mapped.interface_list = {}
             for i, v in ipairs(t.interface_list) do
-               copy.interface_list[i], same = resolve(v, same)
+               mapped.interface_list[i], same = resolve(v, same)
             end
          end
 
-         copy.is_userdata = t.is_userdata
+         mapped.is_userdata = t.is_userdata
 
-         copy.fields = {}
-         copy.field_order = {}
+         mapped.fields = {}
+         mapped.field_order = {}
          for i, k in ipairs(t.field_order) do
-            copy.field_order[i] = k
-            copy.fields[k], same = resolve(t.fields[k], same)
+            mapped.field_order[i] = k
+            mapped.fields[k], same = resolve(t.fields[k], same)
          end
 
          if t.meta_fields then
-            copy.meta_fields = {}
-            copy.meta_field_order = {}
+            mapped.meta_fields = {}
+            mapped.meta_field_order = {}
             for i, k in ipairs(t.meta_field_order) do
-               copy.meta_field_order[i] = k
-               copy.meta_fields[k], same = resolve(t.meta_fields[k], same)
+               mapped.meta_field_order[i] = k
+               mapped.meta_fields[k], same = resolve(t.meta_fields[k], same)
             end
          end
       elseif t is MapType then
-         assert(copy is MapType)
-         copy.keys, same = resolve(t.keys, same)
-         copy.values, same = resolve(t.values, same)
+         local mapped = copy as MapType
+         mapped.keys, same = resolve(t.keys, same)
+         mapped.values, same = resolve(t.values, same)
       elseif t is UnionType then
-         assert(copy is UnionType)
-         copy.types = {}
+         local mapped = copy as UnionType
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
 
-         local _, err = types.is_valid_union(copy)
+         local _, err = types.is_valid_union(mapped)
          if err then
             errs = errs or {}
-            table.insert(errs, types.error(err, copy))
+            table.insert(errs, types.error(err, mapped))
          end
       elseif t is PolyType then
-         assert(copy is PolyType)
-         copy.types = {}
+         local mapped = copy as PolyType
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t is TupleTableType then
-         assert(copy is TupleTableType)
-         copy.inferred_at = t.inferred_at
-         copy.types = {}
+         local mapped = copy as TupleTableType
+         mapped.inferred_at = t.inferred_at
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t is TupleType then
-         assert(copy is TupleType)
-         copy.is_va = t.is_va
-         copy.tuple = {}
+         local mapped = copy as TupleType
+         mapped.is_va = t.is_va
+         mapped.tuple = {}
          for i, tf in ipairs(t.tuple) do
-            copy.tuple[i], same = resolve(tf, same)
+            mapped.tuple[i], same = resolve(tf, same)
          end
       elseif t is SelfType then
-         assert(copy is SelfType)
+         local mapped = copy as SelfType
          if t.display_type ~= nil then
-            copy.display_type, same = resolve(t.display_type, same)
+            mapped.display_type, same = resolve(t.display_type, same)
          end
       end
 
@@ -1290,6 +1288,10 @@ function types.drop_constant_value(t: Type): Type
 end
 
 function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
+   if no_nested_types[t.typename] or (t is NominalType and not t.typevals) then
+      return types.drop_constant_value(t)
+   end
+
    local function has_constant(typ: Type, seen: {Type:boolean}, in_typedecl: boolean): boolean
       if seen[typ] then
          return false

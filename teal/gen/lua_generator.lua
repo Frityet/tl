@@ -167,13 +167,15 @@ function lua_generator.generate(ast, gen_target, opts)
       out.h = out.h + child.h
    end
 
-   local function concat_output(out)
-      for i, s in ipairs(out) do
+   local function append_output(out, parts)
+      for i = 1, #out do
+         local s = out[i]
          if type(s) == "table" then
-            out[i] = concat_output(s)
+            append_output(s, parts)
+         else
+            parts[#parts + 1] = s
          end
       end
-      return table.concat(out)
    end
 
    local function first_output_character(out)
@@ -917,7 +919,9 @@ function lua_generator.generate(ast, gen_target, opts)
    else
       code = out
    end
-   return (concat_output(code):gsub(" *\n", "\n"))
+   local parts = {}
+   append_output(code, parts)
+   return (table.concat(parts):gsub(" *\n", "\n"))
 end
 
 return lua_generator

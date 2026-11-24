@@ -3,6 +3,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local types = require("teal.types")
@@ -221,6 +222,9 @@ local type_walkers = {
 }
 
 recurse_type = function(s, ast, visit)
+   if not TL_DEBUG and not visit.cbs and not visit.after then
+      return nil
+   end
    local kind = ast.typename
 
    if TL_DEBUG then
@@ -510,13 +514,13 @@ function traversal.traverse_nodes(s, root,
       error("missing cbs in visit_node")
    end
    local visit_after = visit_node.after
+   local cbs = visit_node.cbs
 
    recurse = function(ast)
       local xs = {}
       local kind = assert(ast.kind)
       local kprint
 
-      local cbs = visit_node.cbs
       local cbkind = cbs and cbs[kind]
       if cbkind then
          if cbkind.before then

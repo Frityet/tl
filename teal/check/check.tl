@@ -3,6 +3,7 @@ local context = require("teal.check.context")
 local type Context = context.Context
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local type environment = require("teal.environment")

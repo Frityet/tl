@@ -7,7 +7,6 @@ local type TlConfig = require("tlcli.tlconfig")
 local type Args = require("tlcli.args")
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 local type teal = require("teal.init")
 
@@ -77,7 +76,6 @@ local function json_out_table(fd: FILE, x: {any:any})
 end
 
 return function(tlconfig: TlConfig, args: Args)
-   perf.turbo(true)
    tlconfig["quiet"] = true
    tlconfig["gen_compat"] = "off"
 
@@ -86,7 +84,7 @@ return function(tlconfig: TlConfig, args: Args)
    compiler:enable_type_reporting(true)
 
    local pcalls_ok = true
-   for i, input_file in ipairs(args["file"]) do
+   for _, input_file in ipairs(args["file"]) do
       -- we run the type-checker even on files that produce
       -- syntax errors; this means we run it on incomplete and
       -- potentially inconsistent trees which may crash the
@@ -100,7 +98,6 @@ return function(tlconfig: TlConfig, args: Args)
          pcalls_ok = false
       end
 
-      perf.check_collect(i)
    end
 
    local ok = report.report_all_errors(tlconfig, compiler)

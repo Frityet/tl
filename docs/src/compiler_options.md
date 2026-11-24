@@ -78,24 +78,9 @@ If set explicitly via the `--gen-target` flag of the `tl` CLI (or the equivalent
 options in the programmatic API), the generated code will target the Lua
 version requested: 5.1, 5.3, 5.4, 5.5, or LuaJIT.
 
-If the code generation target is not set explicitly via `--gen-target`, Teal
-will target the Lua version most compatible with the version of the Lua VM
-under which the compiler itself is running. For example, if running under
-something that reports `_VERSION` as `"Lua 5.1"` or `"Lua 5.2"` (such as LuaJIT),
-it will generate 5.1-compatible code. If running under Lua 5.3 or greater, it
-will output code that uses 5.3 extensions.
-
-The stand-alone `tl` binaries are built using Lua 5.4, so they default to
-generating 5.3-compatible code. If you install `tl` using LuaRocks, the CLI
-will use the Lua version you use with LuaRocks, so it will default to that
-Lua's version.
-
-The `tl run` command loads the code it generates into the Lua VM it is running
-on, so unless you set `--gen-target` it targets that exact version.
-
-If you require the `tl` Lua module and use the `tl.loader()`, it will do the
-implicit version selection, picking the right choice based on the Lua version
-you're running it on.
+The compiler runs on LuaJIT. By default, `tl gen` generates Lua 5.3 code.
+`tl run` and `tl.loader()` generate Lua 5.1-compatible code and execute it
+with LuaJIT.
 
 #### Compatibility wrappers
 
@@ -115,11 +100,9 @@ library and hence wouldn't need compat53 in their code, Teal offers three
 modes of operation for compatibility wrapper generation via the `gen_compat`
 flag (and `--gen-compat` CLI option):
 
-* `off` - you can choose to disable generating compatibility code entirely.
-  When type checking, Teal will still assume the standard library is 5.3-compatible.
-  If you run the Teal module on an older Lua version and use any functionality
-  from the standard library that is not available on that version, you will
-  get a runtime error, similar to trying to run Lua 5.3 code on an older version.
+* `off` - Teal generates code without compatibility wrappers. The compiler type
+  checks against the Lua 5.3 standard library. If the generated code calls a
+  function that the target does not supply, it can cause a runtime error.
 * `optional` (*default*) - Teal will generate compatibility code which
   initializes the the compat53 library wrapping `require` with a `pcall`,
   so that it doesn't produce a failure if the library is missing. This means
@@ -144,8 +127,8 @@ For more information, see the [declaration files](declaration_files.md#global-en
 ### LuaJIT 2.1 with the 3.0 syntax backport
 
 Use `--gen-target=luajit` (or `gen_target = "luajit"` in `tlconfig.lua`)
-for LuaJIT 2.1 builds with the LuaJIT 3.0 syntax extensions. This target is
-explicit: the default target under LuaJIT remains `5.1`.
+for LuaJIT 2.1 builds with the LuaJIT 3.0 syntax extensions. Select this target
+explicitly.
 
 See [LuaJIT syntax extensions](luajit_extensions.md) for supported syntax,
 type checking, and generated code.

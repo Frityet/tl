@@ -1,5 +1,6 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -928,24 +929,26 @@ function types.error(msg, t1, t2, t3)
 end
 
 types.map = function(self, ty, fns)
+   if no_nested_types[ty.typename] or (ty.typename == "nominal" and not ty.typevals) then
+      return ty
+   end
    local errs
    local seen = {}
    local resolve
 
    resolve = function(t, all_same)
-      local same = true
 
-
-      if no_nested_types[t.typename] or (t.typename == "nominal" and not t.typevals) then
+      local typename = t.typename
+      if no_nested_types[typename] or (t.typename == "nominal" and not t.typevals) then
          return t, all_same
       end
 
-      if seen[t] then
-         return seen[t], all_same
+      local cached = seen[t]
+      if cached then
+         return cached, all_same
       end
 
-      local orig_t = t
-      local fn = fns[t.typename]
+      local fn = fns[typename]
       if fn then
          local rt, is_resolved = fn(self, t, resolve)
          if rt ~= t then
@@ -957,150 +960,145 @@ types.map = function(self, ty, fns)
          end
       end
 
-      local copy = {}
-      seen[orig_t] = copy
-
-      setmetatable(copy, type_mt)
-      copy.typename = t.typename
-      copy.f = t.f
-      copy.x = t.x
-      copy.y = t.y
+      local copy = setmetatable({ typename = t.typename, f = t.f, x = t.x, y = t.y }, type_mt)
+      seen[t] = copy
+      local same = true
 
       if t.typename == "generic" then
-         assert(copy.typename == "generic")
+         local mapped = copy
 
          local ct = {}
          for i, tf in ipairs(t.typeargs) do
             ct[i], same = resolve(tf, same)
          end
-         copy.typeargs = ct
-         copy.t, same = resolve(t.t, same)
+         mapped.typeargs = ct
+         mapped.t, same = resolve(t.t, same)
       elseif t.typename == "array" then
-         assert(copy.typename == "array")
+         local mapped = copy
 
-         copy.elements, same = resolve(t.elements, same)
+         mapped.elements, same = resolve(t.elements, same)
 
       elseif t.typename == "typearg" then
-         assert(copy.typename == "typearg")
-         copy.typearg = t.typearg
+         local mapped = copy
+         mapped.typearg = t.typearg
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t.typename == "unresolvable_typearg" then
-         assert(copy.typename == "unresolvable_typearg")
-         copy.typearg = t.typearg
+         local mapped = copy
+         mapped.typearg = t.typearg
       elseif t.typename == "unresolved_emptytable_value" then
-         assert(copy.typename == "unresolved_emptytable_value")
-         copy.emptytable_type = t.emptytable_type
+         local mapped = copy
+         mapped.emptytable_type = t.emptytable_type
       elseif t.typename == "typevar" then
-         assert(copy.typename == "typevar")
-         copy.typevar = t.typevar
+         local mapped = copy
+         mapped.typevar = t.typevar
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t.typename == "typedecl" then
-         assert(copy.typename == "typedecl")
-         copy.def, same = resolve(t.def, same)
-         copy.is_alias = t.is_alias
-         copy.is_nested_alias = t.is_nested_alias
+         local mapped = copy
+         mapped.def, same = resolve(t.def, same)
+         mapped.is_alias = t.is_alias
+         mapped.is_nested_alias = t.is_nested_alias
       elseif t.typename == "nominal" then
-         assert(copy.typename == "nominal")
-         copy.names = t.names
-         copy.typevals = {}
+         local mapped = copy
+         mapped.names = t.names
+         mapped.typevals = {}
          for i, tf in ipairs(t.typevals) do
-            copy.typevals[i], same = resolve(tf, same)
+            mapped.typevals[i], same = resolve(tf, same)
          end
-         copy.found = t.found
+         mapped.found = t.found
       elseif t.typename == "function" then
-         assert(copy.typename == "function")
-         copy.macroexp = t.macroexp
-         copy.min_arity = t.min_arity
-         copy.is_method = t.is_method
-         copy.is_record_function = t.is_record_function
-         copy.args, same = resolve(t.args, same)
-         copy.rets, same = resolve(t.rets, same)
-         copy.special_function_handler = t.special_function_handler
+         local mapped = copy
+         mapped.macroexp = t.macroexp
+         mapped.min_arity = t.min_arity
+         mapped.is_method = t.is_method
+         mapped.is_record_function = t.is_record_function
+         mapped.args, same = resolve(t.args, same)
+         mapped.rets, same = resolve(t.rets, same)
+         mapped.special_function_handler = t.special_function_handler
       elseif t.fields then
-         assert(copy.typename == "record" or copy.typename == "interface")
-         copy.declname = t.declname
+         local mapped = copy
+         mapped.declname = t.declname
 
 
          if t.elements then
-            copy.elements, same = resolve(t.elements, same)
+            mapped.elements, same = resolve(t.elements, same)
          end
 
 
          if t.types then
-            copy.types = {}
+            mapped.types = {}
             for i, v in ipairs(t.types) do
-               copy.types[i], same = resolve(v, same)
+               mapped.types[i], same = resolve(v, same)
             end
          end
 
          if t.interface_list then
-            copy.interface_list = {}
+            mapped.interface_list = {}
             for i, v in ipairs(t.interface_list) do
-               copy.interface_list[i], same = resolve(v, same)
+               mapped.interface_list[i], same = resolve(v, same)
             end
          end
 
-         copy.is_userdata = t.is_userdata
+         mapped.is_userdata = t.is_userdata
 
-         copy.fields = {}
-         copy.field_order = {}
+         mapped.fields = {}
+         mapped.field_order = {}
          for i, k in ipairs(t.field_order) do
-            copy.field_order[i] = k
-            copy.fields[k], same = resolve(t.fields[k], same)
+            mapped.field_order[i] = k
+            mapped.fields[k], same = resolve(t.fields[k], same)
          end
 
          if t.meta_fields then
-            copy.meta_fields = {}
-            copy.meta_field_order = {}
+            mapped.meta_fields = {}
+            mapped.meta_field_order = {}
             for i, k in ipairs(t.meta_field_order) do
-               copy.meta_field_order[i] = k
-               copy.meta_fields[k], same = resolve(t.meta_fields[k], same)
+               mapped.meta_field_order[i] = k
+               mapped.meta_fields[k], same = resolve(t.meta_fields[k], same)
             end
          end
       elseif t.typename == "map" then
-         assert(copy.typename == "map")
-         copy.keys, same = resolve(t.keys, same)
-         copy.values, same = resolve(t.values, same)
+         local mapped = copy
+         mapped.keys, same = resolve(t.keys, same)
+         mapped.values, same = resolve(t.values, same)
       elseif t.typename == "union" then
-         assert(copy.typename == "union")
-         copy.types = {}
+         local mapped = copy
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
 
-         local _, err = types.is_valid_union(copy)
+         local _, err = types.is_valid_union(mapped)
          if err then
             errs = errs or {}
-            table.insert(errs, types.error(err, copy))
+            table.insert(errs, types.error(err, mapped))
          end
       elseif t.typename == "poly" then
-         assert(copy.typename == "poly")
-         copy.types = {}
+         local mapped = copy
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t.typename == "tupletable" then
-         assert(copy.typename == "tupletable")
-         copy.inferred_at = t.inferred_at
-         copy.types = {}
+         local mapped = copy
+         mapped.inferred_at = t.inferred_at
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t.typename == "tuple" then
-         assert(copy.typename == "tuple")
-         copy.is_va = t.is_va
-         copy.tuple = {}
+         local mapped = copy
+         mapped.is_va = t.is_va
+         mapped.tuple = {}
          for i, tf in ipairs(t.tuple) do
-            copy.tuple[i], same = resolve(tf, same)
+            mapped.tuple[i], same = resolve(tf, same)
          end
       elseif t.typename == "self" then
-         assert(copy.typename == "self")
+         local mapped = copy
          if t.display_type ~= nil then
-            copy.display_type, same = resolve(t.display_type, same)
+            mapped.display_type, same = resolve(t.display_type, same)
          end
       end
 
@@ -1290,6 +1288,10 @@ function types.drop_constant_value(t)
 end
 
 function types.drop_constant_values(t, keep_typedecls)
+   if no_nested_types[t.typename] or (t.typename == "nominal" and not t.typevals) then
+      return types.drop_constant_value(t)
+   end
+
    local function has_constant(typ, seen, in_typedecl)
       if seen[typ] then
          return false

@@ -5,7 +5,6 @@
 
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 local lfs = require("lfs")
 
@@ -80,7 +79,6 @@ return function(tlconfig: TlConfig, args: Args)
       os.exit(1)
    end
 
-   perf.turbo(true)
 
    local mods = {}
    local compiler = driver.setup_compiler(tlconfig)
@@ -90,7 +88,7 @@ return function(tlconfig: TlConfig, args: Args)
       preserve_hashbang = args["keep_hashbang"]
    }
 
-   for i, input_file in ipairs(args["file"]) do
+   for _, input_file in ipairs(args["file"]) do
       local module, check_err, err = driver.process_module(compiler, input_file)
       if err then
          common.die(err)
@@ -103,7 +101,6 @@ return function(tlconfig: TlConfig, args: Args)
          check_err = check_err,
       })
 
-      perf.check_collect(i)
    end
 
    for _, mod in ipairs(mods) do

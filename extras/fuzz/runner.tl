@@ -165,7 +165,7 @@ local record Options
    help: boolean
 end
 local help=[[
-Teal compiler fuzzer (LuaJIT POSIX supervisor, selectable Lua worker)
+Teal compiler fuzzer (LuaJIT on POSIX)
   luajit extras/fuzz/fuzz.lua [options]
   --seed N --start N --cases N --seconds N --jobs N
   --lua PATH --root PATH --targets 5.1,5.3 --profile upstream|tl-ng
@@ -176,7 +176,7 @@ Teal compiler fuzzer (LuaJIT POSIX supervisor, selectable Lua worker)
 Each source/target is isolated. See extras/fuzz/README.md for replay and limits.
 ]]
 local function parse(argv: {string}, here: string): Options
-   local opts: Options = {seed=1,cases=1000,start=0,seconds=0,timeout=5,jobs=1,lua=system.executable("lua") and "lua" or "luajit",root=system.absolute(here.."/../.."),targets="5.1,5.3",corpus={},profile="upstream",max_input=131072,max_depth=128,memory_mb=0,minimize_attempts=100,minimize_seconds=60}
+   local opts: Options = {seed=1,cases=1000,start=0,seconds=0,timeout=5,jobs=1,lua="luajit",root=system.absolute(here.."/../.."),targets="5.1,5.3",corpus={},profile="upstream",max_input=131072,max_depth=128,memory_mb=0,minimize_attempts=100,minimize_seconds=60}
    local numerical: {string:boolean}={seed=true,cases=true,start=true,seconds=true,timeout=true,jobs=true,max_input=true,max_depth=true,memory_mb=true,minimize_attempts=true,minimize_seconds=true}
    local flags: {string:boolean}={minimize=true,stop_on_failure=true,help=true}
    local strings: {string:boolean}={lua=true,root=true,reference_root=true,targets=true,profile=true,output=true,replay=true,corpus=true}

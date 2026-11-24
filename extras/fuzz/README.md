@@ -1,9 +1,7 @@
 # Teal compiler fuzzer
 
-The fuzzer is authored in typed Teal, with checked-in generated Lua for immediate
-use. The supervisor requires **LuaJIT on macOS or Linux**, using its bundled FFI
-and bit libraries plus POSIX libc. Compiler workers independently support Lua
-5.1–5.5 or LuaJIT. There are no Python or third-party package dependencies.
+The fuzzer runs on **LuaJIT on macOS or Linux**. The supervisor uses the FFI and
+bit libraries and POSIX libc. The compiler workers also use LuaJIT.
 
 From the repository root:
 
@@ -14,9 +12,8 @@ luajit extras/fuzz/fuzz.lua --seed 20261105 --cases 10000 --jobs 4
 luajit extras/fuzz/fuzz.lua --lua luajit --targets 5.1 --seconds 300 --cases 100000
 ```
 
-`FUZZ_LUA` selects the LuaJIT supervisor for Makefile targets; `LUA`/`--lua`
-selects the compiler worker. For example, `make fuzz-smoke LUA=lua` checks the
-compiler under stock Lua while its supervisor still runs under LuaJIT.
+Set `FUZZ_LUA` to select the LuaJIT executable for the supervisor. Set `LUA`
+in the Makefile or use `--lua` to select the LuaJIT executable for the workers.
 `--cases` counts source programs; default `--targets 5.1,5.3` checks each source
 against both targets. Campaigns exit nonzero on **any** failure, retain all
 failures without suppressions, and continue unless `--stop-on-failure` is set.
@@ -94,11 +91,10 @@ programs with numeric oracles execute, under an environment exposing only `type`
 for union checks; their return must equal the independently calculated result.
 Corpus/mutated input never executes.
 
-Lua 5.1/LuaJIT cannot load newer standard Lua targets: those cases still check
-generation/reparsing. Stock Lua 5.3+ covers loading and execution for newer
-standard targets. Native `luajit` execution requires the patched extension set.
-The `executed` field reports the actual check, avoiding claims of runtime
-coverage for targets the worker cannot execute.
+Workers check generation and reparsing for all selected targets. They execute
+code only if their LuaJIT build supports the target syntax. Use a LuaJIT build
+with the syntax backport to execute native `luajit` output. The `executed`
+field records whether the worker ran the code.
 
 `--reference-root OTHER_CHECKOUT` also compares acceptance with another compiler
 checkout. Differences fail, including intentional language changes; a reference

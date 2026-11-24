@@ -130,17 +130,6 @@ local function get_args_parser(): argparse.Parser
 end
 
 return function(...: {string})
-   local commands: {string:function(TlConfig, Args)} = {
-      check = require("tlcli.commands.check"),
-      gen = require("tlcli.commands.gen"),
-      run = require("tlcli.commands.run"),
-      pack = require("tlcli.commands.pack"),
-      types = require("tlcli.commands.types"),
-      warnings = require("tlcli.commands.warnings"),
-      ["dump-blocks"] = require("tlcli.commands.dump_blocks"),
-      lsp = require("tlcli.commands.lsp"),
-   }
-
    local parser = get_args_parser()
 
    local args = parser:parse(...) as Args
@@ -158,6 +147,7 @@ return function(...: {string})
       os.exit(1)
    end
 
+   local command = require("tlcli.commands." .. cmd:gsub("-", "_")) as function(TlConfig, Args)
    local tlconfig, cfg_warnings = configuration.get()
    configuration.merge_config_and_args(tlconfig, args)
    if cfg_warnings and not args["quiet"] then
@@ -166,5 +156,5 @@ return function(...: {string})
       end
    end
 
-   commands[cmd](tlconfig, args)
+   command(tlconfig, args)
 end

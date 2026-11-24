@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local os = _tl_compat and _tl_compat.os or os; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local os = _tl_compat and _tl_compat.os or os; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local _tl_table_unpack = unpack or table.unpack
 
 
 
@@ -130,17 +130,6 @@ local function get_args_parser()
 end
 
 return function(...)
-   local commands = {
-      check = require("tlcli.commands.check"),
-      gen = require("tlcli.commands.gen"),
-      run = require("tlcli.commands.run"),
-      pack = require("tlcli.commands.pack"),
-      types = require("tlcli.commands.types"),
-      warnings = require("tlcli.commands.warnings"),
-      ["dump-blocks"] = require("tlcli.commands.dump_blocks"),
-      lsp = require("tlcli.commands.lsp"),
-   }
-
    local parser = get_args_parser()
 
    local args = parser:parse(...)
@@ -158,6 +147,7 @@ return function(...)
       os.exit(1)
    end
 
+   local command = require("tlcli.commands." .. cmd:gsub("-", "_"))
    local tlconfig, cfg_warnings = configuration.get()
    configuration.merge_config_and_args(tlconfig, args)
    if cfg_warnings and not args["quiet"] then
@@ -166,5 +156,5 @@ return function(...)
       end
    end
 
-   commands[cmd](tlconfig, args)
+   command(tlconfig, args)
 end

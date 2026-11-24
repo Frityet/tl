@@ -5,7 +5,6 @@
 
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 local teal = require("teal.init")
 local type TlConfig = require("tlcli.tlconfig")
@@ -88,8 +87,6 @@ return function(tlconfig: TlConfig, args: Args): any
    end
 
    teal.loader()
-
-   assert(not perf.is_turbo_on())
 
    for _, module in ipairs(args["require"]) do
       require(module)

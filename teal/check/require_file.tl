@@ -1,4 +1,7 @@
 --#pragma strict_nil off
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local input = require("teal.input")
 
 local type errors = require("teal.errors")

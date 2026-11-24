@@ -1,4 +1,7 @@
 --#pragma strict_nil off
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local errors = require("teal.errors")
 local type Error = errors.Error
 
@@ -160,6 +163,11 @@ local function path_block_to_string(node: Block): string
    return nil
 end
 
+local record ReadFeatures
+   needs_macro_pass: boolean
+   has_continue: boolean
+end
+
 local record ReadState
    tokens: {Token}
    errs: {Error}
@@ -170,6 +178,7 @@ local record ReadState
    in_local_macro: boolean
    in_macro_quote: boolean
    ternary_middle: boolean
+   features: ReadFeatures
    custom_operators: {string: {string: OperatorSpec}}
    local_operators: {string: boolean}
    macro_sigs: {string: MacroSig}
@@ -557,6 +566,8 @@ local function operator_macro_call_at(ps: ReadState, i: integer): boolean
 end
 
 local function register_operator(ps: ReadState, spec: OperatorSpec, where: Block)
+   ps.custom_operators = ps.custom_operators or { prefix = {}, infix = {}, postfix = {} }
+   ps.local_operators = ps.local_operators or {}
    local registry = ps.custom_operators[spec.fixity]
    local previous = registry[spec.symbol]
    if previous and previous.binding == spec.binding then return end
@@ -702,6 +713,7 @@ local function operator_invocation(ps: ReadState, token: Token, spec: OperatorSp
    if forbidden_macro_invocation(ps, token.y, token.x) then
       return { kind = "error_block", f = ps.filename, y = token.y, x = token.x, tk = token.tk }
    end
+   ps.features.needs_macro_pass = true
    local target: Block = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
    local args: Block = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
    return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
@@ -763,13 +775,14 @@ local function collect_macro_owner_paths(node: Block): {string:boolean}
 end
 
 local function validate_attached_macro_owners(node: Block, errs: {Error}, filename: string)
-   local owners = collect_macro_owner_paths(node)
+   local owners: {string:boolean}
    for _, child in ipairs(node) do
       if child
          and child.kind == "local_macro"
          and child[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
          and not child[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS]
       then
+         owners = owners or collect_macro_owner_paths(node)
          local owner_key = path_block_to_string(child[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
          if owner_key and not owners[owner_key] then
             local owner = child[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
@@ -796,6 +809,7 @@ local function skip(ps: ReadState, i: integer, skip_fn: SkipFunction): integer, 
       in_local_macro = ps.in_local_macro,
       in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
+      features = ps.features,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
@@ -1101,6 +1115,7 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
             in_local_macro = ps.in_local_macro,
             in_macro_quote = ps.in_macro_quote,
             custom_operators = ps.custom_operators,
+            features = ps.features,
             local_operators = ps.local_operators,
             macro_sigs = ps.macro_sigs,
             require_aliases = ps.require_aliases,
@@ -1381,6 +1396,7 @@ local function read_trying_list<T>(ps: ReadState, i: integer, list: {T}, read_it
       in_local_macro = ps.in_local_macro,
       in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
+      features = ps.features,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
@@ -2002,12 +2018,16 @@ do
    end
 
    local function P(ps: ReadState, i: integer): integer, Block
-      if ps.tokens[i].kind == "$EOF$" then
+      local t1 = ps.tokens[i]
+      if t1.kind == "$EOF$" then
          return i
       end
       local e1: Block
-      local t1 = ps.tokens[i]
-      local prefix, prefix_width = find_operator(ps, i, "prefix")
+      local prefix: OperatorSpec
+      local prefix_width: integer
+      if ps.custom_operators then
+         prefix, prefix_width = find_operator(ps, i, "prefix")
+      end
       if prefix then
          i = i + prefix_width
          local previous_errors = #ps.errs
@@ -2041,7 +2061,7 @@ do
          end
          local macro_var: Block = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
          e1 = macro_var
-      elseif operator_macro_call_at(ps, i) then
+      elseif t1.tk == "(" and operator_macro_call_at(ps, i) then
          i, e1 = read_macro_name(ps, i)
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
@@ -2065,13 +2085,15 @@ do
       end
 
       while true do
-         local infix = find_operator(ps, i, "infix")
-         local postfix, postfix_width = find_operator(ps, i, "postfix")
-         if postfix and postfix.precedence >= 100 and not infix then
-            e1 = operator_invocation(ps, ps.tokens[i], postfix, e1)
-            i = i + postfix_width
-         else
-            if infix or postfix then break end
+         if ps.custom_operators then
+            local infix = find_operator(ps, i, "infix")
+            local postfix, postfix_width = find_operator(ps, i, "postfix")
+            if postfix and postfix.precedence >= 100 and not infix then
+               e1 = operator_invocation(ps, ps.tokens[i], postfix, e1)
+               i = i + postfix_width
+            elseif infix or postfix then
+               break
+            end
          end
          local navigation: Block
          local tkop = ps.tokens[i]
@@ -2204,6 +2226,7 @@ do
             if forbidden_macro_invocation(ps, e1.y, e1.x) then
                return i, { kind = "error_block", f = ps.filename, y = e1.y, x = e1.x, tk = tkop.tk }
             end
+            ps.features.needs_macro_pass = true
             local inv: Block = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
             local signature = mname and ps.macro_sigs[mname]
             if signature and signature.operator then
@@ -2312,11 +2335,13 @@ do
    end
 
    local function next_operator(ps: ReadState, i: integer): integer, boolean, OperatorSpec, integer, string
-      local postfix, postfix_width = find_operator(ps, i, "postfix")
-      local infix, infix_width = find_operator(ps, i, "infix")
-      local spec = postfix or infix
-      if infix and postfix and #infix.symbol > #postfix.symbol then spec = infix end
-      if spec then return spec.precedence, spec.right_associative, spec, spec == postfix and postfix_width or infix_width, spec.fixity end
+      if ps.custom_operators then
+         local postfix, postfix_width = find_operator(ps, i, "postfix")
+         local infix, infix_width = find_operator(ps, i, "infix")
+         local spec = postfix or infix
+         if infix and postfix and #infix.symbol > #postfix.symbol then spec = infix end
+         if spec then return spec.precedence, spec.right_associative, spec, spec == postfix and postfix_width or infix_width, spec.fixity end
+      end
       local tk = ps.tokens[i].tk
       if ps.ternary_middle and tk == ":" then return nil end
       return precedences[2][tk], is_right_assoc[tk], nil, 1, "infix"
@@ -3205,6 +3230,9 @@ do
    local function read_variable(ps: ReadState, i: integer): integer, Block, integer
       local node: Block
       i, node = read_expression(ps, i)
+      if node and node.kind ~= "identifier" and node.kind ~= "op_index" and node.kind ~= "op_dot" then
+         ps.features.needs_macro_pass = true
+      end
       return i, node
    end
 
@@ -3225,6 +3253,9 @@ do
 
       if not macro_target and exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
          return fail(ps, i, "syntax error")
+      end
+      if exp.kind == "macro_var" then
+         ps.features.needs_macro_pass = true
       end
 
       local asgn: Block = new_block(ps, istart, "assignment")
@@ -3511,6 +3542,7 @@ local function read_macro_alias_target(ps: ReadState, i: integer, node: Block): 
 end
 
 local function read_local_macro(ps: ReadState, i: integer): integer, Block
+   ps.features.needs_macro_pass = true
    local istart = i
    i = verify_tk(ps, i, "local")
    i = verify_tk(ps, i, "macro")
@@ -3529,6 +3561,7 @@ local function read_local_macro(ps: ReadState, i: integer): integer, Block
 end
 
 local function read_attached_macro(ps: ReadState, i: integer): integer, Block
+   ps.features.needs_macro_pass = true
    local istart = i
    i = verify_tk(ps, i, "macro")
 
@@ -3781,6 +3814,7 @@ read_statement_fns = {
    ["continue"] = function(ps: ReadState, i: integer): integer, Block
       local next_tk = ps.tokens[i + 1]
       if next_tk.tk == ";" or next_tk.kind == "$EOF$" or stop_statement_list[next_tk.tk] then
+         ps.features.has_continue = true
          return i + 1, new_block(ps, i, "continue")
       end
       return read_call_or_assignment(ps, i)
@@ -3811,14 +3845,16 @@ read_statements = function(ps: ReadState, i: integer, toplevel?: boolean): integ
    local outer_operators = ps.custom_operators
    local outer_macro_sigs = ps.macro_sigs
    ps.macro_sigs = {}
-   for key, signature in pairs(outer_macro_sigs) do ps.macro_sigs[key] = signature end
+   for key, signature in next, outer_macro_sigs do ps.macro_sigs[key] = signature end
    local outer_local_operators = ps.local_operators
-   ps.local_operators = {}
-   local operators: {string: {string: OperatorSpec}} = { prefix = {}, infix = {}, postfix = {} }
-   for fixity, bindings in pairs(outer_operators) do
-      for symbol, spec in pairs(bindings) do operators[fixity][symbol] = spec end
+   ps.local_operators = nil
+   if outer_operators then
+      local operators: {string: {string: OperatorSpec}} = { prefix = {}, infix = {}, postfix = {} }
+      for fixity, bindings in next, outer_operators do
+         for symbol, spec in next, bindings do operators[fixity][symbol] = spec end
+      end
+      ps.custom_operators = operators
    end
-   ps.custom_operators = operators
    local node = new_block(ps, i, "statements")
    local item: Block
    while true do
@@ -3907,8 +3943,8 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
       in_macro_quote = in_macro_quote or false,
-      custom_operators = operator_context or { prefix = {}, infix = {}, postfix = {} },
-      local_operators = {},
+      features = {},
+      custom_operators = operator_context,
       macro_sigs = {},
       require_aliases = {},
       imported_macro_decls = {},
@@ -3934,6 +3970,13 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    local _, node = read_statements(ps, i, true)
    if hashbang then
       table.insert(node, 1, new_block(ps, 1, "hashbang"))
+   end
+
+   -- Run these passes only when the reader found syntax that they can change.
+   if not ps.features.needs_macro_pass and not ps.features.has_continue then
+      errors.clear_redundant_errors(errs)
+      read_program_depth = read_program_depth - 1
+      return node
    end
    resolve_macro_aliases(ps)
 
@@ -3987,12 +4030,12 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       end
    end
 
-   check_macro_arity(node)
+   if ps.features.needs_macro_pass then check_macro_arity(node) end
 
    local lang: BlockLang = read_lang or "tl"
    -- Recovery blocks may have missing children. Do not compile or execute
    -- macros until the complete input has parsed successfully.
-   if not skip_macro_expand and #errs == 0 then
+   if ps.features.needs_macro_pass and not skip_macro_expand and #errs == 0 then
       local function parse_expression(source: string): Block
          local program, parse_errors = reader.read("return " .. source, filename, lang, false, true)
          if #parse_errors > 0 then error("invalid expression: " .. parse_errors[1].msg, 0) end
@@ -4004,7 +4047,7 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
          return expressions[1]
       end
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs, parse_expression)
-   elseif not skip_macro_expand then
+   elseif ps.features.needs_macro_pass and not skip_macro_expand then
       -- These declarations belong to the compiler host, not the runtime file.
       -- Expansion normally removes them. When syntax errors prevent expansion,
       -- keep them opaque so type reporting cannot check their annotations and

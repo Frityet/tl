@@ -1,4 +1,7 @@
 --#pragma strict_nil off
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local type environment = require("teal.environment")
 local type Env = environment.Env
 

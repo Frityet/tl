@@ -7,6 +7,7 @@ local type Error = errors.Error
 
 local util = require("teal.util")
 local binary_search = util.binary_search
+local new_table = (require as function(string): function(integer, integer): {any:any})("table.new")
 
 local record lexer
    enum TokenKind
@@ -197,6 +198,12 @@ do
    end
    lex_word["_"] = true
 
+   local word_bytes: {integer:boolean} = {}
+   for c in pairs(lex_word) do
+      word_bytes[c:byte()] = true
+   end
+   local byte = string.byte
+
    local lex_decimals: {string:boolean} = {}
    for c = string.byte("0"), string.byte("9") do
       lex_decimals[string.char(c)] = true
@@ -226,6 +233,23 @@ do
    for _, c in ipairs({" ", "\t", "\v", "\n", "\r"}) do
       lex_space[c] = true
    end
+
+   local extension_operators: {string: {string}} = {
+      ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
+      ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
+      ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
+      ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
+      ["/"] = { "/=" }, ["%"] = { "%=" },
+   }
+
+   local numeric_states: {LexState:boolean} = { ["got 0"] = true }
+   for st in pairs(last_token_kind) do
+      if st:sub(1, 7) == "number " then
+         numeric_states[st] = true
+      end
+   end
+
+   local number_suffix_start: {string:boolean} = { L = true, l = true, U = true, u = true, I = true, i = true }
 
    local escapable_characters: {string:boolean} = {
       a = true,
@@ -276,7 +300,8 @@ do
    end
 
    lexer.lex = function(input: string, filename: string): {Token}, {Error}
-      local tokens: {Token} = {}
+      local tokens = new_table(math.min(math.floor(#input / 4), 32768), 0) as {Token}
+      local numeric_tokens: {Token} = {}
 
       local state: LexState = "any"
       local fwd = true
@@ -334,13 +359,17 @@ do
       local function end_token_prev(kind: TokenKind)
          local tk = input:sub(ti, i - 1)
          nt = nt + 1
-         tokens[nt] = {
+         local token: Token = {
             x = tx,
             y = ty,
             tk = tk,
             kind = kind,
             comments = comments,
          }
+         tokens[nt] = token
+         if kind == "integer" or kind == "number" then
+            numeric_tokens[#numeric_tokens + 1] = token
+         end
          comments = nil
          in_token = false
       end
@@ -404,14 +433,6 @@ do
       end
       state = "any"
 
-      local extension_operators: {string: {string}} = {
-         ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
-         ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
-         ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
-         ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
-         ["/"] = { "/=" }, ["%"] = { "%=" },
-      }
-
       while i <= len do
          if fwd then
             i = i + 1
@@ -434,8 +455,10 @@ do
          end
 
          local extension_op: string
-         if state == "any" and extension_operators[c] then
-            for _, candidate in ipairs(extension_operators[c]) do
+         local candidates = state == "any" and extension_operators[c]
+         if candidates then
+            for j = 1, #candidates do
+               local candidate = candidates[j]
                if input:sub(i, i + #candidate - 1) == candidate then
                   extension_op = candidate
                   break
@@ -447,10 +470,9 @@ do
             end_token("op", extension_op)
             i = i + #extension_op - 1
             x = x + #extension_op - 1
-         elseif c == "_" and (state == "got 0" or state:sub(1, 7) == "number ") then
+         elseif c == "_" and numeric_states[state] then
             -- Separators do not change the numeric lexer state.
-         elseif state ~= "number suffix" and (state == "got 0" or state:sub(1, 7) == "number ") and
-            (c == "L" or c == "l" or c == "U" or c == "u" or c == "i" or c == "I") then
+         elseif number_suffix_start[c] and state ~= "number suffix" and numeric_states[state] then
             state = "number suffix"
          elseif state == "number suffix" then
             if not lex_word[c] then
@@ -476,7 +498,17 @@ do
                begin_token()
             else
                local st = lex_any_char_states[c]
-               if st then
+               if st == "identifier" then
+                  begin_token()
+                  local next_i = i + 1
+                  while word_bytes[byte(input, next_i)] do
+                     next_i = next_i + 1
+                  end
+                  x = x + next_i - i - 1
+                  i = next_i
+                  end_token_identifier()
+                  i = i - 1
+               elseif st then
                   state = st
                   begin_token()
                else
@@ -493,12 +525,6 @@ do
                      add_syntax_error()
                   end
                end
-            end
-         elseif state == "identifier" then
-            if not lex_word[c] then
-               end_token_identifier()
-               fwd = false
-               state = "any"
             end
          elseif state == "string double" then
             if c == "\\" then
@@ -539,6 +565,10 @@ do
             if c == "\n" then
                add_comment(input:sub(ti, i - 1))
                state = "any"
+            else
+               local last = (input:find("\n", i + 1, true) or len + 1) - 1
+               x = x + last - i
+               i = last
             end
          elseif state == "got =" then
             local t: string
@@ -858,20 +888,18 @@ do
          add_comment(input:sub(ti, #input))
       end
 
-      for _, token in ipairs(tokens) do
-         if token.kind == "number" or token.kind == "integer" then
-            local text = token.tk:gsub("_", ""):lower()
-            local integer_suffix = text:sub(-2) == "ll"
-            if text:sub(-3) == "ull" then text = text:sub(1, -4)
-            elseif integer_suffix then text = text:sub(1, -3)
-            elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
-            local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
-            if not value then
-               token.kind = "$ERR$"
-               table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
-            elseif integer_suffix then
-               token.kind = "integer"
-            end
+      for _, token in ipairs(numeric_tokens) do
+         local text = token.tk:gsub("_", ""):lower()
+         local integer_suffix = text:sub(-2) == "ll"
+         if text:sub(-3) == "ull" then text = text:sub(1, -4)
+         elseif integer_suffix then text = text:sub(1, -3)
+         elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
+         local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
+         if not value then
+            token.kind = "$ERR$"
+            table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
+         elseif integer_suffix then
+            token.kind = "integer"
          end
       end
       table.insert(tokens, { x = x + 1, y = y, tk = "$EOF$", kind = "$EOF$", comments = comments })

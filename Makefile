@@ -1,4 +1,4 @@
-LUA ?= lua
+LUA ?= luajit
 STABLE_TL ?= $(LUA) ./tl
 NEW_TL ?= env TL_PATH="./?.tl;./?/init.tl;./?.d.tl" $(LUA) extras/dev-tl.lua
 TLGENFLAGS = --check --gen-target=5.1
@@ -32,7 +32,6 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	tlcli/configuration.tl \
 	tlcli/report.tl \
 	tlcli/driver.tl \
-	tlcli/perf.tl \
 	tlcli/main.tl \
 	tlcli/pack_native.tl \
 	tlcli/commands/lsp.tl \
@@ -156,7 +155,7 @@ clean: cleantemp
 .PHONY: all build1 replace1 build2 selfbuild suite suite-strict \
 	suite bin binary cov revert cov cleantemp clean strip_sources FORCE
 
-# Teal-authored bounded compiler fuzzing. LuaJIT is only required for the supervisor.
+# Run the compiler fuzzer and its worker with LuaJIT.
 FUZZ_LUA ?= luajit
 FUZZFLAGS ?=
 FUZZ_SOURCES = extras/fuzz/model.tl extras/fuzz/json.tl extras/fuzz/hash.tl \

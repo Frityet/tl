@@ -1,11 +1,10 @@
 ## Installing tl
 
-To run tl, the Teal compiler, you need a Lua environment. Install Lua and
-LuaRocks (methods vary according to your operating system), and then run
+Install LuaJIT 2.1 or later with FFI enabled. Configure LuaRocks for that
+LuaJIT installation. Run this command from the repository root.
 
 ```
-luarocks install tl
+luarocks make tl-dev-2.rockspec
 ```
 
-If your environment is set up correctly, you should have a tl command
-available now!
+Run `tl --version` to check the installation.

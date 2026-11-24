@@ -5,22 +5,19 @@
 
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 
 local type Args = require("tlcli.args")
 local type TlConfig = require("tlcli.tlconfig")
 
 return function(tlconfig: TlConfig, args: Args)
-   perf.turbo(true)
    local compiler = driver.setup_compiler(tlconfig)
-   for i, input_file in ipairs(args["file"]) do
+   for _, input_file in ipairs(args["file"]) do
       local _, _, err = driver.process_module(compiler, input_file)
       if err then
          common.die(err)
       end
 
-      perf.check_collect(i)
    end
 
    local ok = report.report_all_errors(tlconfig, compiler)

@@ -5,22 +5,19 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 
 
 
 
 return function(tlconfig, args)
-   perf.turbo(true)
    local compiler = driver.setup_compiler(tlconfig)
-   for i, input_file in ipairs(args["file"]) do
+   for _, input_file in ipairs(args["file"]) do
       local _, _, err = driver.process_module(compiler, input_file)
       if err then
          common.die(err)
       end
 
-      perf.check_collect(i)
    end
 
    local ok = report.report_all_errors(tlconfig, compiler)

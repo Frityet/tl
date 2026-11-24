@@ -6,10 +6,9 @@ Teal
 
 This is the repository of **tl**, the compiler for Teal, a typed dialect of Lua.
 
-The core compiler has no dependencies and is implemented as a single `tl.lua`
-file which you can load into your projects. Running `tl.loader()` will add
-Teal support to your package loader, meaning that `require()` will be able to
-run `.tl` files.
+The compiler runs on LuaJIT 2.1 or later with FFI enabled. You can load the
+standalone `tl.lua` file in a LuaJIT application. Call `tl.loader()` to load
+and run `.tl` files with `require()`.
 
 ## Introduction
 
@@ -20,32 +19,24 @@ of the Teal documentation to get started with an overview of the language.
 
 ### Via LuaRocks
 
-Install Lua and LuaRocks, then run:
+Install LuaJIT 2.1 or later. Configure LuaRocks for that installation. Run this
+command from the repository root.
 
 ```
-luarocks install tl
+luarocks make tl-dev-2.rockspec
 ```
 
 This should put a `tl` command in your `$PATH` (run `eval $(luarocks path)` if
 the LuaRocks-installed binaries are not in your `$PATH`).
 
-Teal works with Lua 5.1-5.4, including LuaJIT. Use `--gen-target=luajit` for
-LuaJIT 2.1 with the backported LuaJIT 3.0 syntax extensions; see the
+Use `--gen-target` to select the Lua version for the generated code. Use
+`--gen-target=luajit` to use the LuaJIT 3.0 syntax extensions. See the
 [syntax and lowering guide](docs/src/luajit_extensions.md).
 
 ### Binaries
 
-Alternatively, you can find pre-compiled binaries for Linux x86_64 and Windows
-x86_64 at the [releases](https://github.com/teal-language/tl/releases) page.
-The packages contain a stand-alone executable that can run Teal programs
-(without the need of a separate Lua installation) and also compile them to Lua.
-
-### Try it from your browser
-
-You can give Teal a try directly from your browser with the [Teal
-Playground](https://teal-playground.netlify.app/)! It compiles Teal into Lua using
-[Fengari](https://github.com/fengari-lua/fengari), a Lua VM implemented in
-JavaScript, so everything runs on the client.
+Run `make binary` to build a stand-alone executable. The executable includes
+LuaJIT. Use it to run Teal programs or generate Lua code.
 
 ## Running
 
@@ -131,6 +122,9 @@ compile `.tl` files on-the-fly.
 You can read the [rendered documentation](https://teal-language.org/book/) online;
 it can also be generated locally from the files in the [docs/](docs/) folder
 of this repository.
+
+See [compiler performance](docs/src/compiler_performance.md) for measurements
+and steps to profile the compiler.
 
 ## Type definitions
 

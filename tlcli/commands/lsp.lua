@@ -18,10 +18,6 @@ local block = require("teal.block")
 
 local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
-
-
-
-local jit = (require)("jit")
 local ffi = require("ffi")
 
 
@@ -33,12 +29,6 @@ local ffi = require("ffi")
 
 
 
-
-
-
-
-jit.off()
-io.stdin:setvbuf("no")
 
 local POSIX_POLL = ffi.os ~= "Windows"
 if POSIX_POLL then
@@ -2846,7 +2836,7 @@ local function handle_request(server, method, params)
 end
 
 return function(tlconfig, args)
-
+   io.stdin:setvbuf("no")
 
    tlconfig.quiet = true
 
