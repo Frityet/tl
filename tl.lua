@@ -11518,7 +11518,8 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local runtime = (_G).jit
-assert(runtime and runtime.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+local native = (_G)._TEAL_NATIVE
+assert(native or (runtime and runtime.version_num >= 20100), "Teal requires LuaJIT 2.1 or later")
 
 
 
@@ -11532,7 +11533,13 @@ local tldebug = {}
 
 
 
-tldebug.stop_tracing = runtime.off
+if native then
+   function tldebug.stop_tracing(_, _)
+   end
+else
+
+   tldebug.stop_tracing = runtime.off
+end
 
 function tldebug.write(...)
    io.stderr:write(...)
@@ -17534,7 +17541,15 @@ local ast = require("teal.ast")
 
 
 
-local macro_gen_target = ((_G).jit and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
+local macro_gen_target
+local function macro_target()
+   if not macro_gen_target then
+      local globals = _G
+      local runtime = globals.jit or globals._TEAL_NATIVE
+      macro_gen_target = (runtime and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
+   end
+   return macro_gen_target
+end
 
 local macro_eval = {}
 
@@ -17903,7 +17918,7 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
       host_name = "__teal_operator_macro";
       (mast)[1].name.tk = host_name
    end
-   local code, gen_error = lua_generator.generate(mast, macro_gen_target, lua_generator.fast_opts)
+   local code, gen_error = lua_generator.generate(mast, macro_target(), lua_generator.fast_opts)
    if not code then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = gen_error })
       return
@@ -18262,6 +18277,10 @@ function macro_eval.compile_all_and_expand(node, filename, read_lang, errs, pars
 
    node = traverse_invoking_macros(node, filename, env, errs, "stmt")
    remove_macro_only_requires(node, env.imported_aliases)
+   if (_G)._TEAL_NATIVE then
+
+      env.macros = {}
+   end
    return node
 end
 

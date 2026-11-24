@@ -1,4 +1,4 @@
---#pragma strict_nil off
+--#pragma strict on
 local record c_runtime
    namespaces: {string:boolean}
    builtins: {string:boolean}

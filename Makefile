@@ -24,7 +24,7 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	teal/check/type_checker.tl teal/check/node_checker.tl \
 	teal/input.tl \
 	teal/check/require_file.tl \
-	teal/gen/targets.tl teal/gen/lua_generator.tl teal/gen/lua_compat.tl \
+	teal/gen/targets.tl teal/gen/lua_generator.tl teal/gen/lua_compat.tl teal/gen/c_bootstrap.tl \
 	teal/gen/c_ffi.tl teal/gen/c_generator.tl teal/gen/c_types.tl teal/gen/c_runtime.tl teal/gen/lua_ffi.tl \
 	teal/package_loader.tl teal/loader.tl \
 	teal/api/v2.tl teal/api/v1.tl \
@@ -179,3 +179,53 @@ fuzz-build: fuzz-check
 	$(STABLE_TL) gen --root . --output-dir . --gen-target=5.1 --gen-compat=off $(FUZZ_SOURCES)
 
 .PHONY: fuzz fuzz-smoke fuzz-test fuzz-check fuzz-build
+
+# Build the compiler and CLI as native C.
+C_BUILD_DIR ?= _temp/selfbuild-c
+C_LUAJIT_CFLAGS ?= $(shell pkg-config --cflags luajit)
+C_LUAJIT_LIBS ?= $(shell pkg-config --variable=libdir luajit)/libluajit-5.1.a -ldl
+C_BOOTSTRAP_CFLAGS ?= -O2
+C_TEAL ?= $(STABLE_TL)
+C_EMITTER ?= $(C_TEAL) run --gen-target=5.1 extras/c/generate.tl
+C_ARGPARSE ?= $(shell $(LUA) -e 'local m=require("argparse"); print(debug.getinfo(getmetatable(m).__call,"S").source:sub(2))')
+C_ENTRY = extras/c/entry.tl
+C_DRIVER = extras/c/generate.tl
+C_RUNTIME = main values library strings system lua_bridge
+C_TL_PATH = ./?.lua;./?/init.lua;$(PACKAGE_PATH)
+C_MODULES = $(SOURCES) $(C_DRIVER) $(PRECOMPILED)
+C_UNITS = register tl_entry tl_module_argparse $(foreach src,$(C_MODULES),tl_module_$(subst /,_,$(basename $(src))))
+C_OBJECTS = $(addprefix $(C_BUILD_DIR)/obj/,$(addsuffix .o,$(C_UNITS) $(addprefix runtime_,$(C_RUNTIME))))
+C_COMPILE = $(CC) $(CPPFLAGS) $(C_BOOTSTRAP_CFLAGS) $(CFLAGS) -std=c11 -I extras/c
+
+selfbuild-c:
+	mkdir -p "$(C_BUILD_DIR)/lua" "$(C_BUILD_DIR)/c"
+	TL_PATH="$(C_TL_PATH)" $(C_TEAL) gen --gen-target=5.1 --root . --output-dir "$(C_BUILD_DIR)/lua" $(SOURCES) $(C_ENTRY) $(C_DRIVER)
+	LUA_PATH="$(C_BUILD_DIR)/lua/?.lua;$(C_BUILD_DIR)/lua/?/init.lua;$(PACKAGE_PATH)" TL_PATH="$(C_TL_PATH)" $(C_EMITTER) "$(C_BUILD_DIR)/c" "$(C_BUILD_DIR)/lua" "$(C_ARGPARSE)" $(C_ENTRY) $(C_MODULES)
+	$(MAKE) link-selfbuild-c
+	"$(C_BUILD_DIR)/tl" --version
+
+$(C_BUILD_DIR)/obj/%.o: $(C_BUILD_DIR)/c/%.c extras/c/tl_runtime.h
+	@mkdir -p "$(@D)"
+	$(C_COMPILE) -c "$<" -o "$@"
+
+$(C_BUILD_DIR)/obj/tl_module_teal_precompiled_default_env.o: $(C_BUILD_DIR)/c/tl_module_teal_precompiled_default_env.c extras/c/tl_runtime.h
+	@mkdir -p "$(@D)"
+	$(C_COMPILE) -O0 -c "$<" -o "$@"
+
+$(C_BUILD_DIR)/obj/runtime_%.o: extras/c/%.c extras/c/tl_runtime.h
+	@mkdir -p "$(@D)"
+	$(C_COMPILE) -c "$<" -o "$@"
+
+$(C_BUILD_DIR)/obj/runtime_lua_bridge.o: extras/c/lua_bridge.c extras/c/tl_runtime.h
+	@mkdir -p "$(@D)"
+	$(C_COMPILE) $(C_LUAJIT_CFLAGS) -c "$<" -o "$@"
+
+link-selfbuild-c: $(C_OBJECTS)
+	$(CC) $(C_OBJECTS) $(LDFLAGS) $(C_LUAJIT_LIBS) -lm -o "$(C_BUILD_DIR)/tl"
+
+verify-selfbuild-c: selfbuild-c
+	$(MAKE) selfbuild-c C_TEAL="$(C_BUILD_DIR)/tl" C_EMITTER="$(C_BUILD_DIR)/tl --emit-bootstrap-c" C_BUILD_DIR="$(C_BUILD_DIR)-stage2"
+	diff -r "$(C_BUILD_DIR)/c" "$(C_BUILD_DIR)-stage2/c"
+	$(SHELL) extras/c/selftest.sh "$(abspath $(C_BUILD_DIR)-stage2/tl)" $(CC)
+
+.PHONY: selfbuild-c link-selfbuild-c verify-selfbuild-c

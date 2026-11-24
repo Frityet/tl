@@ -4,7 +4,8 @@ local record Runtime
    off: function(boolean, boolean)
 end
 local runtime = (_G as {string: Runtime}).jit
-assert(runtime and runtime.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+local native = (_G as {string:boolean})._TEAL_NATIVE
+assert(native or (runtime and runtime.version_num >= 20100), "Teal requires LuaJIT 2.1 or later")
 --------------------------------------------------------------------------------
 -- Compiler debugging
 --------------------------------------------------------------------------------
@@ -17,8 +18,14 @@ local record tldebug
    flush: function()
 end
 
--- Use the LuaJIT function directly. Pass true to select the caller.
-tldebug.stop_tracing = runtime.off
+-- The generated C functions do not have LuaJIT traces.
+if native then
+   function tldebug.stop_tracing(_: boolean, _: boolean)
+   end
+else
+   -- Pass true to select the Lua caller.
+   tldebug.stop_tracing = runtime.off
+end
 
 function tldebug.write(...: string|number)
    io.stderr:write(...)

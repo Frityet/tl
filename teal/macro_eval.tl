@@ -12,7 +12,15 @@ local type ParserNode = ast.Node
 local type GenTarget = require("teal.gen.targets").GenTarget
 
 -- Macro bodies execute on the compiler host; quoted syntax is serialized data.
-local macro_gen_target: GenTarget = ((_G as {string:any}).jit and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
+local macro_gen_target: GenTarget
+local function macro_target(): GenTarget
+   if not macro_gen_target then
+      local globals = _G as {string:any}
+      local runtime = globals.jit or globals._TEAL_NATIVE
+      macro_gen_target = (runtime and load("return true ? 1 : 2", "=(syntax probe)", "t")) and "luajit" or "5.1"
+   end
+   return macro_gen_target
+end
 
 local record macro_eval
    new_env: function(errs: {Error}, parse_expression?: function(string): Block): MacroEnv
@@ -381,7 +389,7 @@ local function compile_local_macro(mb: Block, filename: string, read_lang: Block
       host_name = "__teal_operator_macro"
       (mast as ParserNode)[1].name.tk = host_name
    end
-   local code, gen_error = lua_generator.generate(mast as ParserNode, macro_gen_target, lua_generator.fast_opts)
+   local code, gen_error = lua_generator.generate(mast as ParserNode, macro_target(), lua_generator.fast_opts)
    if not code then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = gen_error })
       return
@@ -740,6 +748,10 @@ function macro_eval.compile_all_and_expand(node: Block, filename: string, read_l
 
    node = traverse_invoking_macros(node, filename, env, errs, "stmt")
    remove_macro_only_requires(node, env.imported_aliases)
+   if (_G as {string:boolean})._TEAL_NATIVE then
+      -- Release macro functions whose Lua environments hold native callbacks.
+      env.macros = {}
+   end
    return node
 end
 

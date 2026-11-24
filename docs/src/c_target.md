@@ -164,3 +164,37 @@ live until process exit. C struct bodies, function pointers, arrays, and
 preprocessor directives are outside the supported `cdef` declaration
 syntax. Declare the ABI of additional C functions and link their
 implementation with Clang.
+
+## Build the compiler as C
+
+On a POSIX system, install Clang, LuaJIT 2.1 with its static archive, and the
+LuaRocks build dependencies in the rockspec. Run these commands from the
+repository root.
+
+```sh
+make selfbuild-c CC=clang
+_temp/selfbuild-c/tl --version
+make verify-selfbuild-c CC=clang
+```
+
+The bootstrap emits C functions for the compiler, CLI, and argument parser.
+The C runtime manages values, tables, closures, garbage collection, and file
+access. `extras/c/lua_bridge.c` starts the bundled LuaJIT when TL executes
+a Lua script. These operations include macro expansion, `tlconfig.lua`, and
+`tl run`. Lua scripts receive copies of tables at the boundary. The compiler
+executable uses the operating system's C libraries and has no shared Lua
+library dependency.
+
+The generated sources are in `_temp/selfbuild-c/c`. Set
+`C_LUAJIT_CFLAGS` and `C_LUAJIT_LIBS` to use a LuaJIT source build or a
+static archive in another location. Set `C_ARGPARSE` to specify the path to
+the argparse Lua source.
+
+The bootstrap launcher, C emitter, and build driver use `--#pragma strict on`.
+The build type checks legacy compiler modules with their existing pragmas
+before it lowers them to C. The standalone C target requires strict checking
+for the entry file and its Teal runtime imports.
+
+`verify-selfbuild-c` uses the C executable to check and lower the compiler
+a second time. It compares the C sources from both stages and tests strict C
+generation, macros, and script execution.

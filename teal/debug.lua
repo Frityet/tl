@@ -4,7 +4,8 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local runtime = (_G).jit
-assert(runtime and runtime.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+local native = (_G)._TEAL_NATIVE
+assert(native or (runtime and runtime.version_num >= 20100), "Teal requires LuaJIT 2.1 or later")
 
 
 
@@ -18,7 +19,13 @@ local tldebug = {}
 
 
 
-tldebug.stop_tracing = runtime.off
+if native then
+   function tldebug.stop_tracing(_, _)
+   end
+else
+
+   tldebug.stop_tracing = runtime.off
+end
 
 function tldebug.write(...)
    io.stderr:write(...)

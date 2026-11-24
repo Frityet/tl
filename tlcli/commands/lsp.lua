@@ -18,7 +18,6 @@ local block = require("teal.block")
 
 local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
-local ffi = require("ffi")
 
 
 
@@ -30,9 +29,17 @@ local ffi = require("ffi")
 
 
 
-local POSIX_POLL = ffi.os ~= "Windows"
+
+
+
+
+
+
+local native_clock = (_G)._TEAL_NATIVE_CLOCK
+local ffi_runtime = not native_clock and require("ffi") or nil
+local POSIX_POLL = ffi_runtime and ffi_runtime.os ~= "Windows"
 if POSIX_POLL then
-   ffi.cdef([[
+   ffi_runtime.cdef([[
       struct pollfd { int fd; short events; short revents; };
       int poll(struct pollfd *fds, unsigned long nfds, int timeout);
    ]])
@@ -44,18 +51,19 @@ end
 
 
 
-local stdin_pollfd = POSIX_POLL and ffi.new("struct pollfd[1]")
+local stdin_pollfd = POSIX_POLL and ffi_runtime.new("struct pollfd[1]")
 if stdin_pollfd then stdin_pollfd[0].fd = 0; stdin_pollfd[0].events = 1 end
 
 local function stdin_ready(timeout_ms)
+   if native_clock then return native_clock.stdin_ready(timeout_ms) end
    if not stdin_pollfd then return true end
    stdin_pollfd[0].revents = 0
-   return (ffi.C.poll)(stdin_pollfd, 1, timeout_ms) > 0
+   return (ffi_runtime.C.poll)(stdin_pollfd, 1, timeout_ms) > 0
 end
 
-local MONOTONIC_CLOCK = ffi.os == "OSX" and 6 or (ffi.os == "Linux" and 1 or nil)
+local MONOTONIC_CLOCK = ffi_runtime and (ffi_runtime.os == "OSX" and 6 or (ffi_runtime.os == "Linux" and 1 or nil))
 if MONOTONIC_CLOCK then
-   ffi.cdef([[
+   ffi_runtime.cdef([[
       struct tl_lsp_timespec { long tv_sec; long tv_nsec; };
       int clock_gettime(int clock_id, struct tl_lsp_timespec *time);
    ]])
@@ -66,10 +74,11 @@ end
 
 
 
-local diagnostic_clock = MONOTONIC_CLOCK and ffi.new("struct tl_lsp_timespec[1]")
+local diagnostic_clock = MONOTONIC_CLOCK and ffi_runtime.new("struct tl_lsp_timespec[1]")
 local function monotonic_ms()
+   if native_clock then return native_clock.monotonic_ms() end
    if diagnostic_clock and
-      (ffi.C.clock_gettime)(MONOTONIC_CLOCK, diagnostic_clock) == 0 then
+      (ffi_runtime.C.clock_gettime)(MONOTONIC_CLOCK, diagnostic_clock) == 0 then
       return tonumber(diagnostic_clock[0].tv_sec) * 1000 + tonumber(diagnostic_clock[0].tv_nsec) / 1000000
    end
 end
@@ -2862,7 +2871,7 @@ return function(tlconfig, args)
 
          local now = server.diagnostics_due and monotonic_ms()
          local wait = now and math.ceil(server.diagnostics_due - now) or diagnostics_delay(server)
-         if not stdin_pollfd or (now and wait <= 0) or not stdin_ready(math.max(0, wait)) then
+         if (not native_clock and not stdin_pollfd) or (now and wait <= 0) or not stdin_ready(math.max(0, wait)) then
             flush_pending_diagnostics(server)
          end
       end
