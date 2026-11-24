@@ -174,6 +174,24 @@ must be invoked as a standalone statement. Writing `local x = declare!()`
 does not turn the generated declaration into a value. These context errors
 are reported at the macro invocation before Lua is generated.
 
+### Record macros
+
+Use `local record<macro!> Name ... end` to pass a record declaration to a
+macro as one `Statement` argument. The macro expansion takes the declaration's
+place. Qualified macro names and `global record` work with the same syntax.
+
+```teal
+local Object = require("auxlib.Object")
+local macro object! = Object.object!
+
+local record<object!> A end
+assert(A.__name == "A" and A.__index == A)
+```
+
+`object!` implements `Object` and supplies the `where self.__name == "A"`
+predicate using the declared name. Use a plain `record is Object` when you
+want to write the predicate yourself.
+
 Inside a macro quote, `$name` splices the macro argument named `name`:
 
 ```lua

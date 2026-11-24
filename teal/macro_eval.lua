@@ -73,23 +73,34 @@ local function clone_value(v, splice_name)
    return out
 end
 
-local function reanchor_block_positions(b, where_y, where_x, seen_blocks)
+local function reanchor_block_positions(b, where_y, where_x,
+   seen_blocks, keep_positions)
    if seen_blocks[b] then
       return
    end
    seen_blocks[b] = true
 
-   if where_y then
-      b.y = where_y
-      b.yend = where_y
-   end
-   if where_x then
-      b.x = where_x
-      b.xend = where_x
+   if not (keep_positions and keep_positions[b]) then
+      if where_y then
+         b.y = where_y
+         b.yend = where_y
+      end
+      if where_x then
+         b.x = where_x
+         b.xend = where_x
+      end
    end
 
    for idx, child in children(b) do
-      reanchor_block_positions(child, where_y, where_x, seen_blocks)
+      reanchor_block_positions(child, where_y, where_x, seen_blocks, keep_positions)
+   end
+end
+
+local function remember_blocks(b, blocks)
+   if blocks[b] then return end
+   blocks[b] = true
+   for _, child in children(b) do
+      remember_blocks(child, blocks)
    end
 end
 
@@ -528,6 +539,13 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    if #errs > argument_errors then
       return b
    end
+
+
+   local keep_positions
+   if b.tk == "record" and not operator_use then
+      keep_positions = {}
+      for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
+   end
    local prev_where = env.where
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }
    env.where = current_where
@@ -546,7 +564,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    end
    local wy = current_where.y
    local wx = current_where.x
-   reanchor_block_positions(res, wy, wx, setmetatable({}, { __mode = "k" }))
+   reanchor_block_positions(res, wy, wx, setmetatable({}, { __mode = "k" }), keep_positions)
    if context == "expr" and res.kind == "statements" then
       if #res == 1 and is_expression_kind(res[1].kind) then
          res = res[1]
@@ -666,7 +684,6 @@ end
 local function block_uses_name(b, name, skip)
    local pending = { b }
    local visited = { [skip] = true }
-
    while #pending > 0 do
       local current = table.remove(pending)
       if not visited[current] then

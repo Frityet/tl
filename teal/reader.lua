@@ -547,6 +547,19 @@ local function read_macro_name(ps, i)
    return i + 1, name
 end
 
+local function read_macro_reference(ps, i)
+   local target
+   i, target = read_macro_name(ps, i)
+   while target and ps.tokens[i].tk == "." do
+      local dot = new_block(ps, i, "op_dot")
+      dot[BLOCK_INDEXES.OP.E1] = target
+      i, dot[BLOCK_INDEXES.OP.E2] = read_macro_name(ps, i + 1)
+      if not dot[BLOCK_INDEXES.OP.E2] then return i end
+      target = dot
+   end
+   return i, target
+end
+
 local function operator_macro_call_at(ps, i)
    if ps.tokens[i].tk ~= "(" then return false end
    local j = i + 1
@@ -2946,15 +2959,17 @@ local function read_macroexp(ps, istart, iargs)
    return i, node
 end
 
-local function read_where_clause(ps, i, def)
+local function read_where_clause(ps, i)
    local node = new_block(ps, i, "macroexp")
 
    node[BLOCK_INDEXES.MACROEXP.ARGS] = new_block(ps, i, "argument_list")
    node[BLOCK_INDEXES.MACROEXP.ARGS][1] = new_block(ps, i, "argument")
    node[BLOCK_INDEXES.MACROEXP.ARGS][1].tk = "self"
-   node[BLOCK_INDEXES.MACROEXP.ARGS][1][BLOCK_INDEXES.ARGUMENT.TYPE] = new_type(ps, i, "nominal_type")
-   node[BLOCK_INDEXES.MACROEXP.ARGS][1][BLOCK_INDEXES.ARGUMENT.TYPE].tk = "self"
-   node[BLOCK_INDEXES.MACROEXP.ARGS][1][BLOCK_INDEXES.ARGUMENT.TYPE][BLOCK_INDEXES.NOMINAL_TYPE.NAME] = def
+   local self_type = new_type(ps, i, "nominal_type")
+   self_type.tk = "self"
+   self_type[BLOCK_INDEXES.NOMINAL_TYPE.NAME] = new_block(ps, i, "identifier")
+   self_type[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk = "self"
+   node[BLOCK_INDEXES.MACROEXP.ARGS][1][BLOCK_INDEXES.ARGUMENT.TYPE] = self_type
    node[BLOCK_INDEXES.MACROEXP.RETS] = new_tuple(ps, i)
    node[BLOCK_INDEXES.MACROEXP.RETS][1] = new_type(ps, i, "boolean")
    i, node[BLOCK_INDEXES.MACROEXP.EXP] = read_expression(ps, i)
@@ -3047,7 +3062,7 @@ read_record_body = function(ps, i, def)
 
    if ps.tokens[i].tk == "where" then
       i = i + 1
-      i, def[BLOCK_INDEXES.RECORD.WHERE_CLAUSE] = read_where_clause(ps, i, def)
+      i, def[BLOCK_INDEXES.RECORD.WHERE_CLAUSE] = read_where_clause(ps, i)
    end
 
    local fields = new_block(ps, i, "record_body")
@@ -3401,6 +3416,18 @@ read_type_declaration = function(ps, i, node_name)
    return i, asgn
 end
 
+local function record_macro_at(ps, i)
+   if ps.tokens[i].tk ~= "<" then return false end
+   i = i + 1
+   while ps.tokens[i].kind == "identifier" do
+      local next_token = ps.tokens[i + 1].tk
+      if next_token == "!" then return true end
+      if next_token ~= "." then return false end
+      i = i + 2
+   end
+   return false
+end
+
 local function read_type_constructor(ps, i, node_name, tn)
    local asgn = new_block(ps, i, node_name)
    local nt = new_block(ps, i, "newtype")
@@ -3410,6 +3437,14 @@ local function read_type_constructor(ps, i, node_name, tn)
    local def
 
    i = i + 2
+
+   local record_macro
+   if tn == "record" and record_macro_at(ps, i) then
+      i, record_macro = read_macro_reference(ps, i + 1)
+      if not record_macro then return i end
+      i = verify_tk(ps, i, "!")
+      i = verify_tk(ps, i, ">")
+   end
 
    if ps.allow_macro_vars and ps.tokens[i].tk == "$" then
       local dtk = ps.tokens[i]
@@ -3434,6 +3469,22 @@ local function read_type_constructor(ps, i, node_name, tn)
    end
 
    table.insert(nt, new_typedecl(ps, istart, def))
+
+   if record_macro then
+      if forbidden_macro_invocation(ps, record_macro.y, record_macro.x) then return i end
+      local name = macro_target_key(record_macro)
+      local alias = name and name:match("^([^.]+)%.")
+      if alias then ensure_required_alias_macros(ps, alias) end
+      ps.features.needs_macro_pass = true
+      local declaration = new_block(ps, istart, "statements")
+      declaration[1] = asgn
+      local args = new_block(ps, istart, "expression_list")
+      args[1] = declaration
+      local invocation = new_block(ps, istart + 1, "macro_invocation")
+      invocation[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = record_macro
+      invocation[BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args
+      return i, invocation
+   end
 
    return i, asgn
 end
@@ -3509,20 +3560,9 @@ local function read_macro_alias_target(ps, i, node)
    i = verify_tk(ps, i, "=")
 
    local target
-   i, target = read_macro_name(ps, i)
+   i, target = read_macro_reference(ps, i)
    if not target then
       return i, node
-   end
-
-   while ps.tokens[i].tk == "." do
-      local dot = new_block(ps, i, "op_dot")
-      dot[BLOCK_INDEXES.OP.E1] = target
-      i = i + 1
-      i, dot[BLOCK_INDEXES.OP.E2] = read_macro_name(ps, i)
-      if not dot[BLOCK_INDEXES.OP.E2] then
-         return i, node
-      end
-      target = dot
    end
 
    i = verify_tk(ps, i, "!")
@@ -3673,7 +3713,8 @@ local function read_local(ps, i)
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
+      (ntk == "record" and record_macro_at(ps, i + 2))) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "local_type", ntk_kind)
    end
@@ -3696,7 +3737,8 @@ local function read_global(ps, i)
       return read_function_args_rets_body(ps, i, fn)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
+      (ntk == "record" and record_macro_at(ps, i + 2))) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "global_type", ntk_kind)
    elseif ps.tokens[i + 1].kind == "identifier" then
