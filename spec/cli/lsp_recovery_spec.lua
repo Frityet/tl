@@ -5,6 +5,31 @@ describe('LSP parser recovery', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
 
+   it('places hints only on matching source identifiers', function()
+      local document = lsp.document(finally, [=[
+local inferred = 42
+local annotated: integer = 1
+local macro bind!(declaration: Statement): Statement
+   return ```local generated = 2```
+end
+local function decorated()<bind!>: integer return annotated end
+print(inferred)
+]=])
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         {jsonrpc = '2.0', id = 2, method = 'textDocument/inlayHint', params = {
+            textDocument = {uri = document.uri},
+            range = {start = {line = 0, character = 0}, ['end'] = {line = 7, character = 0}},
+         }},
+         {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      assert.equals(1, #responses[2])
+      assert.same({line = 0, character = 14}, responses[2][1].position)
+      assert.equals(': integer', responses[2][1].label)
+   end)
+
    it('navigates to required modules and visible local declarations', function()
       local dir = util.write_tmp_dir(finally, {
          ['tlconfig.lua'] = 'return { include_dir = {"vendor"} }',

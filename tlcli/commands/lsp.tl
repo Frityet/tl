@@ -2229,17 +2229,27 @@ local function inlay_hints(server: Server, document: Document, wanted: Range): A
    analyze_document(server, document)
    local result = array()
    if not document.type_report then return result end
+   local seen: {Token:boolean} = {}
    for _, symbol in ipairs(document.symbols) do
       local y, x, name, type_id = symbol[1], symbol[2], symbol[3], symbol[4]
       if name ~= "@{" and name ~= "@}" and y - 1 >= wanted.start.line and y - 1 <= wanted["end"].line then
          local info = document.type_report.types[type_id]
          if info and info.str and info.str ~= "unknown" then
-            table.insert(result, {
-               position = { line = y - 1, character = byte_to_utf16((document.lines[y] or ""):sub(1, x + #name - 1), x + #name - 1) },
-               label = ": " .. info.str,
-               kind = 1,
-               paddingLeft = true,
-            })
+            local range = make_range(document.lines, y, x, #name)
+            local token, index = token_at(document, range.start)
+            if token and token.kind == "identifier" and token.x == x and token.tk == name and not seen[token] then
+               local previous = previous_token(document, index)
+               local following = next_token(document, index)
+               if (not previous or previous.tk ~= "function") and (not following or following.tk ~= ":") then
+                  seen[token] = true
+                  table.insert(result, {
+                     position = range["end"],
+                     label = ": " .. info.str,
+                     kind = 1,
+                     paddingLeft = true,
+                  })
+               end
+            end
          end
       end
    end
