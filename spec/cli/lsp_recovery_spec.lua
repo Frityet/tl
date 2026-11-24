@@ -5,6 +5,55 @@ describe('LSP parser recovery', function()
    setup(util.chdir_setup)
    teardown(util.chdir_teardown)
 
+   it('navigates to required modules and visible local declarations', function()
+      local dir = util.write_tmp_dir(finally, {
+         ['tlconfig.lua'] = 'return { include_dir = {"vendor"} }',
+         vendor = {
+            ['shapes.tl'] = 'local record Export end\nreturn Export',
+            package_fixture = { ['init.d.tl'] = 'local record Package end\nreturn Package' },
+         },
+      })
+      util.do_in(dir, function()
+         local document = lsp.document(finally, table.concat({
+            'local outer = require("shapes")',
+            'local package_fixture = require "package_fixture"',
+            'do',
+            '   local outer = package_fixture',
+            '   print(outer)',
+            'end',
+            'print(outer)',
+            'local missing = require("unresolved_module")',
+         }, '\n'))
+         local td = {uri = document.uri}
+         local function definition(id, line, character)
+            return {jsonrpc = '2.0', id = id, method = 'textDocument/definition',
+               params = {textDocument = td, position = {line = line, character = character}}}
+         end
+         local responses = lsp.exchange(finally, {
+            {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+            {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+            definition(2, 0, 25),
+            definition(3, 1, 36),
+            definition(4, 4, 10),
+            definition(5, 6, 7),
+            definition(6, 7, 30),
+            {jsonrpc = '2.0', id = 7, method = 'textDocument/documentLink', params = {textDocument = td}},
+            {jsonrpc = '2.0', id = 8, method = 'shutdown', params = {}},
+            {jsonrpc = '2.0', method = 'exit', params = {}},
+         })
+         assert.matches('/vendor/shapes%.tl$', responses[2].uri)
+         assert.matches('/vendor/package_fixture/init%.d%.tl$', responses[3].uri)
+         assert.equals(document.uri, responses[4].uri)
+         assert.same({line = 3, character = 9}, responses[4].range.start)
+         assert.equals(document.uri, responses[5].uri)
+         assert.same({line = 0, character = 6}, responses[5].range.start)
+         assert.is_nil(responses[6])
+         assert.equals(2, #responses[7])
+         assert.equals(responses[2].uri, responses[7][1].target)
+         assert.equals(responses[3].uri, responses[7][2].target)
+      end)
+   end)
+
    it('keeps document highlights local without indexing unopened files', function()
       local dir = util.write_tmp_dir(finally, {
          ['tlconfig.lua'] = 'return { include_dir = {"types"} }',

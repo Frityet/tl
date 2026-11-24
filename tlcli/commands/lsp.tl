@@ -759,6 +759,28 @@ local function next_token(document: Document, token_index?: integer): Token, int
    end
 end
 
+local function required_module(document: Document, token: Token, index: integer): string
+   if token.kind ~= "string" then return nil end
+   local callee, callee_index = previous_token(document, index)
+   if callee and callee.tk == "(" then
+      callee, callee_index = previous_token(document, callee_index)
+   end
+   if not callee or callee.tk ~= "require" then return nil end
+   local receiver = previous_token(document, callee_index)
+   if receiver and (receiver.tk == "." or receiver.tk == ":") then return nil end
+   return block.string_value({kind = "string", tk = token.tk})
+end
+
+local function module_uri(server: Server, name: string): string
+   local path = server.compiler and server.compiler.env.module_filenames[name]
+   path = path or teal.search_module(name, { [".d.tl"] = true, [".tl"] = true, [".lua"] = true })
+   if not path then return nil end
+   if path:sub(1, 1) ~= "/" and not path:match("^%a:[/\\]") then
+      path = lfs.currentdir() .. "/" .. path:gsub("^%.[/\\]", "")
+   end
+   return path_to_uri(path)
+end
+
 local function macro_name_at(tokens: {Token}, start: integer): string, integer
    local parts: {string} = {}
    local index = start
@@ -1237,16 +1259,19 @@ local function symbol_location(document: Document, name: string, position?: Posi
       local line = document.lines[before_y] or ""
       before_x = utf16_to_byte(line, position.character or 0) + 1
    end
-   local winner: TypeReport.Symbol
-   for _, symbol in ipairs(document.symbols or {}) do
-      if symbol[3] == name and symbol[1] <= before_y and (symbol[1] < before_y or symbol[2] <= before_x) then
-         if not winner or symbol[1] > winner[1] or (symbol[1] == winner[1] and symbol[2] > winner[2]) then
-            winner = symbol
-         end
+   local index = #document.symbols
+   while index >= 1 do
+      local symbol = document.symbols[index]
+      if symbol[1] > before_y or (symbol[1] == before_y and symbol[2] > before_x) then
+         index = index - 1
+      elseif symbol[3] == "@}" then
+         -- The type report points to the entry before this closed scope.
+         index = symbol[4]
+      elseif symbol[3] == name then
+         return { uri = document.uri, range = make_range(document.lines, symbol[1], symbol[2], #name) }
+      else
+         index = index - 1
       end
-   end
-   if winner then
-      return { uri = document.uri, range = make_range(document.lines, winner[1], winner[2], #name) }
    end
    local macro = document.macros_by_name[name] or document.macros_by_name[name .. "!"]
    if macro then return { uri = document.uri, range = make_range(document.lines, macro.y, macro.x, #name) } end
@@ -1320,7 +1345,13 @@ end
 local function find_definition(server: Server, document: Document, name: string, position?: Position): AnyObject
    if position then
       local token, token_index = token_at(document, position)
-      if not token or token.kind ~= "identifier" then return nil end
+      if not token then return nil end
+      if token.kind == "string" then
+         local module_name = required_module(document, token, token_index)
+         local uri = module_name and module_uri(server, module_name)
+         if uri then return { uri = uri, range = make_range({ "" }, 1, 1, 0) } end
+      end
+      if token.kind ~= "identifier" then return nil end
       if is_declaration(document, token_index) then
          return { uri = document.uri, range = make_range(document.lines, token.y, token.x, #token.tk) }
       end
@@ -1338,13 +1369,17 @@ local function find_definition(server: Server, document: Document, name: string,
       end
       local field = token and field_location(server, document, token)
       if field then return field end
+      local previous = previous_token(document, token_index)
+      if not previous or (previous.tk ~= "." and previous.tk ~= ":") then
+         local location = symbol_location(document, name, position)
+         if location then return location end
+      end
       if token then
          local syntax_field, syntax_document = syntax_member(server, document, token)
          if syntax_field then
             return { uri = syntax_document.uri, range = make_range(syntax_document.lines, syntax_field.token.y, syntax_field.token.x, #token.tk) }
          end
       end
-      local previous = previous_token(document, token_index)
       local type_context = previous and (previous.tk == ":" or previous.tk == "<" or previous.tk == "|" or previous.tk == ",")
       if type_context then
          local type_location = type_declaration_location(document, token.tk)
@@ -2196,7 +2231,7 @@ local function inlay_hints(server: Server, document: Document, wanted: Range): A
    if not document.type_report then return result end
    for _, symbol in ipairs(document.symbols) do
       local y, x, name, type_id = symbol[1], symbol[2], symbol[3], symbol[4]
-      if y - 1 >= wanted.start.line and y - 1 <= wanted["end"].line then
+      if name ~= "@{" and name ~= "@}" and y - 1 >= wanted.start.line and y - 1 <= wanted["end"].line then
          local info = document.type_report.types[type_id]
          if info and info.str and info.str ~= "unknown" then
             table.insert(result, {
@@ -2230,32 +2265,14 @@ end
 local function document_links(server: Server, document: Document): AnyArray
    local result = array()
    for index, token in ipairs(document.tokens) do
-      if token.tk == "require" then
-         local open, open_index = next_token(document, index)
-         local value = open and next_token(document, open_index)
-         if open and open.tk == "(" and value and value.kind == "string" then
-            local module_name = value.tk:match('^[' .. "\"'" .. '](.-)[' .. "\"'" .. ']$')
-            if module_name then
-               local relative = module_name:gsub("%.", "/") .. ".tl"
-               local path = server.root .. "/" .. relative
-               local candidates: {string} = { path, server.root .. "/" .. module_name:gsub("%.", "/") .. "/init.tl" }
-               for _, include in ipairs(server.tlconfig.include_dir or {}) do
-                  local base = include
-                  if base:sub(1, 1) ~= "/" and not base:match("^%a:[/\\]") then base = server.root .. "/" .. base end
-                  table.insert(candidates, base .. "/" .. relative)
-                  table.insert(candidates, base .. "/" .. module_name:gsub("%.", "/") .. "/init.tl")
-               end
-               for _, candidate in ipairs(candidates) do
-                  local file = io.open(candidate, "rb")
-                  if file then file:close(); path = candidate; break end
-               end
-               table.insert(result, {
-                  range = make_range(document.lines, value.y, value.x, #value.tk),
-                  target = path_to_uri(path),
-                  tooltip = "Open module " .. module_name,
-               })
-            end
-         end
+      local module_name = required_module(document, token, index)
+      local uri = module_name and module_uri(server, module_name)
+      if uri then
+         table.insert(result, {
+            range = make_range(document.lines, token.y, token.x, #token.tk),
+            target = uri,
+            tooltip = "Open module " .. module_name,
+         })
       end
    end
    return result
