@@ -524,6 +524,26 @@ static const tl_Library debug_functions[] = {
    { "getmetatable", base_getmetatable }, { NULL, NULL }
 };
 
+static tl_Value package_path(tl_State *L, const char *path, const char *defaults) {
+   if (!path) return tl_cstring(L, defaults);
+   const char *gap = strstr(path, ";;");
+   if (!gap) return tl_cstring(L, path);
+   tl_Buffer expanded = {0};
+   do {
+      tl_buffer_add(L, &expanded, path, (size_t)(gap - path));
+      tl_buffer_byte(L, &expanded, ';');
+      tl_buffer_add(L, &expanded, defaults, strlen(defaults));
+      tl_buffer_byte(L, &expanded, ';');
+      path = gap + 2;
+      gap = strstr(path, ";;");
+   } while (gap);
+   tl_buffer_add(L, &expanded, path, strlen(path));
+   tl_buffer_push(L, &expanded);
+   tl_Value result = tl_at(L, -1);
+   tl_pop(L, 1);
+   return result;
+}
+
 void tl_openlibs(tl_State *L) {
    L->globals = tl_table(L, 0, 48);
    L->mode_key = tl_cstring(L, "__mode");
@@ -552,8 +572,8 @@ void tl_openlibs(tl_State *L) {
    tl_putfield(L, L->globals, "package", package);
    const char *path = getenv("LUA_PATH");
    const char *cpath = getenv("LUA_CPATH");
-   tl_putfield(L, package, "path", tl_cstring(L, path ? path : "./?.lua;./?/init.lua;./extras/?.lua;./extras/?/init.lua"));
-   tl_putfield(L, package, "cpath", tl_cstring(L, cpath ? cpath : "./?.so"));
+   tl_putfield(L, package, "path", package_path(L, path, "./?.lua;./?/init.lua;./extras/?.lua;./extras/?/init.lua"));
+   tl_putfield(L, package, "cpath", package_path(L, cpath, "./?.so"));
    tl_putfield(L, package, "config", tl_cstring(L, "/\n;\n?\n!\n-\n"));
    tl_putfield(L, package, "loaded", tl_table(L, 0, 0));
    tl_putfield(L, package, "preload", tl_table(L, 0, 0));

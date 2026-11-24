@@ -7,6 +7,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 
+export TL_PATH="./?.lua;./?/init.lua;"
+
 cat > native.tl <<'TEAL'
 --#pragma strict on
 local function sum(limit: integer): integer
