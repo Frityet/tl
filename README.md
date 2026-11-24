@@ -33,11 +33,6 @@ Use `--gen-target` to select the Lua version for the generated code. Use
 `--gen-target=luajit` to use the LuaJIT 3.0 syntax extensions. See the
 [syntax and lowering guide](docs/src/luajit_extensions.md).
 
-### Binaries
-
-Run `make binary` to build a stand-alone executable. The executable includes
-LuaJIT. Use it to run Teal programs or generate Lua code.
-
 ## Running
 
 ### Using the compiler directly

@@ -25,11 +25,6 @@ version="$1"
    exit 1
 }
 
-linux_folder=tl-"$version"-linux-x86_64
-linux_pkg=${linux_folder}.tar.gz
-windows_folder=tl-"$version"-windows-x86_64
-windows_pkg=${windows_folder}.zip
-
 grep -q "# $version$" CHANGELOG.md || {
    echo "Please update the CHANGELOG.md for the release."
    exit 1
@@ -40,41 +35,6 @@ git stash
 git checkout .
 
 change_version "$version"
-
-cat <<EOF > _binary/tlconfig.lua
-return {
-   source_dir = "src",
-   build_dir = "build",
-}
-EOF
-
-extras/binary.sh || {
-   echo "Failed building Linux binary."
-   exit 1
-}
-
-rm -rf "$linux_folder"
-mkdir "$linux_folder"
-cp README.md CHANGELOG.md LICENSE _binary/tlconfig.lua "$linux_folder"
-cp -a docs/ "$linux_folder"
-mkdir "$linux_folder"/build
-cp tl.lua "$linux_folder"/build
-cp _binary/build/tl "$linux_folder"
-tar czvpf "$linux_pkg" "$linux_folder"
-
-extras/binary.sh --windows || {
-   echo "Failed building Windows binary."
-   exit 1
-}
-
-rm -rf "$windows_folder"
-mkdir "$windows_folder"
-cp README.md CHANGELOG.md LICENSE _binary/tlconfig.lua "$windows_folder"
-cp -a docs/ "$windows_folder"
-mkdir "$windows_folder"/build
-cp tl.lua "$windows_folder"/build
-cp _binary/build/tl.exe "$windows_folder"
-zip -r "$windows_pkg" "$windows_folder"
 
 vtag=${version//./}
 
@@ -125,7 +85,9 @@ luarocks upload "${api_key[@]}" tl-"$version"-1.rockspec || {
 
 echo "*** tl $version is now released on LuaRocks! ***"
 
-cat <<EOF > _binary/release.txt
+release_notes=$(mktemp) || exit 1
+trap 'rm -f "$release_notes"' EXIT
+cat <<EOF > "$release_notes"
 Teal $version
 
 * [What's New in Teal $version](https://github.com/teal-language/tl/blob/v$version/CHANGELOG.md#$vtag)
@@ -134,10 +96,10 @@ EOF
 
 if which hub &>/dev/null
 then
-   hub release create -F _binary/release.txt -a "$linux_pkg" -a "$windows_pkg" v"$version"
+   hub release create -F "$release_notes" v"$version"
 elif which gh &>/dev/null
 then
-   gh release create v"$version" -F _binary/release.txt "$linux_pkg" "$windows_pkg"
+   gh release create v"$version" -F "$release_notes"
 else
    echo "No GitHub release tool available"
    exit 1

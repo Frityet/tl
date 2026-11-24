@@ -14,9 +14,6 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install MinGW
-      uses: egor-tensin/setup-mingw@84c781b557efd538dec66bde06988d81cd3138cf
-
     - uses: luarocks/gh-actions-lua@master
       with:
         luaVersion: "luajit-2.1"

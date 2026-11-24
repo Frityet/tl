@@ -33,10 +33,8 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	tlcli/report.tl \
 	tlcli/driver.tl \
 	tlcli/main.tl \
-	tlcli/pack_native.tl \
 	tlcli/commands/lsp.tl \
 	tlcli/commands/run.tl \
-	tlcli/commands/pack.tl \
 	tlcli/commands/warnings.tl \
 	tlcli/commands/dump_blocks.tl \
 	tlcli/commands/types.tl \
@@ -122,12 +120,6 @@ suite-strict:
 # Utility targets:
 ########################################
 
-bin:
-	$(MAKE) STABLE_TL=_binary/build/tl
-
-binary:
-	extras/binary.sh --clean
-
 combine: build2
 	$(NEW_TL) run extras/combine.tl teal.api.v2 tl.lua
 	$(NEW_TL) run extras/combine.tl teal.init teal.lua
@@ -153,7 +145,7 @@ clean: cleantemp
 ########################################
 
 .PHONY: all build1 replace1 build2 selfbuild suite suite-strict \
-	suite bin binary cov revert cov cleantemp clean strip_sources FORCE
+	cov revert cleantemp clean strip_sources FORCE
 
 # Run the compiler fuzzer and its worker with LuaJIT.
 FUZZ_LUA ?= luajit
