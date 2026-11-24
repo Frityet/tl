@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-# Build the Teal compiler as a stand-alone binary!
-# ================================================
+# Build the stand-alone Teal compiler with LuaJIT.
+# Use the MinGW toolchain and --windows to build a Windows executable.
 
-# Run `extras/binary.sh` to build a native executable.
-
-# To build a Windows executable, install the w64-mingw32
-# cross compiler toolchain and run `extras/binary.sh --windows`.
-
-lua_version="5.4.8"
+luajit_revision="96f7b297326e9fd454b7186c6858b2773f94a0dc"
+compat53_version="0.15.1"
 argparse_version="0.7.1"
 luafilesystem_version="1.8.0"
 export executable="tl"
@@ -18,15 +14,16 @@ export MAKE="${MAKE:-make}"
 export CC="${CC:-gcc}"
 export AR="${AR:-ar}"
 export NM="${NM:-nm}"
-export RANLIB="${RANLIB:-ranlib}"
 export STRIP="${STRIP:-strip}"
-LUA="${LUA:-lua}"
-LUA_DEFINES="-DLUA_USE_POSIX"
+LUA="${LUA:-luajit}"
+target_sys="$(uname -s)"
+host_cc="${HOST_CC:-${CC}}"
+cross_prefix=""
 MYCFLAGS=("-Os" "-rdynamic" "-ldl" "-lpthread" "-lm")
 
 sourcedir="$(pwd)"
 root="$(pwd)/_binary"
-depsdir="${root}/deps"
+deps_name="deps"
 
 # Let's parse any command line arguments
 
@@ -38,11 +35,11 @@ do
       export CC=x86_64-w64-mingw32-gcc
       export NM=x86_64-w64-mingw32-nm
       export AR=x86_64-w64-mingw32-ar
-      export RANLIB=x86_64-w64-mingw32-ranlib
       export STRIP=x86_64-w64-mingw32-strip
-      LUA_DEFINES="-DLUA_USE_WINDOWS"
+      target_sys="Windows"
+      cross_prefix="x86_64-w64-mingw32-"
       MYCFLAGS=("-Os" "-lm")
-      depsdir="${root}/deps-windows"
+      deps_name="deps-windows"
       executable="tl.exe"
       ;;
    --sourcedir=*)
@@ -90,6 +87,7 @@ fi
    echo "Could not find ${sourcedir}/tl.lua -- you might want to use the --sourcedir flag"
    exit 1
 }
+sourcedir="$(cd "$sourcedir" && pwd)"
 
 curl -h &> /dev/null || {
    echo "You need curl installed."
@@ -110,6 +108,10 @@ ${LUA} -v &> /dev/null || {
    echo "You need ${LUA} installed."
    exit 1
 }
+
+mkdir -p "$root"
+root="$(cd "$root" && pwd)"
+depsdir="${root}/${deps_name}"
 
 if [ "$do_clean" = 1 ]
 then
@@ -132,12 +134,13 @@ function download() {
    output="${2:-$(basename "$url")}"
    [ -e "$output" ] && return
    echo "Downloading $url ..."
-   curl --progress-bar --output "$output" --location "$url"
+   curl --fail --progress-bar --output "$output" --location "$url"
 }
 
 (
    cd "${root}/downloads"
-   download "https://www.lua.org/ftp/lua-${lua_version}.tar.gz"
+   download "https://codeload.github.com/LuaJIT/LuaJIT/tar.gz/${luajit_revision}" "luajit-${luajit_revision}.tar.gz"
+   download "https://codeload.github.com/lunarmodules/lua-compat-5.3/tar.gz/v${compat53_version}" "compat53-${compat53_version}.tar.gz"
    download "https://github.com/luarocks/argparse/archive/${argparse_version}.tar.gz" "argparse-${argparse_version}.tar.gz"
    download "https://github.com/keplerproject/luafilesystem/archive/v${luafilesystem_version//./_}.tar.gz" "luafilesystem-${luafilesystem_version}.tar.gz"
 )
@@ -146,7 +149,8 @@ function download() {
 
 (
    cd "${depsdir}"
-   tar zxpf "../downloads/lua-${lua_version}.tar.gz"
+   tar zxpf "../downloads/luajit-${luajit_revision}.tar.gz"
+   tar zxpf "../downloads/compat53-${compat53_version}.tar.gz"
    tar zxpf "../downloads/argparse-${argparse_version}.tar.gz"
    tar zxpf "../downloads/luafilesystem-${luafilesystem_version}.tar.gz"
    [ -e "luafilesystem-$luafilesystem_version" ] || mv "luafilesystem-${luafilesystem_version//./_}" "luafilesystem-$luafilesystem_version"
@@ -177,23 +181,36 @@ function build_dep() {
 }
 
 function lua_builder() (
-   "${MAKE}" -C "src" LUA_A="liblua.a" CC="${CC}" AR="${AR} rcu" RANLIB="${RANLIB}" SYSCFLAGS="${LUA_DEFINES}" SYSLIBS= SYSLDFLAGS= "liblua.a"
+   "${MAKE}" -C src BUILDMODE=static TARGET_SYS="$target_sys" \
+      HOST_CC="$host_cc" STATIC_CC="$CC" TARGET_STRIP="$STRIP" \
+      TARGET_AR="$AR rcs" CROSS="$cross_prefix" libluajit.a
 )
 
-build_dep "${depsdir}/lua-${lua_version}" "src/liblua.a" lua_builder
+LUAJIT_SRC="${depsdir}/LuaJIT-${luajit_revision}/src"
+build_dep "${LUAJIT_SRC}/.." "src/libluajit.a" lua_builder
 
 function lfs_builder() {
-   "${CC}" -c -o "lfs.o" -I "../lua-${lua_version}/src" "src/lfs.c"
-   "${AR}" rcu -o "lfs.a" "lfs.o"
+   "${CC}" -c -o "lfs.o" -I "$LUAJIT_SRC" "src/lfs.c"
+   "${AR}" rcs "lfs.a" "lfs.o"
+}
+
+function compat53_builder() {
+   local lib
+   for lib in liolib lstrlib ltablib lutf8lib; do
+      "$CC" -O2 -c -I "$LUAJIT_SRC" -o "$lib.o" "$lib.c"
+   done
+   "$AR" rcs compat53.a liolib.o lstrlib.o ltablib.o lutf8lib.o
 }
 
 build_dep "${depsdir}/luafilesystem-${luafilesystem_version}" "lfs.a" lfs_builder
+build_dep "${depsdir}/lua-compat-5.3-${compat53_version}" "compat53.a" compat53_builder
 
 build_dep "${depsdir}/argparse-${argparse_version}" "src/argparse.lua" true
 
-LIBLUA_A="${depsdir}/lua-${lua_version}/src/liblua.a"
+LIBLUA_A="${LUAJIT_SRC}/libluajit.a"
 LFS_A="${depsdir}/luafilesystem-${luafilesystem_version}/lfs.a"
 ARGPARSE_LUA="${depsdir}/argparse-${argparse_version}/src/argparse.lua"
+COMPAT53="${depsdir}/lua-compat-5.3-${compat53_version}"
 
 # Let's prepare our sources
 
@@ -530,6 +547,7 @@ done
 # Copy our dependency Lua sources to src/ ...
 
 cp "${ARGPARSE_LUA}" "${root}/src/"
+cp -R "${COMPAT53}/compat53" "${root}/src/"
 
 # Run the generator passing the output file, main Lua script, base Lua source dir, Lua source files and static libraries
 
@@ -540,6 +558,8 @@ ${LUA} "${root}/src/gen.lua" \
    "${root}/src/teal" \
    "${root}/src/tlcli" \
    "${root}/src/argparse.lua" \
+   "${root}/src/compat53" \
+   "${COMPAT53}/compat53.a" \
    "${LFS_A}"
 
 check "${root}/src/tl.c"
@@ -549,7 +569,7 @@ check "${root}/src/tl.c"
 exe_pathname="${root}/build/${executable}"
 
 set -x
-${CC} -o "$exe_pathname" -I"${depsdir}/lua-${lua_version}/src" "${root}/src/tl.c" "${LFS_A}" "${LIBLUA_A}" "${MYCFLAGS[@]}"
+${CC} -o "$exe_pathname" -I"${LUAJIT_SRC}" "${root}/src/tl.c" "${LFS_A}" "${COMPAT53}/compat53.a" "${LIBLUA_A}" "${MYCFLAGS[@]}"
 ${STRIP} "$exe_pathname"
 set +x
 

@@ -13,6 +13,7 @@ local type node_checker = require("teal.check.node_checker")
 local type NodeChecker = node_checker.NodeChecker
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local type environment = require("teal.environment")

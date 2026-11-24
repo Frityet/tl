@@ -60,12 +60,30 @@ function driver.setup_compiler(tlconfig: TlConfig): teal.Compiler
    return compiler
 end
 
+local record LoadedPaths
+   count: integer
+   names: {string:string}
+end
+
+local loaded_paths: {Compiler:LoadedPaths} = setmetatable({}, { __mode = "k" })
+
 local function already_loaded(compiler: Compiler, input_file: string): teal.Module, teal.CheckError
-   input_file = common.normalize(input_file)
-   for file in compiler:loaded_files() do
-      if common.normalize(file) == input_file then
-         return compiler:recall(file)
-      end
+   local paths = loaded_paths[compiler]
+   if not paths then
+      paths = { count = 0, names = {} }
+      loaded_paths[compiler] = paths
+   end
+   local order = compiler.env.loaded_order
+   for i = paths.count + 1, #order do
+      local file = order[i]
+      local path = common.normalize(file)
+      paths.names[path] = paths.names[path] or file
+   end
+   paths.count = #order
+
+   local file = paths.names[common.normalize(input_file)]
+   if file then
+      return compiler:recall(file)
    end
 end
 

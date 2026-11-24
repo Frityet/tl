@@ -30,9 +30,34 @@ describe('LSP parser recovery', function()
          })
          assert.equals(2, #responses[2])
          assert.same({'.', ':', '<', '!'}, responses[1].capabilities.completionProvider.triggerCharacters)
+         assert.is_true(responses[1].capabilities.diagnosticProvider.workspaceDiagnostics)
          assert.equals(1, #responses[3].items)
          assert.equals(document.uri, responses[3].items[1].uri)
          assert.equals(2, responses[3].items[1].version)
+      end)
+   end)
+
+   it('finds workspace symbols without type-checking unopened files', function()
+      local lfs = require('lfs')
+      local dir = util.write_tmp_dir(finally, {
+         ['tlconfig.lua'] = 'return { include_dir = {"types"}, lsp = {workspace_diagnostics = false} }',
+         types = { ['unopened.tl'] = 'global workspace_only: integer = 1' },
+      })
+      util.do_in(dir, function()
+         local document = lsp.document(finally, 'print(workspace_only)')
+         local responses = lsp.exchange(finally, {
+            {jsonrpc = '2.0', id = 1, method = 'initialize',
+               params = {rootUri = 'file://' .. lfs.currentdir()}},
+            {jsonrpc = '2.0', id = 2, method = 'workspace/symbol', params = {query = 'workspace_only'}},
+            {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+            {jsonrpc = '2.0', id = 3, method = 'textDocument/diagnostic',
+               params = {textDocument = {uri = document.uri}}},
+            {jsonrpc = '2.0', id = 4, method = 'shutdown', params = {}},
+            {jsonrpc = '2.0', method = 'exit', params = {}},
+         })
+         assert.is_false(responses[1].capabilities.diagnosticProvider.workspaceDiagnostics)
+         assert.equals('workspace_only', responses[2][1].name)
+         assert.matches('unknown variable', responses[3].items[1].message, 1, true)
       end)
    end)
 
@@ -87,6 +112,25 @@ describe('LSP parser recovery', function()
       for _, item in ipairs(responses[2].items) do
          assert.equals('syntax', item.code)
       end
+   end)
+
+   it('still reports a real invalid numeric for bound', function()
+      local document = lsp.document(finally, 'for i = 1, nil do end')
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         {jsonrpc = '2.0', id = 2, method = 'textDocument/diagnostic',
+            params = {textDocument = {uri = document.uri}}},
+         {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      local found = false
+      for _, item in ipairs(responses[2].items) do
+         if item.code == 'type' and item.message == 'numeric for limit must be a non-nil number' then
+            found = true
+         end
+      end
+      assert.is_true(found)
    end)
 
    it('reuses a complete workspace manifest and rebuilds a partial one', function()

@@ -10,9 +10,7 @@ description = {
    license = "MIT",
 }
 dependencies = {
-   -- this is really an optional dependency if you're running Lua 5.3,
-   -- but if you're using LuaRocks, pulling it shouldn't be too much
-   -- trouble anyway.
+   -- Supply standard-library functions that LuaJIT does not include.
    "compat53 >= 0.11",
 
    -- needed for the CLI tool
@@ -92,12 +90,13 @@ build = {
       ["tlcli.commands.gen"] = "tlcli/commands/gen.lua",
       ["tlcli.commands.check"] = "tlcli/commands/check.lua",
       ["tlcli.commands.run"] = "tlcli/commands/run.lua",
+      ["tlcli.commands.pack"] = "tlcli/commands/pack.lua",
+      ["tlcli.pack_native"] = "tlcli/pack_native.lua",
       ["tlcli.report"] = "tlcli/report.lua",
       ["tlcli.driver"] = "tlcli/driver.lua",
       ["tlcli.configuration"] = "tlcli/configuration.lua",
       ["tlcli.main"] = "tlcli/main.lua",
       ["tlcli.common"] = "tlcli/common.lua",
-      ["tlcli.perf"] = "tlcli/perf.lua",
    },
    install = {
       bin = {

@@ -4,7 +4,6 @@ local async = require('auxlib.async')
 local imports = [[
 local tasks = require("auxlib.async")
 local macro (async)! = tasks.(async)!
-local macro (await)! = tasks.(await)!
 local type Scope = tasks.Scope
 ]]
 
@@ -40,29 +39,34 @@ describe('auxlib async macros', function()
          end
 
          local load_profile = async function(id: integer): string
-            await tasks.sleep(0)
+            tasks.sleep(0):await()
             return "profile:" .. tostring(id)
          end
          local load_alerts = async |id: integer|: {string} -> do
-            await tasks.sleep(0)
+            tasks.sleep(0):await()
             return {"alert:" .. tostring(id)}
          end
 
          local load_dashboard = async function(id: integer): Dashboard
-            return await tasks.nursery(function(scope: Scope): Dashboard
-               local profile = scope:spawn(async || -> await load_profile(id))
-               local alerts = scope:spawn(async || -> await load_alerts(id))
-               return { profile = await profile, alerts = await alerts }
-            end)
+            return tasks.nursery(function(scope: Scope): Dashboard
+               local profile = scope:spawn(|| -> load_profile(id))
+               local alerts = scope:spawn(async || -> load_alerts(id):await())
+               return { profile = profile:await(), alerts = alerts:await() }
+            end):await()
          end
 
          local timers: {tasks.Callback} = {}
-         local loop = tasks.configure({
+         local record TestLoop is tasks.RunLoop where self.__name == "test"
+            __name: string
+         end
+         local adapter: TestLoop = {
+            __name = "test",
             after = function(_: number, callback: tasks.Callback): tasks.Cancel | nil
                table.insert(timers, callback)
                return nil
             end,
-         })
+         }
+         local loop = tasks.configure(adapter)
          local root: tasks.Task<Dashboard> = load_dashboard(7)
          assert(root:status() == "pending")
          while loop:step() > 0 do end
@@ -85,14 +89,14 @@ describe('auxlib async macros', function()
          local set = async function(value: integer) number = value end
          local job = async ||: integer -> do
             local pending: tasks.Task<nil> = set(7)
-            assert((await pending) == nil)
+            assert(pending:await() == nil)
             local empty: tasks.Task<string | nil> = tasks.from_callback(
                function(resolve: function(string | nil)): tasks.Cancel | nil
                   resolve(nil)
                   return nil
                end)
-            assert((await empty) == nil)
-            return await echo(number)
+            assert(empty:await() == nil)
+            return echo(number):await()
          end
          local root = job()
          while loop:step() > 0 do end
@@ -238,5 +242,156 @@ describe('auxlib async runtime', function()
       drain(loop)
       local failed = async.from_callback(function() error('registration failed', 0) end)
       assert.has_error(function() failed:result() end, 'registration failed')
+   end)
+
+   it('yields to another ready callback before resuming', function()
+      local loop = async.configure()
+      local order = {}
+      local root = async.start(function()
+         table.insert(order, 'start')
+         async.yield()
+         table.insert(order, 'resume')
+         return 42
+      end)
+      async.start(function() table.insert(order, 'other') end)
+
+      assert.equals(2, loop:step())
+      assert.same({'start', 'other'}, order)
+      assert.equals('pending', root:status())
+      assert.equals(1, loop:step())
+      assert.same({'start', 'other', 'resume'}, order)
+      assert.equals(42, root:result())
+   end)
+
+   it('collects nullable results in input order', function()
+      assert.equals(false, run([[
+         local loop = tasks.configure()
+         local first = tasks.start(function(): boolean | nil
+            tasks.yield()
+            return nil
+         end)
+         local second = tasks.start(function(): boolean | nil return false end)
+         local group: tasks.Task<{boolean | nil}> = tasks.all({first, second, second})
+
+         assert(loop:step() == 2)
+         assert(group:status() == "pending")
+         while loop:step() > 0 do end
+         local values = group:result()
+         assert(values[1] == nil and values[3] == false)
+         return values[2]
+      ]]))
+      assert.same({}, async.all({}):result())
+   end)
+
+   it('forwards the first failure without cancelling the other input tasks', function()
+      local loop = async.configure()
+      local fail
+      local slow = async.from_callback(function() end)
+      local bad = async.from_callback(function(_, reject) fail = reject end)
+      local group = async.all({slow, bad})
+      fail('request failed')
+      drain(loop)
+      assert.has_error(function() group:result() end, 'request failed')
+      assert.equals('pending', slow:status())
+      slow:cancel()
+   end)
+
+   it('races pending tasks by completion order and settled tasks by input order', function()
+      local loop = async.configure()
+      local settle_first, settle_second
+      local first = async.from_callback(function(resolve) settle_first = resolve end)
+      local second = async.from_callback(function(resolve) settle_second = resolve end)
+      local race = async.race({first, second})
+      settle_second(2)
+      drain(loop)
+      assert.equals(2, race:result())
+      assert.equals('pending', first:status())
+      settle_first(1)
+      assert.equals(1, async.race({first, second}):result())
+   end)
+
+   it('rejects dependency cycles that cross an aggregate', function()
+      local loop = async.configure()
+      local group
+      local input = async.start(function() return group:await() end)
+      group = async.all({input})
+      drain(loop)
+      assert.equals('rejected', input:status())
+      assert.matches('cyclic async task dependency', select(2, pcall(group.result, group)), 1, true)
+   end)
+
+   it('rejects pending inputs on a different scheduler', function()
+      local foreign = async.new():start(function() return 42 end)
+      async.configure()
+      local ok, err = pcall(async.race, {foreign})
+      assert.is_false(ok)
+      assert.matches('different async scheduler', err, 1, true)
+   end)
+
+   it('stops a timeout timer when its wrapper finishes early or is cancelled', function()
+      local fired, stopped = {}, 0
+      local loop = async.configure({ after = function(seconds, fire)
+         assert.equals(1, seconds)
+         table.insert(fired, fire)
+         return function() stopped = stopped + 1 end
+      end })
+      local resolve
+      local input = async.from_callback(function(ok) resolve = ok end)
+      local fast = async.timeout(input, 1)
+      local cancelled = async.timeout(input, 1)
+      cancelled:cancel()
+      assert.equals('pending', input:status())
+      resolve(false)
+      drain(loop)
+      assert.is_false(fast:result())
+      assert.equals(2, stopped)
+      fired[1]()
+      fired[2]()
+      assert.is_false(fast:result())
+      assert.equals('cancelled', cancelled:status())
+   end)
+
+   it('applies the timeout in callback order even before the scheduler steps', function()
+      local fire
+      local loop = async.configure({ after = function(_, callback) fire = callback end })
+      local resolve
+      local input = async.from_callback(function(ok) resolve = ok end)
+      local early = async.timeout(input, 1)
+      resolve(42)
+      fire()
+      assert.equals(42, early:result())
+
+      local pending = async.from_callback(function() end)
+      local late = async.timeout(pending, 1)
+      fire()
+      drain(loop)
+      assert.has_error(function() late:result() end, 'async task timed out')
+      assert.equals('pending', pending:status())
+      pending:cancel()
+   end)
+end)
+
+describe('auxlib luv run loop', function()
+   it('drives tasks and closes cancelled timers on the real libuv loop', function()
+      local available, uv = pcall(require, 'luv')
+      if not available then
+         pending('luv is unavailable')
+         return
+      end
+      local luv = require('auxlib.async.luv')
+      local loop = async.configure(luv.new())
+      local root = loop:start(function()
+         async.sleep(0.001):await()
+         return 42
+      end)
+      local long = async.sleep(600)
+      assert.is_true(long:cancel())
+      assert.equals('pending', root:status())
+      -- A leaked long timer would leave the native loop alive. Stop the run
+      -- as soon as the task completes to make that failure immediate.
+      root:on_complete(function() uv.stop() end)
+      luv.run()
+      assert.equals(42, root:result())
+      assert.is_false(luv.run('nowait'))
    end)
 end)

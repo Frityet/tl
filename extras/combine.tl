@@ -16,8 +16,8 @@ local function scan_deps(k: string)
       assert(f:close())
       module_to_content[k] = modcontent
 
-      -- all the requires in teal.* are this syntax
-      for requirement in modcontent:gmatch([[require%("([^"]+)"%)]]) do
+      -- Include the Teal modules. LuaJIT supplies its own modules.
+      for requirement in modcontent:gmatch([[require%("(teal%.[^"]+)"%)]]) do
          scan_deps(requirement)
       end
    end
@@ -29,9 +29,10 @@ local keys = {}
 for k in pairs(module_to_content) do table.insert(keys, k) end
 table.sort(keys)
 
--- populate the preload field so that we leave worrying about dependency order
--- to Lua
-local content = {}
+-- Check the runtime before the bundle changes the module loader.
+local content = {[[assert(jit and jit.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+
+]]}
 for _, k in ipairs(keys) do
    local fn = module_to_file[k]
    local modcontent = module_to_content[k]

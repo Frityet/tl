@@ -19,7 +19,7 @@ jobs:
 
     - uses: luarocks/gh-actions-lua@master
       with:
-        luaVersion: "5.4"
+        luaVersion: "luajit-2.1"
 
     - uses: luarocks/gh-actions-luarocks@master
 

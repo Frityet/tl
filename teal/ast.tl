@@ -1,5 +1,8 @@
 --#pragma strict_nil off
 local type c_ffi = require("teal.gen.c_ffi")
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 
 local reader = require("teal.block")
 local type Block = reader.Block

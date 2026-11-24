@@ -46,6 +46,5 @@ record type in the declaration assigns the record type to the type variable
 `T` in the return value of the function call, causing it to propagate to the
 argument types, matching the correct table and metatable types.
 
-Operator metamethods for integer division `//` and bitwise operators are
-supported even when Teal runs on top of Lua versions that do not support them
-natively, such as Lua 5.1.
+Teal can generate calls to metamethods for integer division `//` and bitwise
+operators for Lua 5.1. Enable compatibility wrappers to use these operators.

@@ -208,6 +208,7 @@ function Compiler:open(filename: string): Input, string
    end
 
    local teal_code, read_err = fd:read("*a")
+   fd:close()
    if not teal_code then
       return nil, "could not open " .. read_err
    end

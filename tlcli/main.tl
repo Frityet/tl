@@ -89,6 +89,23 @@ local function get_args_parser(): argparse.Parser
               :argname("<modulename>")
               :count("*")
 
+   local pack = parser:command("pack", "Build a standalone executable from a Teal or Lua program.")
+   pack:argument("entry", "Entry script. Defaults to main.tl or main.lua in source_dir or the current directory."):args("?")
+   pack:option("-o --output", "Name of the executable. Defaults to the entry name without its extension.")
+   pack:option("--liblua", "Path to the Lua archive or shared library."):target("pack_liblua")
+   pack:option("--lua-include", "Directory containing the matching lua.h."):target("pack_lua_include")
+   pack:option("--lua-version", "Select the Lua implementation to link."):target("pack_lua_version")
+       :choices({"5.1", "5.2", "5.3", "5.4", "5.5", "luajit"})
+   pack:option("--cc", "C compiler executable. Defaults to CC or cc."):target("pack_cc")
+   pack:flag("--static", "Link Lua statically (default)."):target("pack_static")
+   pack:flag("--no-static", "Link Lua dynamically."):target("pack_no_static")
+   pack:flag("--precompile", "Embed Lua bytecode (default)."):target("pack_precompile")
+   pack:flag("--no-precompile", "Embed Lua source."):target("pack_no_precompile")
+   pack:flag("--compress-source", "Compress source or bytecode. Needs zlib headers and libz.a."):target("pack_compress")
+   pack:option("--module", "Bundle a module by name. Repeat for each name calculated at runtime."):target("pack_modules"):count("*")
+   pack:option("--native", "Bundle a native module as MODULE=ARCHIVE."):target("pack_native"):count("*")
+   pack:option("--link-arg", "Pass an extra argument to the C compiler and linker."):target("pack_link_args"):count("*")
+
    parser:command("warnings", "List each kind of warning the compiler can produce.")
 
    local types_command = parser:command("types", "Report all types found in one or more Teal files")
@@ -112,16 +129,6 @@ local function get_args_parser(): argparse.Parser
 end
 
 return function(...: {string})
-   local commands: {string:function(TlConfig, Args)} = {
-      check = require("tlcli.commands.check"),
-      gen = require("tlcli.commands.gen"),
-      run = require("tlcli.commands.run"),
-      types = require("tlcli.commands.types"),
-      warnings = require("tlcli.commands.warnings"),
-      ["dump-blocks"] = require("tlcli.commands.dump_blocks"),
-      lsp = require("tlcli.commands.lsp"),
-   }
-
    local parser = get_args_parser()
 
    local args = parser:parse(...) as Args
@@ -139,6 +146,7 @@ return function(...: {string})
       os.exit(1)
    end
 
+   local command = require("tlcli.commands." .. cmd:gsub("-", "_")) as function(TlConfig, Args)
    local tlconfig, cfg_warnings = configuration.get()
    configuration.merge_config_and_args(tlconfig, args)
    if cfg_warnings and not args["quiet"] then
@@ -147,5 +155,5 @@ return function(...: {string})
       end
    end
 
-   commands[cmd](tlconfig, args)
+   command(tlconfig, args)
 end

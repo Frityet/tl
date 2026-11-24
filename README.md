@@ -6,10 +6,9 @@ Teal
 
 This is the repository of **tl**, the compiler for Teal, a typed dialect of Lua.
 
-The core compiler has no dependencies and is implemented as a single `tl.lua`
-file which you can load into your projects. Running `tl.loader()` will add
-Teal support to your package loader, meaning that `require()` will be able to
-run `.tl` files.
+The compiler runs on LuaJIT 2.1 or later with FFI enabled. You can load the
+standalone `tl.lua` file in a LuaJIT application. Call `tl.loader()` to load
+and run `.tl` files with `require()`.
 
 ## Introduction
 
@@ -20,65 +19,26 @@ of the Teal documentation to get started with an overview of the language.
 
 ### Via LuaRocks
 
-Install Lua and LuaRocks, then run:
+Install LuaJIT 2.1 or later. Configure LuaRocks for that installation. Run this
+command from the repository root.
 
 ```
-luarocks install tl
+luarocks make tl-dev-2.rockspec
 ```
 
 This should put a `tl` command in your `$PATH` (run `eval $(luarocks path)` if
 the LuaRocks-installed binaries are not in your `$PATH`).
 
-Teal works with Lua 5.1-5.4, including LuaJIT. Use `--gen-target=luajit` for
-LuaJIT 2.1 with the backported LuaJIT 3.0 syntax extensions; see the
+Use `--gen-target` to select the Lua version for the generated code. Use
+`--gen-target=luajit` to use the LuaJIT 3.0 syntax extensions. See the
 [syntax and lowering guide](docs/src/luajit_extensions.md).
 
 ### Binaries
 
-Alternatively, you can find pre-compiled binaries for Linux x86_64 and Windows
-x86_64 at the [releases](https://github.com/teal-language/tl/releases) page.
-The packages contain a stand-alone executable that can run Teal programs
-(without the need of a separate Lua installation) and also compile them to Lua.
-
-### Try it from your browser
-
-You can give Teal a try directly from your browser with the [Teal
-Playground](https://teal-playground.netlify.app/)! It compiles Teal into Lua using
-[Fengari](https://github.com/fengari-lua/fengari), a Lua VM implemented in
-JavaScript, so everything runs on the client.
+Run `make binary` to build a stand-alone executable. The executable includes
+LuaJIT. Use it to run Teal programs or generate Lua code.
 
 ## Running
-
-### Bundled auxiliary library
-
-The strict-nil library lives in `extras/auxlib`: require `auxlib.tables`,
-`auxlib.async`, `auxlib.struct` or `auxlib.format`. The checkout's `tl` launcher adds `extras/`
-to the module search path. When embedding the compiler or running generated Lua
-separately, add `<tl>/extras/?.lua` and `<tl>/extras/?/init.lua` to `package.path`.
-Public APIs and macros carry TealDoc comments in their `.tl` sources; library
-tests live in `extras/auxlib/tests/`.
-
-`tables.map` and `||>` map arrays `{TFrom}` to `{TTo}`. Their callback receives
-`(value, idx)` with a one-based index and returns one mapped value.
-Other table projections and predicates receive `(value, key)`; reducers receive
-`(accumulator, value, key)`.
-
-`auxlib.format` supplies `f!` interpolation with printf-style field specs:
-
-```teal
-local format = require("auxlib.format")
-local macro f! = format.f!
-local name = "Ada"
-local price = 12.345
-print(f!"Hello {name}, price {price:.2f}")
-```
-
-Escape literal braces as `{{` and `}}`. Plain fields use `tostring`; specs such
-as `04d`, `08x`, `+8.2f`, `10s`, `-10s` and `q` select numeric/string formatting.
-The macro emits concatenation for plain templates and a single `string.format`
-call when a field has a format spec. The reproducible benchmark is
-`extras/auxlib/tests/format_bench.lua`; run it with the target LuaJIT executable
-and `LUA_PATH='./?.lua;./?/init.lua;./extras/?.lua;;'`.
 
 ### Using the compiler directly
 
@@ -102,15 +62,12 @@ Once `tl` is in your path, there are a few subcommands:
   workspace root supplied by the editor and caches its workspace file manifest
   in `.cache/tl-lsp/workspace-index.paths`.
 
-Hover documentation uses [TealDoc-style comments](https://github.com/teal-language/tealdoc#tealdoc-comments)
-attached directly to declarations: start with `---`, continue with `--` or `---`,
-or use a `--[[-- ... ]]--` block. Markdown paragraphs, lists and fenced examples
-retain their layout; `@param`, `@typearg`, `@field`, `@return` and other tags are
-rendered as readable documentation. The LSP renders this itself and does not
-require TealDoc. Macro and operator hovers follow imported aliases back to their
-definition, so usage documentation also appears when hovering `+=>`, `?>` and
-other activated operators, including every character of a multi-character symbol.
-Open, unsaved documentation buffers take precedence over the file on disk.
+Put TealDoc comments next to declarations. Start with `---`. Continue with
+`--` or `---`, or use a `--[[-- ... ]]--` block. Hover shows the original
+Markdown and renders tags such as `@param` and `@return`. The server follows
+macro aliases to their definitions. You can hover over each character of an
+operator. The server reads open buffers before it reads files on disk.
+[TealDoc comment syntax](https://github.com/teal-language/tealdoc#tealdoc-comments)
 
 LSP features can be disabled per project in `tlconfig.lua`:
 
@@ -120,6 +77,8 @@ return {
       inlay_hints = false,
       -- Coalesce edits for up to this many milliseconds per batch (default: 35).
       diagnostics_debounce_ms = 35,
+      -- Enable workspace diagnostic requests (default: true).
+      workspace_diagnostics = true,
       semantic_highlighting = false,
       workspace_index = false,
       cache = false,
@@ -133,6 +92,8 @@ The available switches are `diagnostics`, `completion`, `hover`, `definitions`,
 `document_links`, `linked_editing`, `document_colors`, `code_lens`,
 `code_actions`, `call_hierarchy`, `type_hierarchy`, `monikers`,
 `workspace_index`, and `cache`. All default to enabled.
+Set `workspace_diagnostics = false` to disable advertising workspace diagnostic
+requests. These requests cover documents currently known to the server.
 
 `tl` also supports some [compiler options](https://teal-language.org/book/latest/compiler_options.html).
 These can either be specified on the command line or inside a tlconfig.lua file at the root of your project.
@@ -161,6 +122,9 @@ compile `.tl` files on-the-fly.
 You can read the [rendered documentation](https://teal-language.org/book/) online;
 it can also be generated locally from the files in the [docs/](docs/) folder
 of this repository.
+
+See [compiler performance](docs/src/compiler_performance.md) for measurements
+and steps to profile the compiler.
 
 ## Type definitions
 

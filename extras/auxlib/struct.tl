@@ -2,18 +2,19 @@
 
 local type Object = {any:any}
 
+--- Build typed records with constructors, property hooks, and runtime validation.
 local record Struct
    record Field
       name: string
       required: boolean
       readonly: boolean
-      --- Compute a fresh default for an omitted optional field; nil is permitted when declared.
+      --- Calculate a default value for each new instance when the input is nil.
       default: (function(): any) | nil
-      --- Read the stored value and return the exposed value of the declared field type.
+      --- Read the stored value and return the public field value.
       get: (function(any): any) | nil
-      --- Receive current and incoming values and return the candidate stored value.
+      --- Receive the current and new values. Return the value to store.
       set: (function(any, any): any) | nil
-      --- Validate a candidate field value and return whether it is acceptable.
+      --- Return true if the field value is valid.
       invariant: (function(any): boolean) | nil
       message: string | nil
    end
@@ -23,14 +24,11 @@ local record Struct
       fields: {Field}
       positional: {string}
       auto: boolean
-      --- Validate the complete instance or staged property-write view.
+      --- Return true if the instance with the proposed values is valid.
       invariant: (function(any): boolean) | nil
       by_name: {string:Field | nil}
       mt: {string:any}
    end
-
-   --- Install generated constructors and property hooks for a struct descriptor.
-   define: function(any, any)
 end
 
 local type Field = Struct.Field
@@ -93,10 +91,9 @@ local function construct(desc: Descriptor, values: {string:any}): any
    return instance
 end
 
---- Install the runtime behavior emitted by the struct macro.
---- Initializes constructors, validation, property accessors and backing storage on the class.
---- @param class_value Generated struct class receiving from, validate and optional create methods.
---- @param description Generated field descriptor, constructor metadata and optional record invariant.
+--- Add constructors, property hooks, and validation to a generated record.
+--- @param class_value Record that receives `:from`, `:validate`, and optional `:create`.
+--- @param description Field definitions, constructor options, and optional record invariant.
 function Struct.define(class_value: any, description: any)
    local class = class_value as {string:any}
    local desc = description as Descriptor
@@ -140,18 +137,9 @@ function Struct.define(class_value: any, description: any)
    end
 end
 
---- Declare typed structs with defaults, property hooks and invariants.
----
---- Import the operator explicitly.
----
---- ```teal
---- local structs = require("auxlib.struct")
---- local macro (struct)! = structs.(struct)!
---- ```
----
---- The macro and runtime live in `struct.tl`, with strict nil checking
---- enabled. The macro emits a native Teal record and typed callbacks. Generated
---- programs load `extras/auxlib/struct.lua` from their Lua module path.
+--- Declare a typed struct. Give each field a type and a default, or mark it
+--- `required`. Use `property { default = value, ... }` for a default with hooks.
+--- Use `required { ... }` for a required field with hooks.
 ---
 --- ```teal
 --- struct Counter {
@@ -163,58 +151,35 @@ end
 ---       set = new -> do field = new end;
 ---    };
 --- }
----
 --- local counter = Counter:create()
 --- counter.value = 3
 --- print(counter.value) -- 30
 --- ```
 ---
---- ## Fields and construction
+--- Use `Name:from { ... }` to construct a value from a `Name.Init` record.
+--- `constructor(auto)` also adds `Name:create(...)`. Pass required fields
+--- first, then defaulted fields. Use declaration order within each group.
+--- An omitted or nil argument uses the field default. Each instance gets
+--- its own defaults. To write a custom constructor, omit `constructor(auto)`
+--- and call `self:from { ... }` in the constructor.
 ---
---- - A typed field takes an ordinary default expression, `required`,
----   `required { ... }`, or `property { default = value, ... }`.
---- - `:from { ... }` is always generated. Its input type, `Name.Init`, has
----   required fields and nullable entries for defaulted fields.
---- - `constructor(auto)` also generates `:create(...)`. Its arguments are the
----   required fields followed by optional defaulted fields, in declaration order
----   within each group. Omitted or `nil` inputs use the default; required fields
----   need a non-nil value. Defaults run separately for each instance.
---- - A handwritten `Name:create(...)` can call `self:from { ... }`. Omit
----   `constructor(auto)` for that form. There is no `constructor(manual)` mode.
---- - `implements(Interface, OtherInterface)` emits native interface conformance.
----   List the data fields in the struct body, and supply ordinary record methods
----   after the declaration.
---- - Generic struct declarations are deferred.
+--- `get` reads the stored value. `set` receives the new value and can assign
+--- to `field`, which starts with the stored value. During construction,
+--- `field` starts with the supplied value or default. The field invariant
+--- checks the value before storage and must return a boolean. Set `message`
+--- to give a custom error. Set `readonly = true` to prevent writes after
+--- construction.
 ---
---- ## Hooks and storage
+--- Use `invariant (x -> x.minimum <= x.maximum)` to check the whole record.
+--- The check runs after construction and before a proposed field write.
+--- Call `instance:validate()` to run the checks again. A write to a member
+--- of a table field bypasses the property's hooks. Use checks without side
+--- effects.
 ---
---- `get` and `invariant` each receive the stored field value. `set` takes the
---- incoming value and can assign the implicit mutable `field` binding, initially
---- the current stored value. During construction, its initial value is the input
---- or evaluated default. The setter's result is checked before writing the slot.
---- Callback parameters and results are checked against the declared field type;
---- invariants must return a boolean. `message` can customize an invariant error.
----
---- Instances use `_name` backing slots. `__index` reads the slot and runs its
---- getter, and `__newindex` runs the setter and checks before committing. Public
---- keys stay absent, so this also works on repeated direct writes such as
---- `employee.name = "ADA"`. Underscore backing slots are absent from the public
---- record type. `readonly = true` rejects public writes at runtime after construction.
----
---- An optional header `invariant (x -> x.minimum <= x.maximum)` checks the whole
---- record after construction and checks a staged view before a property write.
---- `instance:validate()` reruns the checks and returns the instance. Hooks cover
---- assignments to the property itself; in-place edits inside a table field are
---- ordinary table operations. Use validation hooks as predicates, since their
---- side effects are not rolled back.
----
---- To regenerate the Lua runtime, run this command from the repository root.
----
---- ```sh
---- ./tl gen --gen-target=5.1 --gen-compat=off -o extras/auxlib/struct.lua extras/auxlib/struct.tl
---- ```
---- @param definition Struct name and field table, including optional construction and invariant headers.
---- @return Statements declaring the typed record and initializing its runtime descriptor.
+--- Use `implements(Interface, OtherInterface)` to declare interface
+--- conformance. Define the methods after the struct. Use a bare struct name.
+--- @param definition Struct name, field declarations, and optional headers.
+--- @return Statements that declare and initialize the record.
 macro Struct.(struct)!(definition: Expression): Operator<prefix, unary>
    local B = BLOCK_INDEXES
    local function node(kind, tk)

@@ -1,33 +1,29 @@
 --#pragma strict_nil on
+
+--- Provide a macro for string interpolation and Lua format codes.
 local record Format end
 
---- Interpolate a literal string, with optional printf-style format specifiers.
+--- Interpolate a literal string. Put each expression in braces.
+--- The macro checks expressions in the caller's scope. It evaluates each
+--- expression once, from left to right.
 ---
 --- ```teal
---- local format = require("auxlib.format")
---- local macro f! = format.f!
 --- local name = "Ada"
 --- local price = 12.345
 --- local message = f!"Hello {name}, price {price:.2f}" -- Hello Ada, price 12.35
---- local code = f!"{42:04d} {255:08x}" -- 0042 000000ff
 --- ```
 ---
---- Fields contain ordinary Teal expressions, including member access, indexing and calls.
---- Each field is evaluated once, from left to right, and is checked in the caller's
---- lexical scope. Plain fields use tostring, including boolean and nil values.
---- Escape literal braces with {{ and }}. Normal Lua string escapes and long-bracket
---- strings are supported. Parenthesize expressions with an otherwise ambiguous colon.
+--- Write `{{` and `}}` for literal braces. Use Lua string escapes or long
+--- brackets. Put parentheses around an expression if its colon is ambiguous.
+--- A field without a format code uses `tostring`, including for nil.
 ---
---- A field `{value:spec}` uses string.format with one conversion. A leading % is
---- optional. Examples: `.2f` (decimal places), `04d` (zero-padded integer), `08x`
---- (hexadecimal), `+8.2f` (signed number), `10s` (right alignment), `-10s` (left
---- alignment), `.3s` (string truncation), `e`/`g` (scientific/general notation),
---- `o` (octal), `c` (character) and `q` (quoted string). Width and precision are
---- limited to 99, matching Lua's format syntax. Dynamic widths are not supported.
---- Plain templates compile to concatenation; a template with format specs uses
---- one string.format call. No runtime parts table or formatter module is needed.
---- @param template Literal string whose fields are expanded at compile time.
---- @return An expression producing one string, with no runtime auxlib dependency.
+--- Append a format code after a colon, as in `{value:04d}` or `{value:08x}`.
+--- The code uses one `string.format` conversion and can start with `%`.
+--- Use literal numbers from 0 to 99 for width and precision.
+--- The macro joins plain fields with concatenation. If a field has a format
+--- code, the macro uses one `string.format` call for the template.
+--- @param template Literal string with optional expression fields.
+--- @return An expression that gives one string.
 macro Format.f!(template: Expression): Expression
    assert(template.kind == "string", "f!: expected a literal string")
    local B = BLOCK_INDEXES

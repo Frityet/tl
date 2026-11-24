@@ -7,7 +7,6 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 local common = require("tlcli.common")
 local driver = require("tlcli.driver")
-local perf = require("tlcli.perf")
 local report = require("tlcli.report")
 
 
@@ -77,7 +76,6 @@ local function json_out_table(fd, x)
 end
 
 return function(tlconfig, args)
-   perf.turbo(true)
    tlconfig["quiet"] = true
    tlconfig["gen_compat"] = "off"
 
@@ -86,7 +84,7 @@ return function(tlconfig, args)
    compiler:enable_type_reporting(true)
 
    local pcalls_ok = true
-   for i, input_file in ipairs(args["file"]) do
+   for _, input_file in ipairs(args["file"]) do
 
 
 
@@ -100,7 +98,6 @@ return function(tlconfig, args)
          pcalls_ok = false
       end
 
-      perf.check_collect(i)
    end
 
    local ok = report.report_all_errors(tlconfig, compiler)

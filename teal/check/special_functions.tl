@@ -1,6 +1,9 @@
 --#pragma strict_nil off
 local c_ffi = require("teal.gen.c_ffi")
 local c_runtime = require("teal.gen.c_runtime")
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local type node_checker = require("teal.check.node_checker")
 local type NodeChecker = node_checker.NodeChecker
 

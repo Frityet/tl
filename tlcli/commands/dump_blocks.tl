@@ -1,6 +1,5 @@
 --#pragma strict_nil off
 local common = require("tlcli.common")
-local perf = require("tlcli.perf")
 local reader = require("teal.reader")
 local block = require("teal.block")
 
@@ -217,7 +216,6 @@ local function first_file_arg(file_arg: {string} | string): string
 end
 
 return function(tlconfig: TlConfig, args: Args)
-   perf.turbo(true)
    tlconfig["quiet"] = true
    tlconfig["gen_compat"] = "off"
 

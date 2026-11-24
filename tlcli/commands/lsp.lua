@@ -18,10 +18,6 @@ local block = require("teal.block")
 
 local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
-
-
-
-local jit = (require)("jit")
 local ffi = require("ffi")
 
 
@@ -33,12 +29,6 @@ local ffi = require("ffi")
 
 
 
-
-
-
-
-jit.off()
-io.stdin:setvbuf("no")
 
 local POSIX_POLL = ffi.os ~= "Windows"
 if POSIX_POLL then
@@ -2366,7 +2356,7 @@ local function server_capabilities(server)
       capabilities.diagnosticProvider = {
          identifier = "teal",
          interFileDependencies = true,
-         workspaceDiagnostics = server.tlconfig.lsp and server.tlconfig.lsp.workspace_diagnostics == true or false,
+         workspaceDiagnostics = not server.tlconfig.lsp or server.tlconfig.lsp.workspace_diagnostics ~= false,
       }
    end
    if lsp_enabled(server, "code_actions") then capabilities.codeActionProvider = { codeActionKinds = mark_array({ "quickfix", "source" }) } end
@@ -2846,7 +2836,7 @@ local function handle_request(server, method, params)
 end
 
 return function(tlconfig, args)
-
+   io.stdin:setvbuf("no")
 
    tlconfig.quiet = true
 

@@ -3,6 +3,7 @@
 -- AST traversal
 --------------------------------------------------------------------------------
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local type types = require("teal.types")
@@ -221,6 +222,9 @@ local type_walkers <total>: {TypeName: boolean | function<S, T>(s: S, ast: Type,
 }
 
 recurse_type = function<S, T>(s: S, ast: Type, visit: Visitor<S, TypeName, Type, T>): T
+   if not TL_DEBUG and not visit.cbs and not visit.after then
+      return nil
+   end
    local kind = ast.typename
 
    if TL_DEBUG then
@@ -511,13 +515,13 @@ function traversal.traverse_nodes<S, T>(s: S, root: types.Node,
       error("missing cbs in visit_node")
    end
    local visit_after = visit_node.after
+   local cbs = visit_node.cbs
 
    recurse = function(ast: Node): T
       local xs: {T} = {}
       local kind = assert(ast.kind)
       local kprint: string
 
-      local cbs = visit_node.cbs
       local cbkind = cbs and cbs[kind]
       if cbkind then
          if cbkind.before then

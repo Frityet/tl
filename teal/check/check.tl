@@ -4,6 +4,7 @@ local type Context = context.Context
 local c_ffi = require("teal.gen.c_ffi")
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")

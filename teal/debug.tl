@@ -1,4 +1,10 @@
 --#pragma strict_nil off
+local record Runtime
+   version_num: integer
+   off: function(boolean, boolean)
+end
+local runtime = (_G as {string: Runtime}).jit
+assert(runtime and runtime.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
 --------------------------------------------------------------------------------
 -- Compiler debugging
 --------------------------------------------------------------------------------
@@ -6,9 +12,13 @@ local record tldebug
    TL_DEBUG: string
    TL_DEBUG_FACTS: string
    TL_DEBUG_MAXLINE: integer
+   stop_tracing: function(boolean, boolean)
    write: function(...: string|number)
    flush: function()
 end
+
+-- Use the LuaJIT function directly. Pass true to select the caller.
+tldebug.stop_tracing = runtime.off
 
 function tldebug.write(...: string|number)
    io.stderr:write(...)

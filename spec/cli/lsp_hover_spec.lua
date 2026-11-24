@@ -172,7 +172,18 @@ return @H@f!"Price {price:.2f}"
 ]]))
       assert.matches('Interpolate a literal string', value, 1, true)
       assert.matches('price:.2f', value, 1, true)
+      assert.not_matches('local format = require', value, 1, true)
       assert.matches('**Parameter `template`:**', value, 1, true)
+   end)
+
+   it('shows task method documentation from the bundled async package', function()
+      local value = text(hover([[
+local tasks = require('auxlib.async')
+local task = tasks.start(function(): integer return 7 end)
+return task:@H@await()
+]]))
+      assert.matches('Wait for a task to finish.', value, 1, true)
+      assert.not_matches('Schedule coroutine tasks on a Lua thread.', value, 1, true)
    end)
 
    local fixture = [[
@@ -335,10 +346,11 @@ local values: {integer} = {1, 2}
          local value = text(hover(source, {['tlconfig.lua'] = 'return {include_dir = {"extras"}}', extras = {auxlib = {['tables.tl'] = module}}}))
          assert.matches(case[2], value, 1, true)
          if case[1] == '||>' then
-            assert.matches('local tables = require("auxlib.tables")', value, 1, true)
+            assert.matches('local labels = values ||>', value, 1, true)
          else
             assert.matches('local scores: {string:integer} = { red = 4, blue = 6 }', value, 1, true)
          end
+         assert.not_matches('local tables = require', value, 1, true)
          assert.matches('**Parameter `source`:**', value, 1, true)
       end)
    end

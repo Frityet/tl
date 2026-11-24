@@ -1,4 +1,12 @@
 --#pragma strict_nil on
+
+--- Schedule coroutine tasks on a Lua thread.
+--- A scheduler runs ready callbacks. A host run loop can post callbacks and
+--- start timers, or the host can step the scheduler by hand.
+--- Tasks started inside a task use its scheduler and belong to that task.
+--- A parent waits for its children. If a parent fails or is cancelled, it
+--- cancels its children. Only a nursery propagates a supervised child's error.
+--- Waiting for another task leaves its ownership unchanged.
 local record Async
    type Callback = function()
    type Cancel = Callback
@@ -10,19 +18,31 @@ local record Async
       "cancelled"
    end
 
-   record Loop
-      --- Post a callback for a later turn on the owning Lua thread; nil selects manual stepping.
+   --- Supply functions that the scheduler can call on its Lua thread.
+   --- Declare a record with `is RunLoop` to define a host adapter.
+   interface RunLoop
+      --- Post a callback for a later turn. If nil, the host must call `Scheduler:step()`.
       defer: (function(Callback)) | nil
-      --- Register a one-shot timer in seconds and optionally return its cancellation callback.
+      --- Start a one-shot timer with a delay in seconds. Return a cancel function
+      --- if the host can stop the timer. If nil, the scheduler has no timer support.
       after: (function(number, Callback): Cancel | nil) | nil
    end
 
+   --- Store run-loop functions in a table.
+   record Loop is RunLoop
+   end
+
    record Scheduler
-      --- Schedule a body producing one typed result, including nil when declared nullable.
+      --- Schedule a function that returns one value.
+      --- @param body Function to run in a coroutine.
+      --- @return A pending task on this scheduler.
       start: function<T>(self: Scheduler, body: function(): T): Task<T>
-      --- Run up to the optional limit of ready callbacks and return the number processed.
+      --- Run ready callbacks from the host loop. Callbacks queued during this
+      --- step run in a later step.
+      --- @param limit Maximum number of callbacks to run. If nil, run all callbacks that were ready at the start.
+      --- @return Number of callbacks run.
       step: function(self: Scheduler, limit?: integer | nil): integer
-      _loop: Loop | nil
+      _loop: RunLoop | nil
       _ready: {Callback | nil}
       _head: integer
       _tail: integer
@@ -31,21 +51,31 @@ local record Async
    end
 
    record Task<T>
-      --- Wait for completion inside a managed coroutine; preserve the task result type.
+      --- Wait for a task to finish. To wait for a pending task, call this from
+      --- a task on the same scheduler. The wait must not cause a dependency cycle.
+      --- @return The task value. Raise the task's error or cancellation reason on failure.
       await: function(self: Task<T>): T
-      --- Read a settled result; raise if pending, rejected, or cancelled.
+      --- Read the result of a fulfilled task. Raise an error if the task is pending.
+      --- @return The task value. Raise the task's error or cancellation reason on failure.
       result: function(self: Task<T>): T
-      --- Return pending, fulfilled, rejected, or cancelled.
+      --- Read the task state.
+      --- @return `"pending"`, `"fulfilled"`, `"rejected"`, or `"cancelled"`.
       status: function(self: Task<T>): Status
-      --- Cancel a pending task and its owned work; nil uses the default cancellation reason.
+      --- Cancel a pending task and its children.
+      --- @param reason Error value to report. If nil, use the default cancellation message.
+      --- @return True if the task was pending.
       cancel: function(self: Task<T>, reason?: any): boolean
-      --- Queue a completion callback and return an unsubscribe function.
+      --- Queue a callback on the scheduler when the task finishes.
+      --- @param callback Function that receives the completed task.
+      --- @return A function that removes the callback before it runs.
       on_complete: function(self: Task<T>, callback: function(Task<T>)): Cancel
       _job: Job
    end
 
    record Scope
-      --- Start a supervised child from this open nursery body; the nursery waits for its result.
+      --- Schedule a supervised child from the nursery body.
+      --- @param factory Function that starts a task for the child to await.
+      --- @return The child task. Its result is the result of the task from the factory.
       spawn: function<T>(self: Scope, factory: function(): Task<T>): Task<T>
       _job: Job
       _open: boolean
@@ -60,7 +90,7 @@ local record Async
       co: thread | nil
       body_done: boolean
       listeners: {Callback:boolean | nil}
-      waiting_on: Job | nil
+      waiting_on: {Job} | nil
       unlisten: Cancel | nil
       cancel_hook: Cancel | nil
    end
@@ -73,7 +103,8 @@ local type Scheduler = Async.Scheduler
 local type Scope = Async.Scope
 local type Status = Async.Status
 local type Task = Async.Task
-local type Loop = Async.Loop
+local type RunLoop = Async.RunLoop
+local type Timer = function(number, Callback): Cancel | nil
 
 local try_callback = pcall as function(Callback): boolean, any
 local active: {thread:Job | nil} = {}
@@ -116,9 +147,6 @@ local function enqueue(scheduler: Scheduler, callback: Callback)
    request_turn(scheduler)
 end
 
---- Run callbacks from the current ready queue, leaving newly queued work for a later step.
---- @param limit Optional maximum number of callbacks; nil processes the current queue.
---- @return Number of callbacks processed. Call this from the host loop, outside a task.
 function Async.Scheduler:step(limit?: integer): integer
    assert(not current_job(), "async scheduler must be stepped from its host loop")
    assert(not self._stepping, "async scheduler is already stepping")
@@ -149,10 +177,10 @@ function Async.Scheduler:step(limit?: integer): integer
    return count
 end
 
---- Create an independent scheduler with an optional host-loop adapter.
---- @param loop Optional defer and timer hooks; nil selects manual stepping.
---- @return A new scheduler without changing the default.
-function Async.new(loop?: Loop): Scheduler
+--- Create a scheduler.
+--- @param loop Host run loop. If nil, step the scheduler by hand.
+--- @return A new scheduler.
+function Async.new(loop?: RunLoop): Scheduler
    return {
       _loop = loop,
       _ready = {},
@@ -167,55 +195,16 @@ end
 
 local default_scheduler = Async.new()
 
---- Configure the default scheduler and connect an optional host event loop.
----
----
---- `configure(adapter)` sets the default scheduler for future root tasks and
---- returns it. `new(adapter)` creates an independent scheduler. Use
---- `scheduler:start(function() ... end)` to start work on a specific scheduler.
---- Nested work inherits its parent's scheduler. `current()` returns the active
---- scheduler, or the default when called outside a task.
----
---- Connect your host's deferred callbacks and timers with two functions.
----
---- ```teal
---- local scheduler = tasks.configure({
----    defer = function(resume: tasks.Callback)
----       host.post(resume)
----    end,
----    after = function(seconds: number, fire: tasks.Callback): tasks.Cancel | nil
----       local timer = host.set_timer(seconds, fire)
----       return function() host.cancel_timer(timer) end
----    end,
---- })
----
---- local root = load_dashboard(42)
---- root:on_complete(function(done: tasks.Task<Dashboard>)
----    if done:status() == "fulfilled" then
----       render(done:result())
----    else
----       local _, reason = pcall(done.result, done)
----       report_error(reason)
----    end
---- end)
---- ```
----
---- `host` stands for the loop you already use. `defer` must post the callback for a
---- later turn on the same Lua thread. `after` registers a one-shot timer in seconds
---- and may return a cancellation function. It is needed only for `tasks.sleep`.
---- Both hooks are optional. A frame loop or manually driven program can omit
---- `defer` and call `scheduler:step()` once per tick. `step(limit)` runs up to
---- `limit` callbacks from the current queue and returns the number it processed.
---- Callbacks queued during a step run in a later step.
---- @param loop Optional host defer and timer hooks; nil selects manual stepping.
---- @return The new default scheduler for future root tasks.
-function Async.configure(loop?: Loop): Scheduler
+--- Set the default scheduler for new root tasks. Existing tasks keep their scheduler.
+--- @param loop Host run loop. If nil, step the scheduler by hand.
+--- @return The new default scheduler.
+function Async.configure(loop?: RunLoop): Scheduler
    default_scheduler = Async.new(loop)
    return default_scheduler
 end
 
---- Return the active task scheduler, or the default scheduler outside a task.
---- @return The active task scheduler, or the default scheduler outside a task.
+--- Get the scheduler for the current task.
+--- @return The current task's scheduler, or the default scheduler outside a task.
 function Async.current(): Scheduler
    local job = current_job()
    return job and job.scheduler or default_scheduler
@@ -314,7 +303,7 @@ local function resume_job(job: Job)
       job.co, job.body_done, job.value = nil, true, value
       if not next(job.children) then finish(job, "fulfilled", value) end
    elseif value ~= suspended then
-      finish(job, "rejected", "async tasks must suspend through await")
+      finish(job, "rejected", "async tasks must suspend through Task:await() or async.yield()")
    end
 end
 
@@ -331,11 +320,13 @@ local function depends_on(target: Job, job: Job): boolean
    while #pending > 0 do
       local dependency = assert(table.remove(pending))
       if dependency == job then return true end
-      if not seen[dependency] then
+      if dependency.status == "pending" and not seen[dependency] then
          seen[dependency] = true
          local waiting_on = dependency.waiting_on
          if waiting_on then
-            table.insert(pending, waiting_on)
+            for _, source in ipairs(waiting_on) do
+               table.insert(pending, source)
+            end
          end
          for child in pairs(dependency.children) do
             table.insert(pending, child)
@@ -353,7 +344,7 @@ local function await_task<T>(self: Task<T>): T
       assert(job, "await of a pending task requires an async coroutine")
       assert(job.scheduler == target.scheduler, "cannot await a pending task on a different async scheduler")
       assert(not depends_on(target, job), "cyclic async task dependency")
-      job.waiting_on = target
+      job.waiting_on = {target}
       job.unlisten = listen(target, function()
          job.waiting_on, job.unlisten = nil, nil
          resume_job(job)
@@ -361,6 +352,15 @@ local function await_task<T>(self: Task<T>): T
       coroutine.yield(suspended)
    end
    return read_result(self)
+end
+
+--- Pause the current task until a later scheduler step.
+--- Call this from a task. Other ready callbacks can run before the task resumes.
+function Async.yield()
+   local job = assert(current_job(), "async.yield requires an async coroutine")
+   if job.status ~= "pending" then error(job.value, 0) end
+   enqueue(job.scheduler, function() resume_job(job) end)
+   coroutine.yield(suspended)
 end
 
 local function task_handle<T>(job: Job): Task<T>
@@ -388,32 +388,26 @@ local function start_job(scheduler: Scheduler, parent: Job | nil, supervised: bo
    return job
 end
 
---- Schedule a typed coroutine task on this scheduler.
---- @param body Function producing one typed result; nullable results retain their nil type.
---- @return A pending task owned by this scheduler.
 function Async.Scheduler:start<T>(body: function(): T): Task<T>
    return task_handle(start_job(self, current_job(), false, body))
 end
 
---- Start a typed task on the current scheduler. Nested tasks belong to their parent.
---- @param body Function producing one result.
---- @return A task carrying that result type, including nil when declared.
+--- Schedule a function on the current scheduler.
+--- @param body Function that returns one value.
+--- @return A pending task with the result type of the function.
 function Async.start<T>(body: function(): T): Task<T>
    return Async.current():start(body)
 end
 
---- Start a body with no return value and produce a Task<nil>.
---- @param body Function with no return value.
---- @return A Task<nil> representing the body completion.
+--- Schedule a function that returns no values.
+--- @param body Function to run on the current scheduler.
+--- @return A task that fulfills with nil.
 function Async.start_void(body: function()): Task<nil>
    return task_handle(start_job(Async.current(), current_job(), false, function()
       body()
    end))
 end
 
---- Spawn a supervised child inside the currently running nursery body.
---- @param factory Function creating the child task.
---- @return A task whose result the nursery waits for before completing.
 function Async.Scope:spawn<T>(factory: function(): Task<T>): Task<T>
    local job = self._job
    assert(self._open and job.status == "pending", "async nursery scope is closed")
@@ -423,11 +417,10 @@ function Async.Scope:spawn<T>(factory: function(): Task<T>): Task<T>
    end))
 end
 
---- Run a body with a structured scope and wait for its children before completing.
---- A child failure rejects the nursery and cancels sibling tasks. Parent cancellation
---- also cancels tasks started by that parent; external tasks keep their original owner.
---- @param body Function receiving the scope and returning the nursery result.
---- @return A task with the body result, settled after all supervised children.
+--- Run a function with a nursery scope. If a supervised child fails, reject
+--- the nursery and cancel its other children.
+--- @param body Function that receives a scope and returns a value.
+--- @return A task that fulfills with the function's value after its children finish.
 function Async.nursery<T>(body: function(Scope): T): Task<T>
    return Async.start(function(): T
       local scope: Scope = { _job = assert(current_job()), _open = true, spawn = Async.Scope.spawn }
@@ -452,118 +445,136 @@ local function callback_job(register: function(function(any), function(any)): Ca
    return job
 end
 
---- Wrap a callback-based host operation in a typed task.
----
----
---- `from_callback` registers a host operation immediately and returns its task.
---- The first call to `resolve(value)` or `reject(reason)` wins. If registration
---- throws before completing, the task rejects with that error. A cancellation
---- function is optional and runs if the task is cancelled while pending.
----
---- ```teal
---- local function read_text(path: string): tasks.Task<string>
----    return tasks.from_callback(function(resolve: function(string), reject: function(any)): tasks.Cancel | nil
----       local request = host.read_text(path, resolve, reject)
----       return function() host.cancel_request(request) end
----    end)
---- end
---- ```
----
---- Run host registration, completion, and cancellation on the owning Lua thread.
---- If a worker thread completes the operation, post its completion to that thread
---- through the host. Lua coroutines let other tasks run while a callback is pending.
---- A synchronous operation inside a coroutine still occupies the Lua thread.
----
---- `Task:status()` returns `"pending"`, `"fulfilled"`, `"rejected"`, or
---- `"cancelled"`. `Task:result()` reads a settled result from host code and raises
---- if the task failed, was cancelled, or is still pending. `Task:on_complete(fn)`
---- queues the callback on the scheduler and returns an unsubscribe function.
---- `Task:cancel(reason)` returns whether the task was pending and changed state.
---- @typearg T Task result type, which may explicitly include nil.
---- @param register Function receiving resolve and reject callbacks and optionally returning a cancellation hook.
---- @return A typed task settled by the first completion callback or registration failure.
+--- Start a host operation and wrap it in a task.
+--- Run registration and completion on the scheduler's Lua thread.
+--- @param register Function that receives `resolve(value)` and `reject(reason)`.
+---   It can return a function to stop the operation if the task is cancelled.
+--- @return A task that finishes on the first completion call or registration error.
 function Async.from_callback<T>(register: function(function(T), function(any)): Cancel | nil): Task<T>
    return task_handle(callback_job(register))
 end
 
---- Wait for a finite, non-negative duration using the current scheduler timer adapter.
---- Requires a loop.after hook; cancelling the task calls its optional timer cancellation hook.
---- @param seconds Delay in seconds.
---- @return A Task<nil> that fulfills when the timer fires.
+local function timer_for(scheduler: Scheduler, seconds: number): Timer
+   assert(seconds >= 0 and seconds < math.huge, "async timer delay must be finite and non-negative")
+   local loop = scheduler._loop
+   return assert(loop and loop.after, "async timers require a run loop with an after function")
+end
+
+--- Start a timer on the current scheduler. The run loop must supply `after`.
+--- @param seconds Finite delay in seconds, zero or greater.
+--- @return A task that fulfills with nil when the timer fires.
 function Async.sleep(seconds: number): Task<nil>
-   local loop = Async.current()._loop
-   local after = assert(loop and loop.after, "async.sleep requires a loop.after adapter")
-   assert(seconds >= 0 and seconds < math.huge, "async sleep duration must be finite and non-negative")
+   local after = timer_for(Async.current(), seconds)
    return task_handle(callback_job(function(resolve: function(any)): Cancel | nil
       return after(seconds, function() resolve(nil) end)
    end))
 end
 
---- Await a task from a managed coroutine, suspending until it settles.
---- Returns its typed result, including nil when the task result is nullable.
---- Raises the original failure or cancellation reason. Pending awaits must use
---- the same scheduler and cannot form dependency cycles.
----
---- ```teal
---- local tasks = require("auxlib.async")
---- local macro (await)! = tasks.(await)!
---- -- Inside an async body: local value = await some_task
---- ```
---- @param task Task expression; evaluated once.
---- @return The task result. A pending task requires a managed async coroutine.
-macro Async.(await)!(task: Expression): Operator<prefix, unary>
-   return `($task):await()`
+local function watch_tasks<T>(tasks: {Task<T>}, settle: function(Job, integer, Job)): Job
+   local scheduler, parent = Async.current(), current_job()
+   local targets: {Job} = {}
+   for index, task in ipairs(tasks) do
+      local target = task._job
+      if target.status == "pending" then
+         assert(target.scheduler == scheduler, "cannot wait for a pending task on a different async scheduler")
+         assert(not parent or not depends_on(target, parent), "cyclic async task dependency")
+      end
+      targets[index] = target
+   end
+
+   local job = new_job(scheduler, parent, false)
+   local removals: {Cancel} = {}
+   job.waiting_on = targets
+   job.unlisten = function()
+      for _, remove in ipairs(removals) do remove() end
+   end
+   for index, target in ipairs(targets) do
+      if target.status == "pending" then
+         table.insert(removals, listen(target, function() settle(job, index, target) end))
+      else
+         settle(job, index, target)
+         if job.status ~= "pending" then break end
+      end
+   end
+   return job
 end
 
---- Run coroutine tasks with structured cancellation and nurseries.
----
---- Add the repository root to your Teal and Lua module search paths. Import the
---- runtime and the two macros in each Teal module that uses the syntax.
----
---- ```teal
---- local tasks = require("auxlib.async")
---- local macro (async)! = tasks.(async)!
---- local macro (await)! = tasks.(await)!
---- local type Scope = tasks.Scope
---- ```
----
---- Given `load_profile` and `load_alerts` functions that return tasks, a dashboard
---- loader can run both requests concurrently.
----
---- ```teal
---- local load_dashboard = async function(id: integer): Dashboard
----    return await tasks.nursery(function(scope: Scope): Dashboard
----       local profile = scope:spawn(async || -> await load_profile(id))
----       local alerts = scope:spawn(async || -> await load_alerts(id))
----
----       return { profile = await profile, alerts = await alerts }
----    end)
---- end
---- ```
----
---- Calling `load_dashboard(42)` schedules work and returns a `tasks.Task<Dashboard>`.
---- The `: Dashboard` annotation describes the result of the async body. An async
---- literal accepts ordinary or mini function syntax with fixed parameters and one
---- result. Use a record to return several values. Use `: nil` for an expression
---- whose only result has type `nil`, for example
---- `async ||: nil -> await tasks.sleep(0.5)`. A body with no value-returning
---- statement also produces `Task<nil>`. Async literals use concrete parameter and
---- result types in their own signatures.
----
---- `await task` calls `task:await()`. A pending task suspends the current managed
---- coroutine until the result is ready. A settled task returns its value or raises
---- its original error or cancellation reason. The runtime rejects pending awaits
---- across schedulers and dependency cycles.
----
---- A nursery waits for its spawned children before it completes, even if the body
---- returns first. A child failure rejects the nursery with that error and cancels
---- its other children. Cancelling a parent also cancels tasks it started. A task
---- passed in from outside the parent retains its original owner. Cancellation
---- discards suspended Lua execution and calls registered cancellation hooks for
---- pending host operations. It takes effect at scheduler boundaries for running Lua
---- code.
---- @param fn Function literal with concrete parameter types and at most one result type.
---- @return A function that schedules the body and returns Task<T>, or Task<nil> for a void body.
+--- Wait for all input tasks to fulfill. Forward the first error or cancellation.
+--- The other input tasks keep running.
+--- @param tasks Dense array of tasks. Pending tasks must use the current scheduler.
+--- @return A task with the results at their input indices. Nil results leave gaps.
+function Async.all<T>(tasks: {Task<T>}): Task<{T}>
+   local remaining = #tasks
+   local values: {T} = {}
+   local job = watch_tasks(tasks, function(group: Job, index: integer, target: Job)
+      if target.status == "fulfilled" then
+         values[index] = target.value as T
+         remaining = remaining - 1
+         if remaining == 0 then finish(group, "fulfilled", values) end
+      else
+         finish(group, target.status, target.value)
+      end
+   end)
+   if #tasks == 0 then finish(job, "fulfilled", values) end
+   return task_handle(job)
+end
+
+local function forward_result(job: Job, _: integer, target: Job)
+   finish(job, target.status, target.value)
+end
+
+--- Wait for the first input task to finish. If several have already finished,
+--- select the first of them in the array. The other input tasks keep running.
+--- @param tasks Nonempty dense array of tasks. Pending tasks must use the current scheduler.
+--- @return A task with the selected task's value, error, or cancellation reason.
+function Async.race<T>(tasks: {Task<T>}): Task<T>
+   assert(#tasks > 0, "async.race requires at least one task")
+   return task_handle(watch_tasks(tasks, forward_result))
+end
+
+--- Wait for a task with a time limit. The run loop must supply `after` if the
+--- task is pending. The time limit does not cancel the input task.
+--- @param task Task to wait for. A pending task must use the current scheduler.
+--- @param seconds Finite delay in seconds, zero or greater, for a pending task.
+--- @return A task that forwards the input result or rejects with `"async task timed out"`.
+function Async.timeout<T>(task: Task<T>, seconds: number): Task<T>
+   local target = task._job
+   if target.status ~= "pending" then return task end
+
+   local scheduler = Async.current()
+   local after = timer_for(scheduler, seconds)
+   local job = watch_tasks({task}, forward_result)
+   local remove_listeners = assert(job.unlisten)
+   local stop_timer: Cancel | nil
+   local timer_fired = false
+   job.unlisten = function()
+      remove_listeners()
+      if stop_timer and not timer_fired then run_cleanup(scheduler, stop_timer) end
+   end
+   local ok, cancel_timer = pcall(after, seconds, function()
+      timer_fired = true
+      if target.status == "pending" then
+         finish(job, "rejected", "async task timed out")
+      else
+         forward_result(job, 1, target)
+      end
+   end)
+   if not ok then
+      finish(job, "rejected", cancel_timer)
+   elseif job.status == "pending" then
+      stop_timer = cancel_timer
+   elseif cancel_timer and not timer_fired then
+      run_cleanup(scheduler, cancel_timer)
+   end
+   return task_handle(job)
+end
+
+--- Turn a function literal into a function that schedules a task.
+--- For example, `async |id: integer|: string -> tostring(id)` creates a function
+--- that takes an integer and returns a `Task<string>`. Use `: nil` if an
+--- expression body returns only nil.
+--- @param fn Function literal with fixed parameters and at most one result type.
+--- @return A function that starts the task. A body with no result gives a `Task<nil>`.
 macro Async.(async)!(fn: Expression): Operator<prefix, unary>
    local B = BLOCK_INDEXES
    local F = B.FUNCTION

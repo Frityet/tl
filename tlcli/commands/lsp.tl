@@ -18,10 +18,6 @@ local block = require("teal.block")
 local type Block = reader.Block
 local B = reader.BLOCK_INDEXES
 local lfs = require("lfs")
-local record JitModule
-   off: function()
-end
-local jit = (require as function(string): any)("jit") as JitModule
 local ffi = require("ffi")
 local type TlConfig = require("tlcli.tlconfig")
 local type Args = require("tlcli.args")
@@ -33,12 +29,6 @@ local type Module = teal.Module
 local type Compiler = teal.Compiler
 local type type_reporter = require("teal.type_reporter")
 local type TypeInfo = type_reporter.TypeInfo
-
--- The parser and checker have large, branch-heavy dispatch graphs. Profiling
--- shows trace compilation costs more than the generated code saves for both
--- cold and incremental LSP analysis, so keep this process in the interpreter.
-jit.off()
-io.stdin:setvbuf("no")
 
 local POSIX_POLL = ffi.os ~= "Windows"
 if POSIX_POLL then
@@ -2366,7 +2356,7 @@ local function server_capabilities(server: Server): AnyObject
       capabilities.diagnosticProvider = {
          identifier = "teal",
          interFileDependencies = true,
-         workspaceDiagnostics = server.tlconfig.lsp and server.tlconfig.lsp.workspace_diagnostics == true or false,
+         workspaceDiagnostics = not server.tlconfig.lsp or server.tlconfig.lsp.workspace_diagnostics ~= false,
       }
    end
    if lsp_enabled(server, "code_actions") then capabilities.codeActionProvider = { codeActionKinds = mark_array({ "quickfix", "source" } as AnyArray) } end
@@ -2846,7 +2836,7 @@ local function handle_request(server: Server, method: string, params: AnyObject)
 end
 
 return function(tlconfig: TlConfig, args: Args)
-
+   io.stdin:setvbuf("no")
 
    tlconfig.quiet = true
 

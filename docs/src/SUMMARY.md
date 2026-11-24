@@ -44,6 +44,7 @@
 - [Type definitions for third party libraries](./declaration_files.md)
 - [The Teal Standard Library and Lua compatibility](./teal_standard_library_and_lua_compatibility.md)
 - [Compiler options](./compiler_options.md)
+- [Compiler performance](./compiler_performance.md)
 
 ## The Teal project
 

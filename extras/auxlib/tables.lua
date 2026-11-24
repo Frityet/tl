@@ -1,6 +1,9 @@
 
-local Tables = {}
 
+
+
+
+local Tables = {}
 
 
 
@@ -42,7 +45,6 @@ function Tables.sum(source, project)
    end
    return total
 end
-
 
 
 
@@ -146,29 +148,11 @@ end
 
 
 
+
 function Tables.tap(value, inspect)
    inspect(value)
    return value
 end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -1,6 +1,11 @@
+assert(jit and jit.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+
 -- module teal.ast from teal/ast.lua
 package.preload["teal.ast"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 
 
 local reader = require("teal.block")
@@ -2880,6 +2885,7 @@ local Context = context.Context
 local c_ffi = require("teal.gen.c_ffi")
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")
@@ -3127,6 +3133,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -5781,6 +5788,9 @@ end
 -- module teal.check.relations from teal/check/relations.lua
 package.preload["teal.check.relations"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local errors = require("teal.errors")
 
 
@@ -6933,6 +6943,9 @@ end
 -- module teal.check.require_file from teal/check/require_file.lua
 package.preload["teal.check.require_file"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local input = require("teal.input")
 
 
@@ -7098,6 +7111,9 @@ package.preload["teal.check.special_functions"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 local c_ffi = require("teal.gen.c_ffi")
 local c_runtime = require("teal.gen.c_runtime")
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 
 
 
@@ -7897,6 +7913,7 @@ local c_runtime = require("teal.gen.c_runtime")
 
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -9418,13 +9435,13 @@ visit_node.cbs = {
          local step_t = children[4] and self:to_structural(untuple(children[4]))
          if self.feat_strict_nil then
             local numeric = a_type(node, "number", {})
-            if not self:is_a(from_t, numeric) then
+            if node.from.kind ~= "error_node" and not self:is_a(from_t, numeric) then
                self:add_error(node, "numeric for initial value must be a non-nil number")
             end
-            if not self:is_a(to_t, numeric) then
+            if node.to.kind ~= "error_node" and not self:is_a(to_t, numeric) then
                self:add_error(node, "numeric for limit must be a non-nil number")
             end
-            if step_t and not self:is_a(step_t, numeric) then
+            if step_t and node.step.kind ~= "error_node" and not self:is_a(step_t, numeric) then
                self:add_error(node, "numeric for step must be a non-nil number")
             end
          else
@@ -11233,6 +11250,12 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 
+
+local runtime = (_G).jit
+assert(runtime and runtime.version_num >= 20100, "Teal requires LuaJIT 2.1 or later")
+
+
+
 local tldebug = {}
 
 
@@ -11240,6 +11263,10 @@ local tldebug = {}
 
 
 
+
+
+
+tldebug.stop_tracing = runtime.off
 
 function tldebug.write(...)
    io.stderr:write(...)
@@ -15346,13 +15373,15 @@ function lua_generator.generate(ast, gen_target, opts)
       out.h = out.h + child.h
    end
 
-   local function concat_output(out)
-      for i, s in ipairs(out) do
+   local function append_output(out, parts)
+      for i = 1, #out do
+         local s = out[i]
          if type(s) == "table" then
-            out[i] = concat_output(s)
+            append_output(s, parts)
+         else
+            parts[#parts + 1] = s
          end
       end
-      return table.concat(out)
    end
 
    local function first_output_character(out)
@@ -16124,7 +16153,9 @@ function lua_generator.generate(ast, gen_target, opts)
    else
       code = out
    end
-   local output = concat_output(code):gsub(" *\n", "\n")
+   local parts = {}
+   append_output(code, parts)
+   local output = table.concat(parts):gsub(" *\n", "\n")
    if ffi_name then
       local preamble = lua_ffi.preamble(ffi_name)
       if opts.preserve_hashbang and ast.hashbang then
@@ -16385,6 +16416,7 @@ function Compiler:open(filename)
    end
 
    local teal_code, read_err = fd:read("*a")
+   fd:close()
    if not teal_code then
       return nil, "could not open " .. read_err
    end
@@ -16643,7 +16675,7 @@ end
 
 -- module teal.lexer from teal/lexer.lua
 package.preload["teal.lexer"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 
 
@@ -16652,6 +16684,7 @@ local errors = require("teal.errors")
 
 local util = require("teal.util")
 local binary_search = util.binary_search
+local new_table = (require)("table.new")
 
 local lexer = { Comment = {}, Token = {} }
 
@@ -16842,6 +16875,12 @@ do
    end
    lex_word["_"] = true
 
+   local word_bytes = {}
+   for c in pairs(lex_word) do
+      word_bytes[c:byte()] = true
+   end
+   local byte = string.byte
+
    local lex_decimals = {}
    for c = string.byte("0"), string.byte("9") do
       lex_decimals[string.char(c)] = true
@@ -16871,6 +16910,23 @@ do
    for _, c in ipairs({ " ", "\t", "\v", "\n", "\r" }) do
       lex_space[c] = true
    end
+
+   local extension_operators = {
+      ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
+      ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
+      ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
+      ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
+      ["/"] = { "/=" }, ["%"] = { "%=" },
+   }
+
+   local numeric_states = { ["got 0"] = true }
+   for st in pairs(last_token_kind) do
+      if st:sub(1, 7) == "number " then
+         numeric_states[st] = true
+      end
+   end
+
+   local number_suffix_start = { L = true, l = true, U = true, u = true, I = true, i = true }
 
    local escapable_characters = {
       a = true,
@@ -16921,7 +16977,8 @@ do
    end
 
    lexer.lex = function(input, filename)
-      local tokens = {}
+      local tokens = new_table(math.min(math.floor(#input / 4), 32768), 0)
+      local numeric_tokens = {}
 
       local state = "any"
       local fwd = true
@@ -16979,13 +17036,17 @@ do
       local function end_token_prev(kind)
          local tk = input:sub(ti, i - 1)
          nt = nt + 1
-         tokens[nt] = {
+         local token = {
             x = tx,
             y = ty,
             tk = tk,
             kind = kind,
             comments = comments,
          }
+         tokens[nt] = token
+         if kind == "integer" or kind == "number" then
+            numeric_tokens[#numeric_tokens + 1] = token
+         end
          comments = nil
          in_token = false
       end
@@ -17049,14 +17110,6 @@ do
       end
       state = "any"
 
-      local extension_operators = {
-         ["~"] = { "~>>=", "~>>" }, ["<"] = { "<<=" }, [">"] = { ">>=" },
-         ["."] = { "..=" }, ["!"] = { "!=" }, ["&"] = { "&&", "&=" },
-         ["|"] = { "||", "|=" }, ["?"] = { "??", "?." },
-         ["+"] = { "+=" }, ["-"] = { "-=", "->" }, ["*"] = { "*=" },
-         ["/"] = { "/=" }, ["%"] = { "%=" },
-      }
-
       while i <= len do
          if fwd then
             i = i + 1
@@ -17079,8 +17132,10 @@ do
          end
 
          local extension_op
-         if state == "any" and extension_operators[c] then
-            for _, candidate in ipairs(extension_operators[c]) do
+         local candidates = state == "any" and extension_operators[c]
+         if candidates then
+            for j = 1, #candidates do
+               local candidate = candidates[j]
                if input:sub(i, i + #candidate - 1) == candidate then
                   extension_op = candidate
                   break
@@ -17092,10 +17147,9 @@ do
             end_token("op", extension_op)
             i = i + #extension_op - 1
             x = x + #extension_op - 1
-         elseif c == "_" and (state == "got 0" or state:sub(1, 7) == "number ") then
+         elseif c == "_" and numeric_states[state] then
 
-         elseif state ~= "number suffix" and (state == "got 0" or state:sub(1, 7) == "number ") and
-            (c == "L" or c == "l" or c == "U" or c == "u" or c == "i" or c == "I") then
+         elseif number_suffix_start[c] and state ~= "number suffix" and numeric_states[state] then
             state = "number suffix"
          elseif state == "number suffix" then
             if not lex_word[c] then
@@ -17121,7 +17175,17 @@ do
                begin_token()
             else
                local st = lex_any_char_states[c]
-               if st then
+               if st == "identifier" then
+                  begin_token()
+                  local next_i = i + 1
+                  while word_bytes[byte(input, next_i)] do
+                     next_i = next_i + 1
+                  end
+                  x = x + next_i - i - 1
+                  i = next_i
+                  end_token_identifier()
+                  i = i - 1
+               elseif st then
                   state = st
                   begin_token()
                else
@@ -17138,12 +17202,6 @@ do
                      add_syntax_error()
                   end
                end
-            end
-         elseif state == "identifier" then
-            if not lex_word[c] then
-               end_token_identifier()
-               fwd = false
-               state = "any"
             end
          elseif state == "string double" then
             if c == "\\" then
@@ -17184,6 +17242,10 @@ do
             if c == "\n" then
                add_comment(input:sub(ti, i - 1))
                state = "any"
+            else
+               local last = (input:find("\n", i + 1, true) or len + 1) - 1
+               x = x + last - i
+               i = last
             end
          elseif state == "got =" then
             local t
@@ -17503,20 +17565,18 @@ do
          add_comment(input:sub(ti, #input))
       end
 
-      for _, token in ipairs(tokens) do
-         if token.kind == "number" or token.kind == "integer" then
-            local text = token.tk:gsub("_", ""):lower()
-            local integer_suffix = text:sub(-2) == "ll"
-            if text:sub(-3) == "ull" then text = text:sub(1, -4)
-            elseif integer_suffix then text = text:sub(1, -3)
-            elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
-            local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
-            if not value then
-               token.kind = "$ERR$"
-               table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
-            elseif integer_suffix then
-               token.kind = "integer"
-            end
+      for _, token in ipairs(numeric_tokens) do
+         local text = token.tk:gsub("_", ""):lower()
+         local integer_suffix = text:sub(-2) == "ll"
+         if text:sub(-3) == "ull" then text = text:sub(1, -4)
+         elseif integer_suffix then text = text:sub(1, -3)
+         elseif text:sub(-1) == "i" then text = text:sub(1, -2) end
+         local value = text:match("^0b[01]+$") and tonumber(text:sub(3), 2) or tonumber(text)
+         if not value then
+            token.kind = "$ERR$"
+            table.insert(errs, { filename = filename, y = token.y, x = token.x, msg = "malformed number" })
+         elseif integer_suffix then
+            token.kind = "integer"
          end
       end
       table.insert(tokens, { x = x + 1, y = y, tk = "$EOF$", kind = "$EOF$", comments = comments })
@@ -18749,7 +18809,7 @@ T2[K[16]]={}
 T2[K37]={[K[17]]={},["__is"]={},}
 T2["meta_field_locations"]={[K[17]]={f=K3,x=15,y=319,},["__is"]={f=K3,x=10,y=248,},}
 T2["meta_field_order"]={[1]=K[17],[2]="__is",}
-T2["meta_fields"]={[K[17]]={args={f=K3,[K4]={[1]={f=K3,[K20]=T1,[K19]={[1]="FILE",},[K2]=1279,[K1]=K18,x=33,y=319,},},[K2]=1278,[K1]=K4,x=1,y=320,},f=K3,[K8]=true,[K10]=false,[K7]=1,rets={f=K3,[K4]={},[K2]=1280,[K1]=K4,x=37,y=319,},[K2]=1277,[K1]=K9,x=24,y=319,},["__is"]={args={f=K3,[K4]={[1]={["display_type"]=T2,f=K3,[K2]=1285,[K1]="self",x=10,y=248,},},[K2]=1286,[K1]=K4,x=10,y=248,},f=K3,[K8]=true,["macroexp"]={args={[1]={["argtype"]={["display_type"]=T2,f=K3,[K2]=1281,[K1]="self",x=10,y=248,},f=K3,kind="argument",tk="self",x=10,xend=11,y=248,yend=248,},f=K3,kind="argument_list",tk="io",x=10,xend=11,y=248,yend=248,},exp={e1={e1={f=K3,kind="variable",tk="io",x=10,xend=11,y=248,yend=248,},e2={f=K3,kind=K25,tk="type",x=13,xend=16,y=248,yend=248,},f=K3,kind="op",op={["arity"]=2,op=".",prec=100,x=12,y=248,},["receiver"]={f=K3,[K20]=T8,[K19]={[1]="io",},[K48]=T8,[K2]=2627,[K1]=K18,x=10,y=248,},x=12,y=248,},e2={[1]=T11,f=K3,kind="expression_list",tk="(",x=17,xend=22,y=248,yend=248,},f=K3,kind="op",op={["arity"]=2,op="@funcall",prec=100,x=17,y=248,},x=17,y=248,},f=K3,[K8]=true,kind="macroexp",[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1282,[K1]=K29,x=10,y=248,},},[K2]=1283,[K1]=K4,x=10,y=248,},tk="io",x=10,xend=22,y=248,yend=248,},[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1287,[K1]=K29,x=10,y=248,},},[K2]=1288,[K1]=K4,x=10,y=248,},[K2]=1284,[K1]=K9,x=10,y=248,},}
+T2["meta_fields"]={[K[17]]={args={f=K3,[K4]={[1]={f=K3,[K20]=T1,[K19]={[1]="FILE",},[K2]=1279,[K1]=K18,x=33,y=319,},},[K2]=1278,[K1]=K4,x=1,y=320,},f=K3,[K8]=true,[K10]=false,[K7]=1,rets={f=K3,[K4]={},[K2]=1280,[K1]=K4,x=37,y=319,},[K2]=1277,[K1]=K9,x=24,y=319,},["__is"]={args={f=K3,[K4]={[1]={["display_type"]=T2,f=K3,[K2]=1285,[K1]="self",x=10,y=248,},},[K2]=1286,[K1]=K4,x=10,y=248,},f=K3,[K8]=true,["macroexp"]={args={[1]={["argtype"]={["display_type"]=T2,f=K3,[K2]=1281,[K1]="self",x=10,y=248,},f=K3,kind="argument",tk="self",x=10,xend=11,y=248,yend=248,},f=K3,kind="argument_list",tk="io",x=10,xend=11,y=248,yend=248,},exp={e1={e1={f=K3,kind="variable",tk="io",x=10,xend=11,y=248,yend=248,},e2={f=K3,kind=K25,tk="type",x=13,xend=16,y=248,yend=248,},f=K3,kind="op",op={["arity"]=2,op=".",prec=100,x=12,y=248,},["receiver"]={f=K3,[K20]=T8,[K19]={[1]="io",},[K48]=T8,[K2]=2627,[K1]=K18,x=10,y=248,},["safe_navigation"]=false,x=12,y=248,},e2={[1]=T11,f=K3,kind="expression_list",tk="(",x=17,xend=22,y=248,yend=248,},f=K3,kind="op",op={["arity"]=2,op="@funcall",prec=100,x=17,y=248,},["safe_navigation"]=false,x=17,y=248,},f=K3,[K8]=true,kind="macroexp",[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1282,[K1]=K29,x=10,y=248,},},[K2]=1283,[K1]=K4,x=10,y=248,},tk="io",x=10,xend=22,y=248,yend=248,},[K7]=1,rets={f=K3,[K4]={[1]={f=K3,[K2]=1287,[K1]=K29,x=10,y=248,},},[K2]=1288,[K1]=K4,x=10,y=248,},[K2]=1284,[K1]=K9,x=10,y=248,},}
 T3.def={[K32]=K[2],[K47]={cur=true,["end"]=true,set=true,},f=K3,[K2]=1098,[K1]="enum",[K44]={},x=4,y=250,}
 T4.def={[K32]=K[3],[K47]={full=true,line=true,no=true,},f=K3,[K2]=1102,[K1]="enum",[K44]={},x=4,y=254,}
 T5.def={[K32]=K[13],[K47]={["*n"]=true,n=true,},f=K3,[K2]=568,[K1]="enum",[K44]={},x=1,y=19,}
@@ -18785,6 +18845,9 @@ end
 -- module teal.reader from teal/reader.lua
 package.preload["teal.reader"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local io = _tl_compat and _tl_compat.io or io; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local math = _tl_compat and _tl_compat.math or math; local os = _tl_compat and _tl_compat.os or os; local package = _tl_compat and _tl_compat.package or package; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
+
 local errors = require("teal.errors")
 
 
@@ -18945,6 +19008,12 @@ local function path_block_to_string(node)
    end
    return nil
 end
+
+
+
+
+
+
 
 
 
@@ -19343,6 +19412,8 @@ local function operator_macro_call_at(ps, i)
 end
 
 local function register_operator(ps, spec, where)
+   ps.custom_operators = ps.custom_operators or { prefix = {}, infix = {}, postfix = {} }
+   ps.local_operators = ps.local_operators or {}
    local registry = ps.custom_operators[spec.fixity]
    local previous = registry[spec.symbol]
    if previous and previous.binding == spec.binding then return end
@@ -19488,6 +19559,7 @@ local function operator_invocation(ps, token, spec, lhs, rhs)
    if forbidden_macro_invocation(ps, token.y, token.x) then
       return { kind = "error_block", f = ps.filename, y = token.y, x = token.x, tk = token.tk }
    end
+   ps.features.needs_macro_pass = true
    local target = { kind = "identifier", tk = spec.binding, f = ps.filename, y = token.y, x = token.x }
    local args = { kind = "expression_list", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x, lhs, rhs }
    return { kind = "macro_invocation", tk = spec.symbol, f = ps.filename, y = token.y, x = token.x,
@@ -19549,13 +19621,14 @@ local function collect_macro_owner_paths(node)
 end
 
 local function validate_attached_macro_owners(node, errs, filename)
-   local owners = collect_macro_owner_paths(node)
+   local owners
    for _, child in ipairs(node) do
       if child and
          child.kind == "local_macro" and
          child[BLOCK_INDEXES.LOCAL_MACRO.OWNER] and
          not child[BLOCK_INDEXES.LOCAL_MACRO.IMPORT_ALIAS] then
 
+         owners = owners or collect_macro_owner_paths(node)
          local owner_key = path_block_to_string(child[BLOCK_INDEXES.LOCAL_MACRO.OWNER])
          if owner_key and not owners[owner_key] then
             local owner = child[BLOCK_INDEXES.LOCAL_MACRO.OWNER]
@@ -19582,6 +19655,7 @@ local function skip(ps, i, skip_fn)
       in_local_macro = ps.in_local_macro,
       in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
+      features = ps.features,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
@@ -19887,6 +19961,7 @@ local function read_table_item(ps, i, n)
             in_local_macro = ps.in_local_macro,
             in_macro_quote = ps.in_macro_quote,
             custom_operators = ps.custom_operators,
+            features = ps.features,
             local_operators = ps.local_operators,
             macro_sigs = ps.macro_sigs,
             require_aliases = ps.require_aliases,
@@ -20167,6 +20242,7 @@ local function read_trying_list(ps, i, list, read_item, ret_lookahead)
       in_local_macro = ps.in_local_macro,
       in_macro_quote = ps.in_macro_quote,
       custom_operators = ps.custom_operators,
+      features = ps.features,
       local_operators = ps.local_operators,
       macro_sigs = ps.macro_sigs,
       require_aliases = ps.require_aliases,
@@ -20788,12 +20864,16 @@ do
    end
 
    local function P(ps, i)
-      if ps.tokens[i].kind == "$EOF$" then
+      local t1 = ps.tokens[i]
+      if t1.kind == "$EOF$" then
          return i
       end
       local e1
-      local t1 = ps.tokens[i]
-      local prefix, prefix_width = find_operator(ps, i, "prefix")
+      local prefix
+      local prefix_width
+      if ps.custom_operators then
+         prefix, prefix_width = find_operator(ps, i, "prefix")
+      end
       if prefix then
          i = i + prefix_width
          local previous_errors = #ps.errs
@@ -20827,7 +20907,7 @@ do
          end
          local macro_var = { f = ps.filename, y = dtk.y, x = dtk.x, kind = "macro_var", [1] = ident, tk = "$" }
          e1 = macro_var
-      elseif operator_macro_call_at(ps, i) then
+      elseif t1.tk == "(" and operator_macro_call_at(ps, i) then
          i, e1 = read_macro_name(ps, i)
       elseif ps.tokens[i].tk == "(" then
          i = i + 1
@@ -20851,13 +20931,15 @@ do
       end
 
       while true do
-         local infix = find_operator(ps, i, "infix")
-         local postfix, postfix_width = find_operator(ps, i, "postfix")
-         if postfix and postfix.precedence >= 100 and not infix then
-            e1 = operator_invocation(ps, ps.tokens[i], postfix, e1)
-            i = i + postfix_width
-         else
-            if infix or postfix then break end
+         if ps.custom_operators then
+            local infix = find_operator(ps, i, "infix")
+            local postfix, postfix_width = find_operator(ps, i, "postfix")
+            if postfix and postfix.precedence >= 100 and not infix then
+               e1 = operator_invocation(ps, ps.tokens[i], postfix, e1)
+               i = i + postfix_width
+            elseif infix or postfix then
+               break
+            end
          end
          local navigation
          local tkop = ps.tokens[i]
@@ -20990,6 +21072,7 @@ do
             if forbidden_macro_invocation(ps, e1.y, e1.x) then
                return i, { kind = "error_block", f = ps.filename, y = e1.y, x = e1.x, tk = tkop.tk }
             end
+            ps.features.needs_macro_pass = true
             local inv = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
             local signature = mname and ps.macro_sigs[mname]
             if signature and signature.operator then
@@ -21098,11 +21181,13 @@ do
    end
 
    local function next_operator(ps, i)
-      local postfix, postfix_width = find_operator(ps, i, "postfix")
-      local infix, infix_width = find_operator(ps, i, "infix")
-      local spec = postfix or infix
-      if infix and postfix and #infix.symbol > #postfix.symbol then spec = infix end
-      if spec then return spec.precedence, spec.right_associative, spec, spec == postfix and postfix_width or infix_width, spec.fixity end
+      if ps.custom_operators then
+         local postfix, postfix_width = find_operator(ps, i, "postfix")
+         local infix, infix_width = find_operator(ps, i, "infix")
+         local spec = postfix or infix
+         if infix and postfix and #infix.symbol > #postfix.symbol then spec = infix end
+         if spec then return spec.precedence, spec.right_associative, spec, spec == postfix and postfix_width or infix_width, spec.fixity end
+      end
       local tk = ps.tokens[i].tk
       if ps.ternary_middle and tk == ":" then return nil end
       return precedences[2][tk], is_right_assoc[tk], nil, 1, "infix"
@@ -21991,6 +22076,9 @@ do
    local function read_variable(ps, i)
       local node
       i, node = read_expression(ps, i)
+      if node and node.kind ~= "identifier" and node.kind ~= "op_index" and node.kind ~= "op_dot" then
+         ps.features.needs_macro_pass = true
+      end
       return i, node
    end
 
@@ -22011,6 +22099,9 @@ do
 
       if not macro_target and exp.kind ~= "identifier" and exp.kind ~= "op_index" and exp.kind ~= "op_dot" and exp.kind ~= "macro_var" then
          return fail(ps, i, "syntax error")
+      end
+      if exp.kind == "macro_var" then
+         ps.features.needs_macro_pass = true
       end
 
       local asgn = new_block(ps, istart, "assignment")
@@ -22297,6 +22388,7 @@ local function read_macro_alias_target(ps, i, node)
 end
 
 local function read_local_macro(ps, i)
+   ps.features.needs_macro_pass = true
    local istart = i
    i = verify_tk(ps, i, "local")
    i = verify_tk(ps, i, "macro")
@@ -22315,6 +22407,7 @@ local function read_local_macro(ps, i)
 end
 
 local function read_attached_macro(ps, i)
+   ps.features.needs_macro_pass = true
    local istart = i
    i = verify_tk(ps, i, "macro")
 
@@ -22567,6 +22660,7 @@ read_statement_fns = {
    ["continue"] = function(ps, i)
       local next_tk = ps.tokens[i + 1]
       if next_tk.tk == ";" or next_tk.kind == "$EOF$" or stop_statement_list[next_tk.tk] then
+         ps.features.has_continue = true
          return i + 1, new_block(ps, i, "continue")
       end
       return read_call_or_assignment(ps, i)
@@ -22597,14 +22691,16 @@ read_statements = function(ps, i, toplevel)
    local outer_operators = ps.custom_operators
    local outer_macro_sigs = ps.macro_sigs
    ps.macro_sigs = {}
-   for key, signature in pairs(outer_macro_sigs) do ps.macro_sigs[key] = signature end
+   for key, signature in next, outer_macro_sigs do ps.macro_sigs[key] = signature end
    local outer_local_operators = ps.local_operators
-   ps.local_operators = {}
-   local operators = { prefix = {}, infix = {}, postfix = {} }
-   for fixity, bindings in pairs(outer_operators) do
-      for symbol, spec in pairs(bindings) do operators[fixity][symbol] = spec end
+   ps.local_operators = nil
+   if outer_operators then
+      local operators = { prefix = {}, infix = {}, postfix = {} }
+      for fixity, bindings in next, outer_operators do
+         for symbol, spec in next, bindings do operators[fixity][symbol] = spec end
+      end
+      ps.custom_operators = operators
    end
-   ps.custom_operators = operators
    local node = new_block(ps, i, "statements")
    local item
    while true do
@@ -22693,8 +22789,8 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       allow_macro_vars = allow_macro_vars or false,
       in_local_macro = false,
       in_macro_quote = in_macro_quote or false,
-      custom_operators = operator_context or { prefix = {}, infix = {}, postfix = {} },
-      local_operators = {},
+      features = {},
+      custom_operators = operator_context,
       macro_sigs = {},
       require_aliases = {},
       imported_macro_decls = {},
@@ -22720,6 +22816,13 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
    local _, node = read_statements(ps, i, true)
    if hashbang then
       table.insert(node, 1, new_block(ps, 1, "hashbang"))
+   end
+
+
+   if not ps.features.needs_macro_pass and not ps.features.has_continue then
+      errors.clear_redundant_errors(errs)
+      read_program_depth = read_program_depth - 1
+      return node
    end
    resolve_macro_aliases(ps)
 
@@ -22773,12 +22876,12 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
       end
    end
 
-   check_macro_arity(node)
+   if ps.features.needs_macro_pass then check_macro_arity(node) end
 
    local lang = read_lang or "tl"
 
 
-   if not skip_macro_expand and #errs == 0 then
+   if ps.features.needs_macro_pass and not skip_macro_expand and #errs == 0 then
       local function parse_expression(source)
          local program, parse_errors = reader.read("return " .. source, filename, lang, false, true)
          if #parse_errors > 0 then error("invalid expression: " .. parse_errors[1].msg, 0) end
@@ -22790,7 +22893,7 @@ function reader.read_program(tokens, errs, filename, read_lang, allow_macro_vars
          return expressions[1]
       end
       node = macro_eval.compile_all_and_expand(node, filename, lang, errs, parse_expression)
-   elseif not skip_macro_expand then
+   elseif ps.features.needs_macro_pass and not skip_macro_expand then
 
 
 
@@ -22877,6 +22980,7 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local types = require("teal.types")
@@ -23095,6 +23199,9 @@ local type_walkers = {
 }
 
 recurse_type = function(s, ast, visit)
+   if not TL_DEBUG and not visit.cbs and not visit.after then
+      return nil
+   end
    local kind = ast.typename
 
    if TL_DEBUG then
@@ -23385,13 +23492,13 @@ function traversal.traverse_nodes(s, root,
       error("missing cbs in visit_node")
    end
    local visit_after = visit_node.after
+   local cbs = visit_node.cbs
 
    recurse = function(ast)
       local xs = {}
       local kind = assert(ast.kind)
       local kprint
 
-      local cbs = visit_node.cbs
       local cbkind = cbs and cbs[kind]
       if cbkind then
          if cbkind.before then
@@ -24457,6 +24564,7 @@ end
 package.preload["teal.types"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 local tldebug = require("teal.debug")
+tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 
@@ -25387,24 +25495,26 @@ function types.error(msg, t1, t2, t3)
 end
 
 types.map = function(self, ty, fns)
+   if no_nested_types[ty.typename] or (ty.typename == "nominal" and not ty.typevals) then
+      return ty
+   end
    local errs
    local seen = {}
    local resolve
 
    resolve = function(t, all_same)
-      local same = true
 
-
-      if no_nested_types[t.typename] or (t.typename == "nominal" and not t.typevals) then
+      local typename = t.typename
+      if no_nested_types[typename] or (t.typename == "nominal" and not t.typevals) then
          return t, all_same
       end
 
-      if seen[t] then
-         return seen[t], all_same
+      local cached = seen[t]
+      if cached then
+         return cached, all_same
       end
 
-      local orig_t = t
-      local fn = fns[t.typename]
+      local fn = fns[typename]
       if fn then
          local rt, is_resolved = fn(self, t, resolve)
          if rt ~= t then
@@ -25416,152 +25526,147 @@ types.map = function(self, ty, fns)
          end
       end
 
-      local copy = {}
-      seen[orig_t] = copy
-
-      setmetatable(copy, type_mt)
-      copy.typename = t.typename
-      copy.f = t.f
-      copy.x = t.x
-      copy.y = t.y
+      local copy = setmetatable({ typename = t.typename, f = t.f, x = t.x, y = t.y }, type_mt)
+      seen[t] = copy
+      local same = true
 
       if t.typename == "generic" then
-         assert(copy.typename == "generic")
+         local mapped = copy
 
          local ct = {}
          for i, tf in ipairs(t.typeargs) do
             ct[i], same = resolve(tf, same)
          end
-         copy.typeargs = ct
-         copy.t, same = resolve(t.t, same)
+         mapped.typeargs = ct
+         mapped.t, same = resolve(t.t, same)
       elseif t.typename == "array" then
-         assert(copy.typename == "array")
+         local mapped = copy
 
-         copy.elements, same = resolve(t.elements, same)
+         mapped.elements, same = resolve(t.elements, same)
 
       elseif t.typename == "typearg" then
-         assert(copy.typename == "typearg")
-         copy.typearg = t.typearg
+         local mapped = copy
+         mapped.typearg = t.typearg
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t.typename == "unresolvable_typearg" then
-         assert(copy.typename == "unresolvable_typearg")
-         copy.typearg = t.typearg
+         local mapped = copy
+         mapped.typearg = t.typearg
       elseif t.typename == "unresolved_emptytable_value" then
-         assert(copy.typename == "unresolved_emptytable_value")
-         copy.emptytable_type = t.emptytable_type
+         local mapped = copy
+         mapped.emptytable_type = t.emptytable_type
       elseif t.typename == "typevar" then
-         assert(copy.typename == "typevar")
-         copy.typevar = t.typevar
+         local mapped = copy
+         mapped.typevar = t.typevar
          if t.constraint then
-            copy.constraint, same = resolve(t.constraint, same)
+            mapped.constraint, same = resolve(t.constraint, same)
          end
       elseif t.typename == "typedecl" then
-         assert(copy.typename == "typedecl")
-         copy.def, same = resolve(t.def, same)
-         copy.is_alias = t.is_alias
-         copy.is_nested_alias = t.is_nested_alias
+         local mapped = copy
+         mapped.def, same = resolve(t.def, same)
+         mapped.is_alias = t.is_alias
+         mapped.is_nested_alias = t.is_nested_alias
       elseif t.typename == "nominal" then
-         assert(copy.typename == "nominal")
-         copy.names = t.names
-         copy.typevals = {}
+         local mapped = copy
+         mapped.names = t.names
+         mapped.typevals = {}
          for i, tf in ipairs(t.typevals) do
-            copy.typevals[i], same = resolve(tf, same)
+            mapped.typevals[i], same = resolve(tf, same)
          end
-         copy.found = t.found
+         mapped.found = t.found
       elseif t.typename == "function" then
-         assert(copy.typename == "function")
-         copy.macroexp = t.macroexp
-         copy.min_arity = t.min_arity
-         copy.is_method = t.is_method
-         copy.is_record_function = t.is_record_function
-         copy.args, same = resolve(t.args, same)
-         copy.rets, same = resolve(t.rets, same)
-         copy.special_function_handler = t.special_function_handler
-         copy.ffi_fixed_params = t.ffi_fixed_params
+         local mapped = copy
+         mapped.macroexp = t.macroexp
+         mapped.min_arity = t.min_arity
+         mapped.is_method = t.is_method
+         mapped.is_record_function = t.is_record_function
+         mapped.args, same = resolve(t.args, same)
+         mapped.rets, same = resolve(t.rets, same)
+         mapped.special_function_handler = t.special_function_handler
+         mapped.ffi_fixed_params = t.ffi_fixed_params
       elseif t.fields then
-         assert(copy.typename == "record" or copy.typename == "interface")
-         copy.declname = t.declname
+         local mapped = copy
+         mapped.declname = t.declname
 
 
          if t.elements then
-            copy.elements, same = resolve(t.elements, same)
+            mapped.elements, same = resolve(t.elements, same)
          end
 
 
          if t.types then
-            copy.types = {}
+            mapped.types = {}
             for i, v in ipairs(t.types) do
-               copy.types[i], same = resolve(v, same)
+               mapped.types[i], same = resolve(v, same)
             end
          end
 
          if t.interface_list then
-            copy.interface_list = {}
+            mapped.interface_list = {}
             for i, v in ipairs(t.interface_list) do
-               copy.interface_list[i], same = resolve(v, same)
+               mapped.interface_list[i], same = resolve(v, same)
             end
          end
 
-         copy.is_userdata = t.is_userdata
-         copy.native_pointer = t.native_pointer
+         mapped.is_userdata = t.is_userdata
+         mapped.native_pointer = t.native_pointer
 
-         copy.fields = {}
-         copy.field_order = {}
+         mapped.fields = {}
+         mapped.field_order = {}
          for i, k in ipairs(t.field_order) do
-            copy.field_order[i] = k
-            copy.fields[k], same = resolve(t.fields[k], same)
+            mapped.field_order[i] = k
+            mapped.fields[k], same = resolve(t.fields[k], same)
          end
 
          if t.meta_fields then
-            copy.meta_fields = {}
-            copy.meta_field_order = {}
+            mapped.meta_fields = {}
+            mapped.meta_field_order = {}
             for i, k in ipairs(t.meta_field_order) do
-               copy.meta_field_order[i] = k
-               copy.meta_fields[k], same = resolve(t.meta_fields[k], same)
+               mapped.meta_field_order[i] = k
+               mapped.meta_fields[k], same = resolve(t.meta_fields[k], same)
             end
          end
       elseif t.typename == "map" then
-         assert(copy.typename == "map")
-         copy.keys, same = resolve(t.keys, same)
-         copy.values, same = resolve(t.values, same)
+         local mapped = copy
+         mapped.keys, same = resolve(t.keys, same)
+         mapped.values, same = resolve(t.values, same)
       elseif t.typename == "union" then
-         assert(copy.typename == "union")
-         copy.types = {}
+         local mapped = copy
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
 
-         local _, err = types.is_valid_union(copy)
+         local _, err = types.is_valid_union(mapped)
          if err then
             errs = errs or {}
-            table.insert(errs, types.error(err, copy))
+            table.insert(errs, types.error(err, mapped))
          end
       elseif t.typename == "poly" then
-         assert(copy.typename == "poly")
-         copy.types = {}
+         local mapped = copy
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t.typename == "tupletable" then
-         assert(copy.typename == "tupletable")
-         copy.inferred_at = t.inferred_at
-         copy.types = {}
+         local mapped = copy
+         mapped.inferred_at = t.inferred_at
+         mapped.types = {}
          for i, tf in ipairs(t.types) do
-            copy.types[i], same = resolve(tf, same)
+            mapped.types[i], same = resolve(tf, same)
          end
       elseif t.typename == "tuple" then
-         assert(copy.typename == "tuple")
-         copy.is_va = t.is_va
-         copy.tuple = {}
+         local mapped = copy
+         mapped.is_va = t.is_va
+         mapped.tuple = {}
          for i, tf in ipairs(t.tuple) do
-            copy.tuple[i], same = resolve(tf, same)
+            mapped.tuple[i], same = resolve(tf, same)
          end
       elseif t.typename == "self" then
-         assert(copy.typename == "self")
+         local mapped = copy
          if t.display_type ~= nil then
-            copy.display_type, same = resolve(t.display_type, same)
+            mapped.display_type, same = resolve(t.display_type, same)
          end
       end
 
@@ -25751,6 +25856,10 @@ function types.drop_constant_value(t)
 end
 
 function types.drop_constant_values(t, keep_typedecls)
+   if no_nested_types[t.typename] or (t.typename == "nominal" and not t.typevals) then
+      return types.drop_constant_value(t)
+   end
+
    local function has_constant(typ, seen, in_typedecl)
       if seen[typ] then
          return false

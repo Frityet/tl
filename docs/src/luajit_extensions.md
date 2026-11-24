@@ -16,11 +16,9 @@ return {
 }
 ```
 
-The API equivalent is `gen_target = "luajit"` in compiler/environment options
-and `tl.generate(ast, "luajit")`. Compilation does not require running the
-compiler itself under LuaJIT. Executing the generated code requires LuaJIT
-2.1 with the syntax backport and its fixes. LuaJIT `2.1.1793383622` was used
-for runtime validation, including the complete optional-chain behavior.
+Set `gen_target = "luajit"` in the compiler or environment options. You can
+also call `tl.generate(ast, "luajit")`. To execute the output, use LuaJIT 2.1
+with the syntax backport. Runtime tests used LuaJIT `2.1.1793383622`.
 
 ## Syntax and lowering
 
