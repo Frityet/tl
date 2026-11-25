@@ -62,6 +62,21 @@ describe('LuaJIT 3.0 syntax backported to 2.1', function()
       assert.same({2, 3, 4}, {run('return false ? 1 : true ? 2 : 3, false || true ? 3 : 4, false ? 1 : false ? 2 : 4')})
    end)
 
+   runtime_it('distinguishes nullable casts from ternaries after types', function()
+      assert.same({2, 1, 2, 'abc', 'abc', 'abc'}, {run([[
+         local function select_values(value: string | number): integer, integer, integer, string?, string?, string | number | nil
+            local a = value is number?1:2
+            local b = value is string ? (1) : 2
+            local c = value as (boolean) ? 2 : 1
+            local d = value as string?
+            local e = value as (string)?
+            local f = value as string? | number?
+            return a, b, c, d, e, f
+         end
+         return select_values('abc')
+      ]])})
+   end)
+
    runtime_it('allows parenthesized method calls in the middle ternary branch', function()
       assert.equals('bc', run('return true ? (("abcd"):sub(2, 3)) : "no"'))
    end)

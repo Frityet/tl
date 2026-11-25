@@ -9,6 +9,7 @@ local lexer = require("teal.lexer")
 
 
 
+local shallow_copy_table = require("teal.util").shallow_copy_table
 
 local block = require("teal.block")
 
@@ -1657,33 +1658,94 @@ local function read_base_type(ps, i)
    return fail(ps, i, "expected a type")
 end
 
-read_type = function(ps, i)
-   local bt
-   local istart = i
+local function read_type_atom(ps, i)
+   local atom
    if ps.tokens[i].tk == "(" then
-      i, bt = read_type(ps, i + 1)
+      i, atom = read_type(ps, i + 1)
       i = verify_tk(ps, i, ")")
    else
-      i, bt = read_base_type(ps, i)
+      i, atom = read_base_type(ps, i)
    end
-   if not bt then
-      return i
+   return i, atom
+end
+
+local function is_type_pipe(ps, i)
+
+   return ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":"
+end
+
+local function is_nullable_suffix(ps, i, in_expression)
+   if ps.tokens[i].tk ~= "?" then return false end
+   if not in_expression then return true end
+
+
+   local following = ps.tokens[i + 1]
+   if following.tk == ")" or following.tk == "]" or following.tk == "}" or following.tk == "," or
+      following.tk == ";" or following.tk == ":" or following.kind == "$EOF$" then       return true end
+   if following.kind == "keyword" and following.tk ~= "false" and following.tk ~= "true" and
+      following.tk ~= "nil" and following.tk ~= "not" and following.tk ~= "function" then       return true end
+   local probe = shallow_copy_table(ps)
+   probe.errs = {}
+   probe.ternary_middle = true
+   probe.tokens = shallow_copy_table(ps.tokens)
+   for j = i + 1, #ps.tokens do
+      local token = ps.tokens[j]
+
+      if token.tk == ">>" then probe.tokens[j] = shallow_copy_table(token) end
+   end
+   local colon, branch = read_expression(probe, i + 1)
+   return not (branch and #probe.errs == 0 and probe.tokens[colon].tk == ":")
+end
+
+local function read_union_type(ps, i, in_expression)
+   local start = i
+   local member
+   i, member = read_type_atom(ps, i)
+   if not member then return i end
+   local nullable = is_nullable_suffix(ps, i, in_expression)
+   if not nullable and not is_type_pipe(ps, i) then return i, member end
+
+   local union = new_type(ps, start, "union_type")
+   local has_nil = false
+   local implied_nil
+   local function add_member(typ)
+      if typ.kind == "nil" then
+         if has_nil then return end
+         has_nil = true
+      end
+      table.insert(union, typ)
    end
 
-   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" then
-      local u = new_type(ps, istart, "union_type")
-      u[1] = bt
-      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" do
-         i = i + 1
-         i, bt = read_base_type(ps, i)
-         if not bt then
-            return i
-         end
-         table.insert(u, bt)
+   while member do
+      if member.kind == "union_type" then
+         for _, part in ipairs(member) do add_member(part) end
+      else
+         add_member(member)
       end
-      bt = u
+      if nullable then
+         if not implied_nil then
+            implied_nil = new_type(ps, i, "nil")
+            implied_nil.tk = "nil"
+         end
+         i = i + 1
+      end
+      if not is_type_pipe(ps, i) then break end
+      i, member = read_type_atom(ps, i + 1)
+      if not member then return i end
+      nullable = is_nullable_suffix(ps, i, in_expression)
    end
-   return i, bt
+   if implied_nil then add_member(implied_nil) end
+   if #union == 1 then return i, union[1] end
+   end_at(union, ps.tokens[i - 1])
+   return i, union
+end
+
+read_type = function(ps, i)
+   return read_union_type(ps, i)
+end
+
+local function read_cast_type(ps, i)
+   return read_union_type(ps, i, true)
 end
 
 read_type_list = function(ps, i, mode)
@@ -1709,7 +1771,8 @@ read_type_list = function(ps, i, mode)
          if tk == ")" then
             depth = depth - 1
             if depth == 0 then
-               grouped_union = mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|"
+               grouped_union = (mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|") or
+               is_nullable_suffix(ps, j + 1, mode == "casttype")
                break
             end
          end
@@ -1721,7 +1784,8 @@ read_type_list = function(ps, i, mode)
    end
 
    local prev_i = i
-   i = read_trying_list(ps, i, list, read_type, mode == "rets")
+   local read_item = mode == "casttype" and not optional_paren and read_cast_type or read_type
+   i = read_trying_list(ps, i, list, read_item, mode == "rets")
    if i == prev_i and ps.tokens[i].tk ~= ")" then
       fail(ps, i - 1, "expected a type list")
    end
@@ -2368,7 +2432,7 @@ do
             if ps.tokens[i].tk == "(" then
                i, cast = read_type_list(ps, i, "casttype")
             else
-               i, cast = read_type(ps, i)
+               i, cast = read_cast_type(ps, i)
             end
             if not cast then
                return i, failstore(ps, tkop, e1)
@@ -2650,11 +2714,9 @@ local function read_argument_type(ps, i)
 
    if ps.tokens[i].kind == "identifier" then
       argument_name = ps.tokens[i].tk
-      if ps.tokens[i + 1].tk == "?" then
+      if ps.tokens[i + 1].tk == "?" and ps.tokens[i + 2].tk == ":" then
          opt = i + 1
-         if ps.tokens[i + 2].tk == ":" then
-            i = i + 3
-         end
+         i = i + 3
       elseif ps.tokens[i + 1].tk == ":" then
          i = i + 2
       end

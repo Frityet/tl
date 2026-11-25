@@ -1700,6 +1700,7 @@ visit_node.cbs = {
             self:add_self_type(node, decltype)
             decltype = self:resolve_self(decltype, true)
             self:end_implied_scope()
+            if self.collector then self:report_table_context(node, decltype) end
          end
 
          local force_array: Type | nil = nil

@@ -4160,6 +4160,28 @@ function Context:same_call_mt_in_all_union_entries(u)
    end)
 end
 
+
+function Context:report_table_context(node, expected)
+   if not expected then return false end
+   local typ = self:to_structural(expected)
+   if typ.typename == "union" then
+      local found = false
+      for _, member in ipairs(typ.types) do
+         if self:report_table_context(node, member) then found = true end
+      end
+      return found
+   end
+   if not typ.fields then return false end
+   self.collector.store_table_context(node, typ)
+   for _, item in ipairs(node) do
+      if item.value.kind == "literal_table" then
+         local name = item.key.conststr
+         if name then self:report_table_context(item.value, typ.fields[name]) end
+      end
+   end
+   return true
+end
+
 function Context:resolve_for_call(func, args, is_method)
 
    if self.feat_lax and is_unknown(func) then
@@ -4509,6 +4531,22 @@ do
 
       if self.collector then
          self.collector.store_type(e1.y, e1.x, f)
+         for i, argument in ipairs(e2) do
+            if argument.kind == "literal_table" then
+               local function report(signature)
+                  local params = signature.args
+                  local param = params.tuple[i - argdelta] or (params.is_va and params.tuple[#params.tuple])
+                  return self:report_table_context(argument, param)
+               end
+
+
+               if not (f and report(f)) and func.typename == "poly" then
+                  for _, signature in ipairs(func.types) do
+                     if signature.typename == "function" then report(signature) end
+                  end
+               end
+            end
+         end
       end
 
       if f and f.macroexp then
@@ -4555,7 +4593,19 @@ function Context:resolve_self(t, resolve_interface)
 end
 
 do
-   local function add_interface_fields(self, fields, field_order, resolved, named, list)
+   local function add_interface_fields(self, target, resolved, named, list)
+      local fields
+      local field_order
+      local locations, inherited_locations
+      if list == "meta" then
+         target.meta_field_locations = target.meta_field_locations or {}
+         fields, field_order, locations = target.meta_fields, target.meta_field_order, target.meta_field_locations
+         inherited_locations = resolved.meta_field_locations
+      else
+         target.field_locations = target.field_locations or {}
+         fields, field_order, locations = target.fields, target.field_order, target.field_locations
+         inherited_locations = resolved.field_locations
+      end
       for fname, ftype in fields_of(resolved, list) do
          if fields[fname] then
             if not self:is_a(fields[fname], ftype) then
@@ -4566,6 +4616,7 @@ do
             if not (ftype.typename == "typedecl") then
                table.insert(field_order, fname)
                fields[fname] = self:resolve_self(ftype)
+               if inherited_locations then locations[fname] = inherited_locations[fname] end
             end
          end
       end
@@ -4615,11 +4666,11 @@ do
          if iface.typename == "nominal" then
             local ri = self:resolve_nominal(iface)
             assert(ri.typename == "interface")
-            add_interface_fields(self, t.fields, t.field_order, ri, iface)
+            add_interface_fields(self, t, ri, iface)
             if ri.meta_fields then
                t.meta_fields = t.meta_fields or {}
                t.meta_field_order = t.meta_field_order or {}
-               add_interface_fields(self, t.meta_fields, t.meta_field_order, ri, iface, "meta")
+               add_interface_fields(self, t, ri, iface, "meta")
             end
          elseif iface.typename == "array" then
             has_array_interface = true
@@ -9388,6 +9439,7 @@ visit_node.cbs = {
             self:add_self_type(node, decltype)
             decltype = self:resolve_self(decltype, true)
             self:end_implied_scope()
+            if self.collector then self:report_table_context(node, decltype) end
          end
 
          local force_array = nil
@@ -15911,6 +15963,7 @@ local lexer = require("teal.lexer")
 
 
 
+local shallow_copy_table = require("teal.util").shallow_copy_table
 
 local block = require("teal.block")
 
@@ -17559,33 +17612,94 @@ local function read_base_type(ps, i)
    return fail(ps, i, "expected a type")
 end
 
-read_type = function(ps, i)
-   local bt
-   local istart = i
+local function read_type_atom(ps, i)
+   local atom
    if ps.tokens[i].tk == "(" then
-      i, bt = read_type(ps, i + 1)
+      i, atom = read_type(ps, i + 1)
       i = verify_tk(ps, i, ")")
    else
-      i, bt = read_base_type(ps, i)
+      i, atom = read_base_type(ps, i)
    end
-   if not bt then
-      return i
+   return i, atom
+end
+
+local function is_type_pipe(ps, i)
+
+   return ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":"
+end
+
+local function is_nullable_suffix(ps, i, in_expression)
+   if ps.tokens[i].tk ~= "?" then return false end
+   if not in_expression then return true end
+
+
+   local following = ps.tokens[i + 1]
+   if following.tk == ")" or following.tk == "]" or following.tk == "}" or following.tk == "," or
+      following.tk == ";" or following.tk == ":" or following.kind == "$EOF$" then       return true end
+   if following.kind == "keyword" and following.tk ~= "false" and following.tk ~= "true" and
+      following.tk ~= "nil" and following.tk ~= "not" and following.tk ~= "function" then       return true end
+   local probe = shallow_copy_table(ps)
+   probe.errs = {}
+   probe.ternary_middle = true
+   probe.tokens = shallow_copy_table(ps.tokens)
+   for j = i + 1, #ps.tokens do
+      local token = ps.tokens[j]
+
+      if token.tk == ">>" then probe.tokens[j] = shallow_copy_table(token) end
+   end
+   local colon, branch = read_expression(probe, i + 1)
+   return not (branch and #probe.errs == 0 and probe.tokens[colon].tk == ":")
+end
+
+local function read_union_type(ps, i, in_expression)
+   local start = i
+   local member
+   i, member = read_type_atom(ps, i)
+   if not member then return i end
+   local nullable = is_nullable_suffix(ps, i, in_expression)
+   if not nullable and not is_type_pipe(ps, i) then return i, member end
+
+   local union = new_type(ps, start, "union_type")
+   local has_nil = false
+   local implied_nil
+   local function add_member(typ)
+      if typ.kind == "nil" then
+         if has_nil then return end
+         has_nil = true
+      end
+      table.insert(union, typ)
    end
 
-   if ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" then
-      local u = new_type(ps, istart, "union_type")
-      u[1] = bt
-      while ps.tokens[i].tk == "|" and ps.tokens[i + 1].tk ~= "->" and ps.tokens[i + 1].tk ~= ":" do
-         i = i + 1
-         i, bt = read_base_type(ps, i)
-         if not bt then
-            return i
-         end
-         table.insert(u, bt)
+   while member do
+      if member.kind == "union_type" then
+         for _, part in ipairs(member) do add_member(part) end
+      else
+         add_member(member)
       end
-      bt = u
+      if nullable then
+         if not implied_nil then
+            implied_nil = new_type(ps, i, "nil")
+            implied_nil.tk = "nil"
+         end
+         i = i + 1
+      end
+      if not is_type_pipe(ps, i) then break end
+      i, member = read_type_atom(ps, i + 1)
+      if not member then return i end
+      nullable = is_nullable_suffix(ps, i, in_expression)
    end
-   return i, bt
+   if implied_nil then add_member(implied_nil) end
+   if #union == 1 then return i, union[1] end
+   end_at(union, ps.tokens[i - 1])
+   return i, union
+end
+
+read_type = function(ps, i)
+   return read_union_type(ps, i)
+end
+
+local function read_cast_type(ps, i)
+   return read_union_type(ps, i, true)
 end
 
 read_type_list = function(ps, i, mode)
@@ -17611,7 +17725,8 @@ read_type_list = function(ps, i, mode)
          if tk == ")" then
             depth = depth - 1
             if depth == 0 then
-               grouped_union = mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|"
+               grouped_union = (mode ~= "rets" and ps.tokens[j + 1] and ps.tokens[j + 1].tk == "|") or
+               is_nullable_suffix(ps, j + 1, mode == "casttype")
                break
             end
          end
@@ -17623,7 +17738,8 @@ read_type_list = function(ps, i, mode)
    end
 
    local prev_i = i
-   i = read_trying_list(ps, i, list, read_type, mode == "rets")
+   local read_item = mode == "casttype" and not optional_paren and read_cast_type or read_type
+   i = read_trying_list(ps, i, list, read_item, mode == "rets")
    if i == prev_i and ps.tokens[i].tk ~= ")" then
       fail(ps, i - 1, "expected a type list")
    end
@@ -18270,7 +18386,7 @@ do
             if ps.tokens[i].tk == "(" then
                i, cast = read_type_list(ps, i, "casttype")
             else
-               i, cast = read_type(ps, i)
+               i, cast = read_cast_type(ps, i)
             end
             if not cast then
                return i, failstore(ps, tkop, e1)
@@ -18552,11 +18668,9 @@ local function read_argument_type(ps, i)
 
    if ps.tokens[i].kind == "identifier" then
       argument_name = ps.tokens[i].tk
-      if ps.tokens[i + 1].tk == "?" then
+      if ps.tokens[i + 1].tk == "?" and ps.tokens[i + 2].tk == ":" then
          opt = i + 1
-         if ps.tokens[i + 2].tk == ":" then
-            i = i + 3
-         end
+         i = i + 3
       elseif ps.tokens[i + 1].tk == ":" then
          i = i + 2
       end
@@ -21065,7 +21179,19 @@ local util = require("teal.util")
 local binary_search = util.binary_search
 local sorted_keys = util.sorted_keys
 
-local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TypeReport = {}, TypeReporter = {} }
+local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TableContext = {}, TablePosition = {}, TypeReport = {}, TypeReporter = {} }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -21252,6 +21378,7 @@ function type_reporter.new()
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         table_positions = {},
          types = {},
          symbols_by_file = {},
          globals = {},
@@ -21431,6 +21558,8 @@ function TypeReporter:get_collector(filename)
    self.tr.by_pos[filename] = ft
    local receivers = {}
    self.tr.member_receivers[filename] = receivers
+   local table_positions = {}
+   self.tr.table_positions[filename] = table_positions
    local expansions = {}
    self.tr.macro_expansions[filename] = expansions
 
@@ -21457,6 +21586,34 @@ function TypeReporter:get_collector(filename)
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_table_context = function(node, typ)
+      local row = table_positions[node.y] or {}
+      table_positions[node.y] = row
+      local position = row[node.x]
+      if not position then
+         local context = { fields = {}, used = {} }
+         position = { context = context }
+         row[node.x] = position
+         for _, item in ipairs(node) do
+            local key = item.key
+            if key.conststr then
+               context.used[key.conststr] = true
+               local key_row = table_positions[key.y] or {}
+               table_positions[key.y] = key_row
+               key_row[key.x] = { context = context, key = key.conststr }
+            end
+         end
+      end
+
+      local owner = self:get_typenum(typ)
+      local fields = position.context.fields
+      for name, field in pairs(typ.fields) do
+         if not fields[name] and not (field.typename == "typedecl") then
+            fields[name] = owner
+         end
+      end
    end
 
    collector.store_macro_expansion = function(y, x, expansion)
@@ -21605,6 +21762,18 @@ function TypeReporter:discard_unused_types()
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end
+         end
+      end
+   end
+   local seen_tables = {}
+   for _, lines in pairs(tr.table_positions) do
+      for _, row in pairs(lines) do
+         for _, position in pairs(row) do
+            local context = position.context
+            if not seen_tables[context] then
+               seen_tables[context] = true
+               for _, id in pairs(context.fields) do keep(id) end
+            end
          end
       end
    end

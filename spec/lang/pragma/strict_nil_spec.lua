@@ -52,4 +52,50 @@ describe("strict nil", function()
    ]], {
       { msg = "in record field: k: got integer | nil, expected integer" }
    }))
+
+   it("desugars nullable union members and adds nil once", util.check_types([[
+--#pragma strict_nil on
+local value: string? | number?
+   ]], {
+      { y = 2, x = 14, type = "string | number | nil" },
+   }))
+
+   it("accepts nullable types in aliases, groups, and generic arguments", util.check([[
+      --#pragma strict_nil on
+      local type Maybe = string? | number?
+      local function to_explicit(value: Maybe): string | number | nil
+         return value
+      end
+      local function from_explicit(value: string | number | nil): Maybe
+         return value
+      end
+      local grouped: (string | number)? = from_explicit(nil)
+      local right_grouped: string | (number | nil)? = grouped
+      local record Box<T>
+         value: T
+      end
+      local boxed: Box<number?> = { value = nil }
+      local exact_nil: nil? = nil
+      to_explicit(right_grouped)
+   ]]))
+
+   it("requires nullable function arguments when only the type has a question mark", util.check_type_error([[
+      --#pragma strict_nil on
+      local read: function(string?): string? = function(value: string?): string?
+         return value
+      end
+      read(nil)
+      read()
+   ]], {
+      { y = 6, msg = "wrong number of arguments" },
+   }))
+
+   it("supports independently optional and nullable function arguments", util.check([[
+      --#pragma strict_nil on
+      local read: function(? string?): (string)? = function(value?: string?): (string)?
+         return value
+      end
+      read()
+      read(nil)
+   ]]))
 end)

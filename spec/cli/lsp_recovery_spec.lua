@@ -79,6 +79,37 @@ print(inferred)
       end)
    end)
 
+   it('navigates to the resolved declarations of inherited interfaces', function()
+      local document = lsp.document(finally, table.concat({
+         'local interface Parent<T> end',
+         'local record Namespace',
+         '   interface Parent<T> end',
+         '   interface Child is Parent<string> end',
+         'end',
+         'local record Example is Parent<string>, Namespace.Parent<string> end',
+      }, '\n'))
+      local function definition(id, line, character)
+         return {jsonrpc = '2.0', id = id, method = 'textDocument/definition', params = {
+            textDocument = {uri = document.uri}, position = {line = line, character = character},
+         }}
+      end
+      local responses = lsp.exchange(finally, {
+         {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
+         {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
+         definition(2, 3, #'   interface Child is '),
+         definition(3, 5, #'local record Example is '),
+         definition(4, 5, #'local record Example is Parent<string>, Namespace.'),
+         {jsonrpc = '2.0', id = 5, method = 'shutdown', params = {}},
+         {jsonrpc = '2.0', method = 'exit', params = {}},
+      })
+      for id, expected in ipairs({{line = 2, character = 13}, {line = 0, character = 16}, {line = 2, character = 13}}) do
+         local location = responses[id + 1]
+         assert.equals(document.uri, location.uri)
+         assert.same(expected, location.range.start)
+         assert.same({line = expected.line, character = expected.character + #'Parent'}, location.range['end'])
+      end
+   end)
+
    it('keeps document highlights local without indexing unopened files', function()
       local dir = util.write_tmp_dir(finally, {
          ['tlconfig.lua'] = 'return { include_dir = {"types"} }',

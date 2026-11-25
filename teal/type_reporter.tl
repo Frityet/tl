@@ -41,6 +41,7 @@ local record type_reporter
 
       store_type: function(y: integer, x: integer, typ: Type)
       store_member_receiver: function(y: integer, x: integer, typ: Type)
+      store_table_context: function(node: Node, typ: RecordLikeType)
       store_macro_expansion: function(y: integer, x: integer, expansion: string)
       reserve_symbol_list_slot: function(Node)
       add_to_symbol_list: function(node: Node, name: string, t: Type)
@@ -78,11 +79,22 @@ local record type_reporter
       elements: integer -- ARRAY
    end
 
+   record TableContext
+      fields: {string: integer}
+      used: {string: boolean}
+   end
+
+   record TablePosition
+      context: TableContext
+      key: string
+   end
+
    record TypeReport
       type Symbol = {integer, integer, string, integer}
 
       by_pos: {string: {integer: {integer: integer}}}
       member_receivers: {string: {integer: {integer: integer}}}
+      table_positions: {string: {integer: {integer: TablePosition}}}
       types: {integer: TypeInfo}
       symbols: {Symbol}
       symbols_by_file: {string: {Symbol}}
@@ -211,6 +223,7 @@ function type_reporter.new(): TypeReporter
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         table_positions = {},
          types = {},
          symbols_by_file = {},
          globals = {},
@@ -390,6 +403,8 @@ function TypeReporter:get_collector(filename: string): TypeCollector
    self.tr.by_pos[filename] = ft
    local receivers: {integer:{integer:integer}} = {}
    self.tr.member_receivers[filename] = receivers
+   local table_positions: {integer:{integer:type_reporter.TablePosition}} = {}
+   self.tr.table_positions[filename] = table_positions
    local expansions: {integer:{integer:string}} = {}
    self.tr.macro_expansions[filename] = expansions
 
@@ -416,6 +431,34 @@ function TypeReporter:get_collector(filename: string): TypeCollector
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_table_context = function(node: Node, typ: RecordLikeType)
+      local row = table_positions[node.y] or {}
+      table_positions[node.y] = row
+      local position = row[node.x]
+      if not position then
+         local context: type_reporter.TableContext = { fields = {}, used = {} }
+         position = { context = context }
+         row[node.x] = position
+         for _, item in ipairs(node) do
+            local key = item.key
+            if key.conststr then
+               context.used[key.conststr] = true
+               local key_row = table_positions[key.y] or {}
+               table_positions[key.y] = key_row
+               key_row[key.x] = { context = context, key = key.conststr }
+            end
+         end
+      end
+
+      local owner = self:get_typenum(typ)
+      local fields = position.context.fields
+      for name, field in pairs(typ.fields) do
+         if not fields[name] and not field is TypeDeclType then
+            fields[name] = owner
+         end
+      end
    end
 
    collector.store_macro_expansion = function(y: integer, x: integer, expansion: string)
@@ -564,6 +607,18 @@ function TypeReporter:discard_unused_types()
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end
+         end
+      end
+   end
+   local seen_tables: {type_reporter.TableContext: boolean} = {}
+   for _, lines in pairs(tr.table_positions) do
+      for _, row in pairs(lines) do
+         for _, position in pairs(row) do
+            local context = position.context
+            if not seen_tables[context] then
+               seen_tables[context] = true
+               for _, id in pairs(context.fields) do keep(id) end
+            end
          end
       end
    end

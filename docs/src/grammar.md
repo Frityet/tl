@@ -94,7 +94,9 @@ precedence, see below.
 
    unop ::= ‘-’ | ‘not’ | ‘#’ | ‘~’
 
-*  type ::= ‘(’ type ‘)’ | basetype {‘|’ basetype}
+*  type ::= typepart {‘|’ typepart}
+
+*  typepart ::= (basetype | ‘(’ type ‘)’) [‘?’]
 
 *  nominal ::= Name {{‘.’ Name }} [typeargs]
 

@@ -24,7 +24,19 @@ local util = require("teal.util")
 local binary_search = util.binary_search
 local sorted_keys = util.sorted_keys
 
-local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TypeReport = {}, TypeReporter = {} }
+local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location = {} }, TableContext = {}, TablePosition = {}, TypeReport = {}, TypeReporter = {} }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -211,6 +223,7 @@ function type_reporter.new()
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         table_positions = {},
          types = {},
          symbols_by_file = {},
          globals = {},
@@ -390,6 +403,8 @@ function TypeReporter:get_collector(filename)
    self.tr.by_pos[filename] = ft
    local receivers = {}
    self.tr.member_receivers[filename] = receivers
+   local table_positions = {}
+   self.tr.table_positions[filename] = table_positions
    local expansions = {}
    self.tr.macro_expansions[filename] = expansions
 
@@ -416,6 +431,34 @@ function TypeReporter:get_collector(filename)
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_table_context = function(node, typ)
+      local row = table_positions[node.y] or {}
+      table_positions[node.y] = row
+      local position = row[node.x]
+      if not position then
+         local context = { fields = {}, used = {} }
+         position = { context = context }
+         row[node.x] = position
+         for _, item in ipairs(node) do
+            local key = item.key
+            if key.conststr then
+               context.used[key.conststr] = true
+               local key_row = table_positions[key.y] or {}
+               table_positions[key.y] = key_row
+               key_row[key.x] = { context = context, key = key.conststr }
+            end
+         end
+      end
+
+      local owner = self:get_typenum(typ)
+      local fields = position.context.fields
+      for name, field in pairs(typ.fields) do
+         if not fields[name] and not (field.typename == "typedecl") then
+            fields[name] = owner
+         end
+      end
    end
 
    collector.store_macro_expansion = function(y, x, expansion)
@@ -564,6 +607,18 @@ function TypeReporter:discard_unused_types()
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end
+         end
+      end
+   end
+   local seen_tables = {}
+   for _, lines in pairs(tr.table_positions) do
+      for _, row in pairs(lines) do
+         for _, position in pairs(row) do
+            local context = position.context
+            if not seen_tables[context] then
+               seen_tables[context] = true
+               for _, id in pairs(context.fields) do keep(id) end
+            end
          end
       end
    end

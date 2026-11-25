@@ -12,6 +12,11 @@ local b: {boolean} | MyEnum
 local c: number | {string:number}
 ```
 
+Postfix `?` adds `nil` to a type. It binds tighter than `|`, so
+`string? | number?` and `(string | number)?` both mean `string | number | nil`.
+A parameter declared `value: string?` still requires an argument. Use
+`value?: string` to make the argument optional.
+
 To use a value of this type, you need to discriminate the variable, using the
 `is` operator, which takes a variable of a union type and one of its types:
 

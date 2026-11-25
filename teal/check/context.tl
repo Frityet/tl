@@ -1121,6 +1121,28 @@ function Context:same_call_mt_in_all_union_entries(u: UnionType): FunctionType
    end)
 end
 
+-- Record constructor context for editor queries without constraining inference.
+function Context:report_table_context(node: Node, expected: Type): boolean
+   if not expected then return false end
+   local typ = self:to_structural(expected)
+   if typ is UnionType then
+      local found = false
+      for _, member in ipairs(typ.types) do
+         if self:report_table_context(node, member) then found = true end
+      end
+      return found
+   end
+   if not typ is RecordLikeType then return false end
+   self.collector.store_table_context(node, typ)
+   for _, item in ipairs(node) do
+      if item.value.kind == "literal_table" then
+         local name = item.key.conststr
+         if name then self:report_table_context(item.value, typ.fields[name]) end
+      end
+   end
+   return true
+end
+
 function Context:resolve_for_call(func: Type, args: TupleType, is_method: boolean): Type, boolean
    -- resolve unknown in lax mode, produce a general unknown function
    if self.feat_lax and is_unknown(func) then
@@ -1470,6 +1492,22 @@ do
 
       if self.collector then
          self.collector.store_type(e1.y, e1.x, f)
+         for i, argument in ipairs(e2) do
+            if argument.kind == "literal_table" then
+               local function report(signature: FunctionType): boolean
+                  local params = signature.args
+                  local param = params.tuple[i - argdelta] or (params.is_va and params.tuple[#params.tuple])
+                  return self:report_table_context(argument, param)
+               end
+               -- A permissive overload may accept extra keys. Preserve the
+               -- named fields from the record overloads for editor requests.
+               if not (f and report(f)) and func is PolyType then
+                  for _, signature in ipairs(func.types) do
+                     if signature is FunctionType then report(signature) end
+                  end
+               end
+            end
+         end
       end
 
       if f and f.macroexp then
@@ -1516,7 +1554,19 @@ function Context:resolve_self(t: Type, resolve_interface?: boolean): Type, {Erro
 end
 
 do
-   local function add_interface_fields(self: Context, fields: {string:Type}, field_order: {string}, resolved: RecordLikeType, named: NominalType, list?: MetaMode)
+   local function add_interface_fields(self: Context, target: RecordLikeType, resolved: RecordLikeType, named: NominalType, list?: MetaMode)
+      local fields: {string:Type}
+      local field_order: {string}
+      local locations, inherited_locations: {string:Where}, {string:Where}
+      if list == "meta" then
+         target.meta_field_locations = target.meta_field_locations or {}
+         fields, field_order, locations = target.meta_fields, target.meta_field_order, target.meta_field_locations
+         inherited_locations = resolved.meta_field_locations
+      else
+         target.field_locations = target.field_locations or {}
+         fields, field_order, locations = target.fields, target.field_order, target.field_locations
+         inherited_locations = resolved.field_locations
+      end
       for fname, ftype in fields_of(resolved, list) do
          if fields[fname] then
             if not self:is_a(fields[fname], ftype) then
@@ -1527,6 +1577,7 @@ do
             if not ftype is TypeDeclType then
                table.insert(field_order, fname)
                fields[fname] = self:resolve_self(ftype)
+               if inherited_locations then locations[fname] = inherited_locations[fname] end
             end
          end
       end
@@ -1576,11 +1627,11 @@ do
          if iface is NominalType then
             local ri = self:resolve_nominal(iface)
             assert(ri is InterfaceType)
-            add_interface_fields(self, t.fields, t.field_order, ri, iface)
+            add_interface_fields(self, t, ri, iface)
             if ri.meta_fields then
                t.meta_fields = t.meta_fields or {}
                t.meta_field_order = t.meta_field_order or {}
-               add_interface_fields(self, t.meta_fields, t.meta_field_order, ri, iface, "meta")
+               add_interface_fields(self, t, ri, iface, "meta")
             end
          elseif iface is ArrayType then
             has_array_interface = true

@@ -1121,6 +1121,28 @@ function Context:same_call_mt_in_all_union_entries(u)
    end)
 end
 
+
+function Context:report_table_context(node, expected)
+   if not expected then return false end
+   local typ = self:to_structural(expected)
+   if typ.typename == "union" then
+      local found = false
+      for _, member in ipairs(typ.types) do
+         if self:report_table_context(node, member) then found = true end
+      end
+      return found
+   end
+   if not typ.fields then return false end
+   self.collector.store_table_context(node, typ)
+   for _, item in ipairs(node) do
+      if item.value.kind == "literal_table" then
+         local name = item.key.conststr
+         if name then self:report_table_context(item.value, typ.fields[name]) end
+      end
+   end
+   return true
+end
+
 function Context:resolve_for_call(func, args, is_method)
 
    if self.feat_lax and is_unknown(func) then
@@ -1470,6 +1492,22 @@ do
 
       if self.collector then
          self.collector.store_type(e1.y, e1.x, f)
+         for i, argument in ipairs(e2) do
+            if argument.kind == "literal_table" then
+               local function report(signature)
+                  local params = signature.args
+                  local param = params.tuple[i - argdelta] or (params.is_va and params.tuple[#params.tuple])
+                  return self:report_table_context(argument, param)
+               end
+
+
+               if not (f and report(f)) and func.typename == "poly" then
+                  for _, signature in ipairs(func.types) do
+                     if signature.typename == "function" then report(signature) end
+                  end
+               end
+            end
+         end
       end
 
       if f and f.macroexp then
@@ -1516,7 +1554,19 @@ function Context:resolve_self(t, resolve_interface)
 end
 
 do
-   local function add_interface_fields(self, fields, field_order, resolved, named, list)
+   local function add_interface_fields(self, target, resolved, named, list)
+      local fields
+      local field_order
+      local locations, inherited_locations
+      if list == "meta" then
+         target.meta_field_locations = target.meta_field_locations or {}
+         fields, field_order, locations = target.meta_fields, target.meta_field_order, target.meta_field_locations
+         inherited_locations = resolved.meta_field_locations
+      else
+         target.field_locations = target.field_locations or {}
+         fields, field_order, locations = target.fields, target.field_order, target.field_locations
+         inherited_locations = resolved.field_locations
+      end
       for fname, ftype in fields_of(resolved, list) do
          if fields[fname] then
             if not self:is_a(fields[fname], ftype) then
@@ -1527,6 +1577,7 @@ do
             if not (ftype.typename == "typedecl") then
                table.insert(field_order, fname)
                fields[fname] = self:resolve_self(ftype)
+               if inherited_locations then locations[fname] = inherited_locations[fname] end
             end
          end
       end
@@ -1576,11 +1627,11 @@ do
          if iface.typename == "nominal" then
             local ri = self:resolve_nominal(iface)
             assert(ri.typename == "interface")
-            add_interface_fields(self, t.fields, t.field_order, ri, iface)
+            add_interface_fields(self, t, ri, iface)
             if ri.meta_fields then
                t.meta_fields = t.meta_fields or {}
                t.meta_field_order = t.meta_field_order or {}
-               add_interface_fields(self, t.meta_fields, t.meta_field_order, ri, iface, "meta")
+               add_interface_fields(self, t, ri, iface, "meta")
             end
          elseif iface.typename == "array" then
             has_array_interface = true

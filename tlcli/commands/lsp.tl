@@ -29,6 +29,7 @@ local type Module = teal.Module
 local type Compiler = teal.Compiler
 local type type_reporter = require("teal.type_reporter")
 local type TypeInfo = type_reporter.TypeInfo
+local type TablePosition = type_reporter.TablePosition
 
 local POSIX_POLL = ffi.os ~= "Windows"
 if POSIX_POLL then
@@ -1211,6 +1212,78 @@ local function member_location(report: TypeReport, info: TypeInfo, name: string,
    end
 end
 
+local function table_position(report: TypeReport, document: Document, token: Token): TablePosition
+   local rows = report and report.table_positions[document.path]
+   local row = rows and token and rows[token.y]
+   return row and row[token.x]
+end
+
+local function source_document(server: Server, path: string): Document
+   if not path or path == "" then return nil end
+   if path:sub(1, 1) ~= "/" and not path:match("^%a:[/\\]") then path = server.root .. "/" .. path end
+   local target = document_for(server, path_to_uri(path))
+   analyze_syntax(target)
+   return target
+end
+
+local function table_field_declaration(server: Server, owner: TypeInfo, name: string): Document, TypeInfo.Location
+   local location = owner and owner.field_locations and owner.field_locations[name]
+   return location and source_document(server, location.file), location
+end
+
+local function token_at_source(document: Document, y: integer, x: integer): Token
+   for _, token in ipairs(document.tokens_by_line[y] or {}) do
+      if token.x == x then return token end
+   end
+end
+
+local function token_location(document: Document, token: Token): AnyObject
+   return { uri = document.uri, range = make_range(document.lines, token.y, token.x, #token.tk) }
+end
+
+local function table_key_definition(server: Server, document: Document, token: Token): AnyObject
+   local report = document.type_report
+   local entry = table_position(report, document, token)
+   local owner_id = entry and entry.key and entry.context.fields[entry.key]
+   if not owner_id then return nil end
+   local target, location = table_field_declaration(server, report.types[owner_id], entry.key)
+   if not target then return nil end
+   local key = token_at_source(target, location.y, location.x)
+   if key and key.tk == "[" then key = next_token(target, target.token_indices[key]) end
+   if key then return token_location(target, key) end
+end
+
+local function nominal_definition(server: Server, document: Document, token: Token, token_index: integer): AnyObject
+   local report = document.type_report
+   local rows = report and report.by_pos[document.path]
+   if not rows then return nil end
+
+   -- A qualified type is reported at the start of its name, not at the final identifier.
+   local first, name = token, token.tk
+   local separator, separator_index = previous_token(document, token_index)
+   while separator and separator.tk == "." do
+      local part, part_index = previous_token(document, separator_index)
+      if not part or part.kind ~= "identifier" then return nil end
+      first, name = part, part.tk .. "." .. name
+      separator, separator_index = previous_token(document, part_index)
+   end
+
+   local row = rows[first.y]
+   local info = row and report.types[row[first.x]]
+   if not info or not info.ref or info.file ~= document.path or info.y ~= first.y or info.x ~= first.x or
+      info.str:gsub("^nominal ", ""):match("^[^<]+") ~= name then return nil end
+
+   local definition = report.types[info.ref]
+   local target = definition and source_document(server, definition.file)
+   if not target then return nil end
+   local declaration = token_at_source(target, definition.y, definition.x)
+   if not declaration then return nil end
+   local declared = next_token(target, target.token_indices[declaration])
+   if declared and declared.tk == token.tk and is_declaration(target, target.token_indices[declared]) then
+      return token_location(target, declared)
+   end
+end
+
 local function type_info(document: Document, position: Position, token?: Token): TypeInfo, integer
    if token and document.type_info_resolved[token] then
       return document.type_info_cache[token], document.type_id_cache[token]
@@ -1346,6 +1419,8 @@ local function find_definition(server: Server, document: Document, name: string,
    if position then
       local token, token_index = token_at(document, position)
       if not token then return nil end
+      local table_key = table_key_definition(server, document, token)
+      if table_key then return table_key end
       if token.kind == "string" then
          local module_name = required_module(document, token, token_index)
          local uri = module_name and module_uri(server, module_name)
@@ -1369,6 +1444,8 @@ local function find_definition(server: Server, document: Document, name: string,
       end
       local field = token and field_location(server, document, token)
       if field then return field end
+      local nominal = nominal_definition(server, document, token, token_index)
+      if nominal then return nominal end
       local previous = previous_token(document, token_index)
       if not previous or (previous.tk ~= "." and previous.tk ~= ":") then
          local location = symbol_location(document, name, position)
