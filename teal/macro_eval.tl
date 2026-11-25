@@ -524,6 +524,11 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
                table.insert(errs, { filename = filename, y = ab and ab.y or b.y, x = ab and ab.x or b.x, msg = display_name .. " argument " .. tostring(i) .. " must be a Statement" })
             end
          elseif expected == "function" then
+            -- Resolve an inner decorator before extracting the function declaration.
+            if ab and ab.kind == "statements" and #ab == 1 and ab[1].kind == "macro_invocation" then
+               ab = traverse_invoking_macros(ab, filename, env, errs, "stmt")
+               if #errs > argument_errors then return b end
+            end
             if ab and ab.kind == "statements" and #ab == 1 and ab[1].kind == "local_function" then
                ab = ab[1]
             elseif not ab or ab.kind ~= "function" then
@@ -550,7 +555,7 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    -- A decorator can return the original declaration with new children.
    -- Keep the original positions for diagnostics in the declaration.
    local keep_positions: {Block:boolean}
-   if (b.tk == "record" or b.tk == "local" or b.tk == "global" or b.tk == "const") and not operator_use then
+   if (b.tk == "record" or b.tk == "local" or b.tk == "global" or b.tk == "const" or b.tk == "function") and not operator_use then
       keep_positions = {}
       for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
    end

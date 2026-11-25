@@ -27,9 +27,10 @@ precedence, see below.
        ‘if’ exp ‘then’ block {‘elseif’ exp ‘then’ block} [‘else’ block] ‘end’ |
        ‘for’ Name ‘=’ exp ‘,’ exp [‘,’ exp] ‘do’ block ‘end’ |
        ‘for’ namelist ‘in’ explist ‘do’ block ‘end’ |
-       ‘function’ funcname funcbody |
++      ‘function’ funcname [decorators] funcbody |
 +      ‘local’ attnamelist [‘:’ typelist] [‘=’ explist] |
-       ‘local’ ‘function’ Name funcbody |
++      ‘local’ ‘function’ Name [decorators] funcbody |
+*      ‘const’ ‘function’ Name [decorators] funcbody |
 *      ‘local’ ‘record’ Name recordbody |
 *      ‘local’ ‘interface’ Name recordbody |
 *      ‘local’ ‘enum’ Name enumbody |
@@ -37,7 +38,7 @@ precedence, see below.
 *      ‘local’ ‘macroexp’ Name macroexpbody |
 *      ‘global’ attnamelist ‘:’ typelist [‘=’ explist] |
 *      ‘global’ attnamelist ‘=’ explist |
-*      ‘global’ ‘function’ Name funcbody |
+*      ‘global’ ‘function’ Name [decorators] funcbody |
 *      ‘global’ ‘record’ Name recordbody |
 *      ‘global’ ‘interface’ Name recordbody |
 *      ‘global’ ‘enum’ Name enumbody |
@@ -51,7 +52,13 @@ precedence, see below.
 
    label ::= ‘::’ Name ‘::’
 
-+  funcname ::= Name {‘.’ Name} ‘:’ Name | Name {‘.’ Name} ‘.’ Name
+   funcname ::= Name {‘.’ Name} [‘:’ Name]
+
+*  decorators ::= ‘<’ decorator {‘,’ decorator} ‘>’
+
+*  decorator ::= Name {‘.’ Name} ‘!’ [‘(’ [macroarg {‘,’ macroarg}] ‘)’]
+
+*  macroarg ::= exp | stat
 
    varlist ::= var {‘,’ var}
 

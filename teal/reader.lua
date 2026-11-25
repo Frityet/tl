@@ -1243,12 +1243,13 @@ local function read_table_literal(ps, i)
    return i, node
 end
 
-local function read_macro_args_with_sig(ps, i, sig)
+local function read_macro_args_with_sig(ps, i, sig, implicit_args)
    local node = new_block(ps, i, "expression_list")
    local function read_item(ps2, ii, n)
       local expected
+      local arg_index = n + (implicit_args or 0)
       if sig then
-         expected = sig.kinds[n] or (sig.vararg ~= "" and sig.vararg or nil)
+         expected = sig.kinds[arg_index] or (sig.vararg ~= "" and sig.vararg or nil)
       end
       local first = ps2.tokens[ii].tk
       if expected == "stmt" or (expected == "function" and (first == "local" or first == "const")) then
@@ -1279,7 +1280,7 @@ local function read_macro_args_with_sig(ps, i, sig)
             if sig then
                local fixed = #sig.kinds
                local has_vararg_stmt = sig.vararg == "stmt"
-               if (n <= fixed - 1) or has_vararg_stmt then
+               if arg_index < fixed or has_vararg_stmt then
                   can_split_on_comma = true
                end
             end
@@ -1829,14 +1830,45 @@ local function read_declaration_macro(ps, i)
    return i, decorator
 end
 
-local function decorate_declaration(ps, i, start, decorator, node)
+local function find_macro_signature(ps, name)
+   local sig = name and ps.macro_sigs[name]
+   if not sig and name then
+      local alias = name:match("^([^.]+)%.")
+      if alias then
+         ensure_required_alias_macros(ps, alias)
+         sig = ps.macro_sigs[name]
+      end
+   end
+   return sig
+end
+
+
+
+
+
+
+local function read_function_decorator(ps, i)
+   local decorator
+   i, decorator = read_macro_reference(ps, i)
+   if not decorator then return i end
+   i = verify_tk(ps, i, "!")
+   local args
+   if ps.tokens[i].tk == "(" then
+      local name = macro_target_key(decorator)
+      local sig = find_macro_signature(ps, name)
+      i, args = read_macro_args_with_sig(ps, i, sig, 1)
+   end
+   return i, { target = decorator, args = args }
+end
+
+local function decorate_declaration(ps, i, start, decorator, node, args)
    if not decorator or not node then return i, node end
    if forbidden_macro_invocation(ps, decorator.y, decorator.x) then return i end
    local name = macro_target_key(decorator)
    local alias = name and name:match("^([^.]+)%.")
    if alias then ensure_required_alias_macros(ps, alias) end
 
-   if ps.tokens[start].tk == "const" then
+   if ps.tokens[start].tk == "const" and node.kind ~= "macro_invocation" then
       local const_index = node.kind == "local_function" and BLOCK_INDEXES.LOCAL_FUNCTION.CONST or BLOCK_INDEXES.LOCAL_DECLARATION.CONST
       node[const_index] = new_block(ps, start, "native_const")
    end
@@ -1844,8 +1876,8 @@ local function decorate_declaration(ps, i, start, decorator, node)
    local declaration = new_block(ps, start, "statements")
    declaration[1] = node
    end_at(declaration, ps.tokens[i - 1])
-   local args = new_block(ps, start, "expression_list")
-   args[1] = declaration
+   args = args or new_block(ps, start, "expression_list")
+   table.insert(args, 1, declaration)
    local invocation = new_block(ps, start, "macro_invocation")
    invocation[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = decorator
    invocation[BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args
@@ -1855,20 +1887,27 @@ end
 
 local function read_function_args_rets_body(ps, i, node, declaration_start)
    local istart = i - 1
-   i, node[BLOCK_INDEXES.FUNCTION.TYPEARGS] = read_typeargs_if_any(ps, i)
-
-   i, node[BLOCK_INDEXES.FUNCTION.ARGS] = read_argument_list(ps, i)
-   local decorator
-   if declaration_start then i, decorator = read_declaration_macro(ps, i) end
-   i, node[BLOCK_INDEXES.FUNCTION.RETS] = read_return_types(ps, i)
-
+   local decorators
+   if declaration_start and declaration_macro_at(ps, i) then
+      i, decorators = read_bracket_list(ps, i, {}, "<", ">", "sep", read_function_decorator)
+   end
+   local indexes = node.kind == "record_function" and BLOCK_INDEXES.RECORD_FUNCTION or BLOCK_INDEXES.FUNCTION
+   i, node[indexes.TYPEARGS] = read_typeargs_if_any(ps, i)
+   i, node[indexes.ARGS] = read_argument_list(ps, i)
+   i, node[indexes.RETS] = read_return_types(ps, i)
    local middle = ps.ternary_middle
    ps.ternary_middle = false
-   i, node[BLOCK_INDEXES.FUNCTION.BODY] = read_statements(ps, i)
+   i, node[indexes.BODY] = read_statements(ps, i)
    ps.ternary_middle = middle
    end_at(node, ps.tokens[i])
    i = verify_end(ps, i, istart, node)
-   return decorate_declaration(ps, i, declaration_start, decorator, node)
+   if decorators then
+      for d = #decorators, 1, -1 do
+         local entry = decorators[d]
+         i, node = decorate_declaration(ps, i, declaration_start, entry.target, node, entry.args)
+      end
+   end
+   return i, node
 end
 
 local function read_function_value(ps, i)
@@ -1878,13 +1917,14 @@ local function read_function_value(ps, i)
 end
 
 local function skip_any_function(ps, i)
+   local istart = i
    i = verify_tk(ps, i, "function")
 
    while ps.tokens[i] and (ps.tokens[i].kind == "identifier" or ps.tokens[i].tk == "." or ps.tokens[i].tk == ":") do
       i = i + 1
    end
    local dummy = new_block(ps, i, "function")
-   return read_function_args_rets_body(ps, i, dummy)
+   return read_function_args_rets_body(ps, i, dummy, istart)
 end
 
 read_macro_quote = function(ps, i)
@@ -2307,14 +2347,7 @@ do
                return i, failstore(ps, tkop, e1)
             end
             if next_tk.tk == "(" then
-               local sig = mname and ps.macro_sigs[mname]
-               if (not sig) and mname then
-                  local alias = mname:match("^([^.]+)%.")
-                  if alias then
-                     ensure_required_alias_macros(ps, alias)
-                     sig = ps.macro_sigs[mname]
-                  end
-               end
+               local sig = find_macro_signature(ps, mname)
                if sig then
                   i, args = read_macro_args_with_sig(ps, i, sig)
                else
@@ -3809,6 +3842,7 @@ end
 local function read_global(ps, i)
    local ntk = ps.tokens[i + 1].tk
    if ntk == "function" then
+      local istart = i
       i = verify_tk(ps, i, "global")
       i = verify_tk(ps, i, "function")
       local func_start = i - 1
@@ -3819,7 +3853,7 @@ local function read_global(ps, i)
          fail(ps, func_start, "record functions cannot be annotated as 'global'")
          return ni
       end
-      return read_function_args_rets_body(ps, i, fn)
+      return read_function_args_rets_body(ps, i, fn, istart)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
    elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
@@ -3833,6 +3867,7 @@ local function read_global(ps, i)
 end
 
 read_record_function = function(ps, i)
+   local istart = i
    i = verify_tk(ps, i, "function")
 
    local fn = new_block(ps, i - 1, "record_function")
@@ -3886,15 +3921,7 @@ read_record_function = function(ps, i)
       fn[BLOCK_INDEXES.RECORD_FUNCTION.OWNER] = names[1]
    end
 
-   local istart = i - 1
-   i, fn[BLOCK_INDEXES.RECORD_FUNCTION.TYPEARGS] = read_typeargs_if_any(ps, i)
-   i, fn[BLOCK_INDEXES.RECORD_FUNCTION.ARGS] = read_argument_list(ps, i)
-   i, fn[BLOCK_INDEXES.RECORD_FUNCTION.RETS] = read_return_types(ps, i)
-   i, fn[BLOCK_INDEXES.RECORD_FUNCTION.BODY] = read_statements(ps, i)
-
-   end_at(fn, ps.tokens[i])
-   i = verify_end(ps, i, istart, fn)
-   return i, fn
+   return read_function_args_rets_body(ps, i, fn, istart)
 end
 
 local function read_pragma(ps, i)

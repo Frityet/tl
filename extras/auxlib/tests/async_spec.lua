@@ -38,7 +38,7 @@ describe('auxlib async macros', function()
             alerts: {string}
          end
 
-         local function load_profile(id: integer)<async!>: string
+         local function load_profile<async!>(id: integer): string
             tasks.sleep(0):await()
             return "profile:" .. tostring(id)
          end
@@ -47,7 +47,7 @@ describe('auxlib async macros', function()
             return {"alert:" .. tostring(id)}
          end)
 
-         local function load_dashboard(id: integer)<tasks.async!>: Dashboard
+         local function load_dashboard<tasks.async!>(id: integer): Dashboard
             return tasks.nursery(function(scope: Scope): Dashboard
                local profile = scope:spawn(|| -> load_profile(id))
                local alerts = scope:spawn(async!(|| -> load_alerts(id):await()))
@@ -86,7 +86,7 @@ describe('auxlib async macros', function()
          local loop = tasks.configure()
          local number = 5
          async!(local function echo(value: integer): integer return value end)
-         local function set(value: integer)<async!> number = value end
+         local function set<async!>(value: integer) number = value end
          local job = async!(||: integer -> do
             local pending: tasks.Task<nil> = set(7)
             assert(pending:await() == nil)
@@ -107,7 +107,7 @@ describe('auxlib async macros', function()
    it('keeps decorated functions recursive', function()
       assert.equals(7, run([[
          local loop = tasks.configure()
-         local function count(value: integer)<async!>: integer
+         local function count<async!>(value: integer): integer
             if value == 0 then return 4 end
             return count(value - 1):await() + 1
          end

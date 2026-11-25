@@ -184,7 +184,7 @@ macro name.
 local value<decorate!> = 4
 -- Same as decorate!(local value = 4)
 
-local function read()<decorate!>: integer
+local function read<decorate!>(): integer
    return value
 end
 -- Same as decorate!(local function read(): integer return value end)
@@ -192,6 +192,17 @@ end
 local record<decorate!> Reader end
 -- Same as decorate!(local record Reader end)
 ```
+
+For a named function, put the decorator clause after the full name and before
+any type parameters. For example, `local function identity<decorate!><T>(x: T): T`
+declares a generic function. The same placement works for const functions,
+global functions, record functions and methods.
+
+Separate decorators in the same clause with commas. Teal expands
+`function f<first!, second!>() end` as `first!(second!(function f() end))`, so
+the rightmost decorator runs first. Parenthesized arguments after `!` follow
+the declaration in the macro call. For example, `f<log!("read")>` passes the
+function declaration as the first argument and `"read"` as the second.
 
 Declare the macro parameter as `Statement` to accept the declaration block.
 Declare it as `Function` to accept a local function declaration or a function
@@ -202,7 +213,7 @@ return a task when called.
 local tasks = require("auxlib.async")
 local macro async! = tasks.async!
 
-local function fetch(id: integer)<async!>: string
+local function fetch<async!>(id: integer): string
    return tostring(id)
 end
 local fetch_default = async!(|| -> fetch(1):await())

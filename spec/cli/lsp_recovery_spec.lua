@@ -12,7 +12,7 @@ local annotated: integer = 1
 local macro bind!(declaration: Statement): Statement
    return ```local generated = 2```
 end
-local function decorated()<bind!>: integer return annotated end
+local function decorated<bind!>(): integer return annotated end
 print(inferred)
 ]=])
       local responses = lsp.exchange(finally, {

@@ -570,7 +570,7 @@ function Async.timeout<T>(task: Task<T>, seconds: number): Task<T>
 end
 
 --- Make a function schedule a task when called.
---- Decorate a declaration with `local function name()<async!>: Result`.
+--- Decorate a declaration with `local function name<async!>(): Result`.
 --- Use `async!(|| -> value)` to create a scheduler function from a literal.
 --- @param fn Local function declaration or function literal with fixed parameters.
 --- @return A function that starts a task. A body with no result gives a `Task<nil>`.
