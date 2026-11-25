@@ -6710,7 +6710,14 @@ relations.subtype_relations = {
          end
          local aa, err = ck:arraytype_from_tuple(a.inferred_at or a, a)
          if not aa then
-            return false, err
+
+
+            for _, entry in ipairs(a.types) do
+               if not ck:is_a(entry, b.elements) then
+                  return false, err
+               end
+            end
+            return true
          end
          if not ck:is_a(aa, b) then
             return false, { types.error("got %s (from %s), expected %s", aa, a, b) }

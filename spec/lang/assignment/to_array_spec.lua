@@ -71,4 +71,37 @@ describe("assignment to array", function()
    ]], {
       { y = 3, msg = "in assignment: got {string | number} (from {string, number}), expected {string}" },
    }))
+
+   it("accepts tuple entries with a common expected interface", util.check([[
+      local interface Child
+         text: string
+      end
+      local record Element<A> is Child
+         attributes: A
+      end
+      local a: Element<string> = { text = "link", attributes = "home" }
+      local b: Element<boolean> = { text = "button", attributes = true }
+      local local_child: Child = a
+      local elements: {Element<string>, Element<boolean>, Child} = { a, b, local_child }
+      local function render(children: {Child | string})
+         print(children)
+      end
+      render(elements)
+   ]]))
+
+   it("rejects a tuple entry without the expected interface", util.check_type_error([[
+      local interface Child
+         text: string
+      end
+      local record Element is Child end
+      local record Other
+         text: string
+      end
+      local a: Element = { text = "link" }
+      local b: Other = { text = "button" }
+      local elements: {Element, Other} = { a, b }
+      local children: {Child | string} = elements
+   ]], {
+      { msg = "unable to convert tuple {Element, Other} to array" },
+   }))
 end)
