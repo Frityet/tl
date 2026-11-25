@@ -27,10 +27,10 @@ describe("auxlib Object", function()
       local result = check([[
          local type Object = require("auxlib.Object")
          local macro object! = Object.object!
-         local record<object!> A
+         local record A<object!>
             value: integer
          end
-         local record<Object.object!> B end
+         local record B<Object.object!> end
 
          function A:get(): integer
             return self.value
@@ -55,7 +55,7 @@ describe("auxlib Object", function()
       local result = check([[
 local type Object = require("auxlib.Object")
 local macro object! = Object.object!
-local record<object!> A
+local record A<object!>
    value: MissingType
 end
       ]])
@@ -66,14 +66,15 @@ end
 
    it("works with generics and global records alongside ordinary attributes", function()
       local result = check([[
-         local type Tags = require("auxlib.Object")
+         local macro keep!(declaration: Statement) return declaration end
+         local type Tags<keep!> = require("auxlib.Object")
          local interface Flag
             enabled: boolean
          end
-         local record<Tags.object!> Box<T> is Tags, Flag
+         local record Box<Tags.object!><T> is Tags, Flag
             value: T
          end
-         global record<Tags.object!> GlobalObject end
+         global record GlobalObject<Tags.object!> end
          local record<const> = "ordinary constant"
          local box: Box<integer> = {__name = "Box", enabled = true, value = 5}
          assert(box.enabled and box.value == 5 and Box.__index == Box)

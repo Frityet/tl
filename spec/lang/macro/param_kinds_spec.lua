@@ -55,7 +55,7 @@ describe('macro parameter kinds', function()
 
          local a<decorate!> = 4
          local function f<decorate!>(): integer return a end
-         local record<decorate!> Rec end
+         local record Rec<decorate!> end
          decorate!(local b = 8)
          return a, f(), b, count, Rec
       ]=]
@@ -64,6 +64,27 @@ describe('macro parameter kinds', function()
       local output = assert(lua_generator.generate(ast, '5.1'))
       local a, value, b, count = assert(loadstring(output))()
       assert.same({4, 4, 8, 4}, {a, value, b, count})
+   end)
+
+   it('decorates generic records, enums, and local type aliases after the name', function()
+      assert.same({7, 'ok', 8, 9, 'record enum inner outer '}, {run([=[
+         local trace = ""
+         local macro tag!(declaration: Statement, text: Expression)
+            return ```
+               $declaration
+               trace = trace .. $text .. " "
+            ```
+         end
+         local record A<tag!("record")><T> value: T end
+         macro A.answer!() return `9` end
+         local enum E<tag!("enum")> "ok" end
+         local type Ty<tag!("outer"), tag!("inner")><T> = {T}
+
+         local a: A<integer> = {value = 7}
+         local e: E = "ok"
+         local ty: Ty<integer> = {8}
+         return a.value, e, ty[1], A.answer!(), trace
+      ]=])})
    end)
 
    it('stacks function decorators before generic parameters', function()

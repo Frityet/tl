@@ -31,17 +31,17 @@ precedence, see below.
 +      ‘local’ attnamelist [‘:’ typelist] [‘=’ explist] |
 +      ‘local’ ‘function’ Name [decorators] funcbody |
 *      ‘const’ ‘function’ Name [decorators] funcbody |
-*      ‘local’ ‘record’ Name recordbody |
+*      ‘local’ ‘record’ Name [decorators] recordbody |
 *      ‘local’ ‘interface’ Name recordbody |
-*      ‘local’ ‘enum’ Name enumbody |
-*      ‘local’ ‘type’ Name ‘=’ newtype |
+*      ‘local’ ‘enum’ Name [decorators] enumbody |
+*      ‘local’ ‘type’ Name [decorators] [typeargs] ‘=’ newtype |
 *      ‘local’ ‘macroexp’ Name macroexpbody |
 *      ‘global’ attnamelist ‘:’ typelist [‘=’ explist] |
 *      ‘global’ attnamelist ‘=’ explist |
 *      ‘global’ ‘function’ Name [decorators] funcbody |
-*      ‘global’ ‘record’ Name recordbody |
+*      ‘global’ ‘record’ Name [decorators] recordbody |
 *      ‘global’ ‘interface’ Name recordbody |
-*      ‘global’ ‘enum’ Name enumbody |
+*      ‘global’ ‘enum’ Name [decorators] enumbody |
 *      ‘global’ ‘type’ Name [‘=’ newtype]
 
    attnamelist ::=  Name [attrib] {‘,’ Name [attrib]}

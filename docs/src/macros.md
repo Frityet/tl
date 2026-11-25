@@ -189,14 +189,22 @@ local function read<decorate!>(): integer
 end
 -- Same as decorate!(local function read(): integer return value end)
 
-local record<decorate!> Reader end
--- Same as decorate!(local record Reader end)
+local record Box<decorate!><T>
+   value: T
+end
+
+local enum Mode<decorate!>
+   "read"
+   "write"
+end
+
+local type List<decorate!><T> = {T}
 ```
 
-For a named function, put the decorator clause after the full name and before
-any type parameters. For example, `local function identity<decorate!><T>(x: T): T`
+Put the decorator clause after the full declaration name and before any type
+parameters. For example, `local function identity<decorate!><T>(x: T): T`
 declares a generic function. The same placement works for const functions,
-global functions, record functions and methods.
+global functions, record functions, and methods.
 
 Separate decorators in the same clause with commas. Teal expands
 `function f<first!, second!>() end` as `first!(second!(function f() end))`, so
@@ -225,7 +233,7 @@ local fetch_default = async!(return || -> fetch(1):await())
 local Object = require("auxlib.Object")
 local macro object! = Object.object!
 
-local record<object!> A end
+local record A<object!> end
 assert(A.__name == "A" and A.__index == A)
 ```
 

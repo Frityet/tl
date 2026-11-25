@@ -9,7 +9,7 @@ end
 --- ```teal
 --- local Object = require("auxlib.Object")
 --- local macro object! = Object.object!
---- local record<object!> A end
+--- local record A<object!> end
 --- assert(A.__name == "A" and A.__index == A)
 --- ```
 macro Object.object!(declaration: Statement)

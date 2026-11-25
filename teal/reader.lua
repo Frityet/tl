@@ -755,11 +755,21 @@ local function extract_macro_owner_from_newtype(nt)
    return nil
 end
 
+local function unwrap_decorated_declaration(node)
+   while node and node.kind == "macro_invocation" and (node.tk == "local" or node.tk == "global") do
+      local args = node[BLOCK_INDEXES.MACRO_INVOCATION.ARGS]
+      local declaration = args and args[1]
+      node = declaration and declaration.kind == "statements" and declaration[1] or nil
+   end
+   return node
+end
+
 local function collect_macro_owner_paths_in_scope(container, prefix, out)
    if not container then
       return
    end
-   for _, child in ipairs(container) do
+   for _, entry in ipairs(container) do
+      local child = unwrap_decorated_declaration(entry)
       if child and (child.kind == "local_type" or child.kind == "global_type") then
          local var
          local val
@@ -959,6 +969,7 @@ local function load_module_macro_info(ps, module_name)
 end
 
 local function local_require_alias(stmt)
+   stmt = unwrap_decorated_declaration(stmt)
    if not stmt then
       return nil
    end
@@ -1843,7 +1854,7 @@ end
 
 
 
-local function read_function_decorator(ps, i)
+local function read_decorator(ps, i)
    local decorator
    i, decorator = read_macro_reference(ps, i)
    if not decorator then return i end
@@ -1857,6 +1868,13 @@ local function read_function_decorator(ps, i)
    return i, { target = decorator, args = args }
 end
 
+local function read_decorators(ps, i)
+   if declaration_macro_at(ps, i) then
+      return read_bracket_list(ps, i, {}, "<", ">", "sep", read_decorator)
+   end
+   return i
+end
+
 local function decorate_declaration(ps, i, start, decorator, node, args)
    if not decorator or not node then return i, node end
    if forbidden_macro_invocation(ps, decorator.y, decorator.x) then return i end
@@ -1864,9 +1882,12 @@ local function decorate_declaration(ps, i, start, decorator, node, args)
    local alias = name and name:match("^([^.]+)%.")
    if alias then ensure_required_alias_macros(ps, alias) end
 
-   if ps.tokens[start].tk == "const" and node.kind ~= "macro_invocation" then
-      local const_index = node.kind == "local_function" and BLOCK_INDEXES.LOCAL_FUNCTION.CONST or BLOCK_INDEXES.LOCAL_DECLARATION.CONST
-      node[const_index] = new_block(ps, start, "native_const")
+   if ps.tokens[start].tk == "const" then
+      if node.kind == "local_function" then
+         node[BLOCK_INDEXES.LOCAL_FUNCTION.CONST] = new_block(ps, start, "native_const")
+      elseif node.kind == "local_declaration" then
+         node[BLOCK_INDEXES.LOCAL_DECLARATION.CONST] = new_block(ps, start, "native_const")
+      end
    end
    ps.features.needs_macro_pass = true
    local declaration = new_block(ps, start, "statements")
@@ -1881,11 +1902,21 @@ local function decorate_declaration(ps, i, start, decorator, node, args)
    return i, invocation
 end
 
+local function apply_decorators(ps, i, start, decorators, node)
+   if decorators then
+      for d = #decorators, 1, -1 do
+         local entry = decorators[d]
+         i, node = decorate_declaration(ps, i, start, entry.target, node, entry.args)
+      end
+   end
+   return i, node
+end
+
 local function read_function_args_rets_body(ps, i, node, declaration_start)
    local istart = i - 1
    local decorators
-   if declaration_start and declaration_macro_at(ps, i) then
-      i, decorators = read_bracket_list(ps, i, {}, "<", ">", "sep", read_function_decorator)
+   if declaration_start then
+      i, decorators = read_decorators(ps, i)
    end
    local indexes = node.kind == "record_function" and BLOCK_INDEXES.RECORD_FUNCTION or BLOCK_INDEXES.FUNCTION
    i, node[indexes.TYPEARGS] = read_typeargs_if_any(ps, i)
@@ -1897,13 +1928,7 @@ local function read_function_args_rets_body(ps, i, node, declaration_start)
    ps.ternary_middle = middle
    end_at(node, ps.tokens[i])
    i = verify_end(ps, i, istart, node)
-   if decorators then
-      for d = #decorators, 1, -1 do
-         local entry = decorators[d]
-         i, node = decorate_declaration(ps, i, declaration_start, entry.target, node, entry.args)
-      end
-   end
-   return i, node
+   return apply_decorators(ps, i, declaration_start, decorators, node)
 end
 
 local function read_function_value(ps, i)
@@ -3510,7 +3535,7 @@ local function read_special_type_declaration(ps, i, asgn)
    return false, i, asgn
 end
 
-read_type_declaration = function(ps, i, node_name)
+read_type_declaration = function(ps, i, node_name, declaration_start)
    local asgn = new_block(ps, i, node_name)
    local var
    local BIDX = node_name == "local_type" and BLOCK_INDEXES.LOCAL_TYPE or BLOCK_INDEXES.GLOBAL_TYPE
@@ -3531,6 +3556,10 @@ read_type_declaration = function(ps, i, node_name)
          return fail(ps, i, "expected a type name")
       end
    end
+   local decorators
+   if declaration_start then
+      i, decorators = read_decorators(ps, i)
+   end
    local typeargs
    local itypeargs = i
    i, typeargs = read_typeargs_if_any(ps, i)
@@ -3547,7 +3576,7 @@ read_type_declaration = function(ps, i, node_name)
       local is_done
       is_done, i, asgn = read_special_type_declaration(ps, i, asgn)
       if is_done then
-         return i, asgn
+         return apply_decorators(ps, i, declaration_start, decorators, asgn)
       end
    end
 
@@ -3560,7 +3589,7 @@ read_type_declaration = function(ps, i, node_name)
       asgn[BIDX.VALUE][BLOCK_INDEXES.NEWTYPE.TYPEDECL][BLOCK_INDEXES.TYPEDECL.TYPE] = new_generic(ps, itypeargs, typeargs, asgn[BIDX.VALUE][BLOCK_INDEXES.NEWTYPE.TYPEDECL][BLOCK_INDEXES.TYPEDECL.TYPE])
    end
 
-   return i, asgn
+   return apply_decorators(ps, i, declaration_start, decorators, asgn)
 end
 
 local function read_type_constructor(ps, i, node_name, tn)
@@ -3572,9 +3601,6 @@ local function read_type_constructor(ps, i, node_name, tn)
    local def
 
    i = i + 2
-
-   local decorator
-   if tn == "record" then i, decorator = read_declaration_macro(ps, i) end
 
    if ps.allow_macro_vars and ps.tokens[i].tk == "$" then
       local dtk = ps.tokens[i]
@@ -3593,6 +3619,10 @@ local function read_type_constructor(ps, i, node_name, tn)
       end
    end
 
+   local decorators
+   if tn == "record" or tn == "enum" then
+      i, decorators = read_decorators(ps, i)
+   end
    i, def = read_type_body(ps, i, istart, nt, tn)
    if not def then
       return i
@@ -3600,7 +3630,7 @@ local function read_type_constructor(ps, i, node_name, tn)
 
    table.insert(nt, new_typedecl(ps, istart, def))
 
-   return decorate_declaration(ps, i, istart, decorator, asgn)
+   return apply_decorators(ps, i, istart, decorators, asgn)
 end
 
 local function skip_type_declaration(ps, i)
@@ -3822,13 +3852,12 @@ local function read_local(ps, i)
    if ntk == "function" then
       return read_local_function(ps, i)
    elseif ntk == "type" and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
-      return read_type_declaration(ps, i + 2, "local_type")
+      return read_type_declaration(ps, i + 2, "local_type", i)
    elseif ntk == "macro" and (ps.tokens[i + 2].kind == "identifier" or ps.tokens[i + 2].tk == "(") then
       return read_local_macro(ps, i)
    elseif ntk == "macroexp" and ps.tokens[i + 2].kind == "identifier" then
       return read_local_macroexp(ps, i)
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
-      (ntk == "record" and declaration_macro_at(ps, i + 2))) then
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "local_type", ntk_kind)
    end
@@ -3852,8 +3881,7 @@ local function read_global(ps, i)
       return read_function_args_rets_body(ps, i, fn, istart)
    elseif ntk == "type" and ps.tokens[i + 2].kind == "identifier" then
       return read_type_declaration(ps, i + 2, "global_type")
-   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$") or
-      (ntk == "record" and declaration_macro_at(ps, i + 2))) then
+   elseif type_body_kinds[ntk] and (ps.tokens[i + 2].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i + 2].tk == "$")) then
       local ntk_kind = type_body_kinds[ntk]
       return read_type_constructor(ps, i, "global_type", ntk_kind)
    elseif ps.tokens[i + 1].kind == "identifier" then
@@ -4049,7 +4077,7 @@ read_statements = function(ps, i, toplevel)
 
       if item then
          table.insert(node, item)
-         if toplevel and (item.kind == "local_declaration" or item.kind == "local_type") then
+         if toplevel and (item.kind == "local_declaration" or item.kind == "local_type" or item.kind == "macro_invocation") then
             local alias, module_name = local_require_alias(item)
             if alias and module_name then
                ps.require_aliases[alias] = module_name
