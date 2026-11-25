@@ -6,4 +6,6 @@ tl.lua.bak
 /lua_modules
 /.luarocks
 /_temp
+/.xmake/
+/build/
 docs/book

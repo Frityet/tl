@@ -33,6 +33,44 @@ Use `--gen-target` to select the Lua version for the generated code. Use
 `--gen-target=luajit` to use the LuaJIT 3.0 syntax extensions. See the
 [syntax and lowering guide](docs/src/luajit_extensions.md).
 
+### With Xmake
+
+Put LuaJIT 2.1 or later on your path. Install the compiler's LuaRocks
+dependencies for that LuaJIT installation with `luarocks make --only-deps`.
+
+```sh
+xmake build tl         # Build the compiler and its Lua API bundles
+xmake run tl --version
+xmake build tl.auxlib  # Build the auxlib Lua modules
+```
+
+To use the compiler in another Xmake project, include this repository and
+apply the `tl` rule to the target with your Teal sources.
+
+```lua
+includes("vendor/tl")
+
+target("app")
+   set_kind("phony")
+   add_rules("tl")
+   add_deps("tl.auxlib")
+   set_values("tl.root", "src")
+   add_files("src/**.tl")
+   on_run(function(target)
+      os.execv("luajit", { path.join(target:data("tl.outputdir"), "main.lua") })
+   end)
+```
+
+The rule reads your `tlconfig.lua` and generates Lua under the target's
+Xmake-generated directory. It preserves paths relative to `tl.root`,
+which defaults to the directory that defines the target. Use
+`add_values("tl.includedirs", "types")` for additional Teal search directories.
+With `add_deps("tl.auxlib")`, Teal can resolve imports such as
+`require("auxlib.tables")` and macros from `auxlib.Object`. For `xmake run`,
+the rule adds the compiled modules from the target and its dependencies to
+`LUA_PATH`. The optional `auxlib.async.luv` and `auxlib.database.sqlite`
+adapters require `luv` and `lsqlite3` respectively when loaded.
+
 ## Running
 
 ### Using the compiler directly
