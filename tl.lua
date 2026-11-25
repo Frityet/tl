@@ -14970,7 +14970,7 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
          local expected
          local annot = ab[BLOCK_INDEXES.ARGUMENT.TYPE]
          if not annot then
-            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement', 'Expression', or 'Function'" })
+            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement' or 'Expression'" })
          else
             if annot.kind == "nominal_type" and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
                local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
@@ -14978,13 +14978,11 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
                   expected = "stmt"
                elseif tname == "Expression" then
                   expected = "expr"
-               elseif tname == "Function" then
-                  expected = "function"
                else
-                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement', 'Expression', or 'Function'" })
+                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
                end
             else
-               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement', 'Expression', or 'Function'" })
+               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
             end
          end
          if ab.tk == "..." then
@@ -15142,17 +15140,6 @@ eval_macro_invocation = function(b, filename, env, errs, context)
             if not ab or ab.kind ~= "statements" then
                table.insert(errs, { filename = filename, y = ab and ab.y or b.y, x = ab and ab.x or b.x, msg = display_name .. " argument " .. tostring(i) .. " must be a Statement" })
             end
-         elseif expected == "function" then
-
-            if ab and ab.kind == "statements" and #ab == 1 and ab[1].kind == "macro_invocation" then
-               ab = traverse_invoking_macros(ab, filename, env, errs, "stmt")
-               if #errs > argument_errors then return b end
-            end
-            if ab and ab.kind == "statements" and #ab == 1 and ab[1].kind == "local_function" then
-               ab = ab[1]
-            elseif not ab or ab.kind ~= "function" then
-               table.insert(errs, { filename = filename, y = ab and ab.y or b.y, x = ab and ab.x or b.x, msg = display_name .. " argument " .. tostring(i) .. " must be a Function literal or local function declaration" })
-            end
          elseif expected == "expr" then
             if ab and ab.kind == "statements" then
                if #ab == 1 and is_expression_kind(ab[1].kind) then
@@ -15163,7 +15150,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
             end
          end
          if ab then
-            local argument_context = (expected == "stmt" or ab.kind == "local_function") and "stmt" or "expr"
+            local argument_context = expected == "stmt" and "stmt" or "expr"
             table.insert(argv, traverse_invoking_macros(ab, filename, env, errs, argument_context))
          end
       end
@@ -16257,9 +16244,6 @@ local function build_macro_sig(args, errs, filename, macro_name)
          elseif tname == "Expression" then
             ok = true
             mode = "expr"
-         elseif tname == "Function" then
-            ok = true
-            mode = "function"
          end
       end
       if not ok then
@@ -16267,7 +16251,7 @@ local function build_macro_sig(args, errs, filename, macro_name)
             filename = filename,
             y = (annot and annot.y) or ab.y,
             x = (annot and annot.x) or ab.x,
-            msg = "macro '" .. macro_name .. "' argument type must be 'Statement', 'Expression', or 'Function'",
+            msg = "macro '" .. macro_name .. "' argument type must be 'Statement' or 'Expression'",
          })
       else
          if ab.tk == "..." then
@@ -17055,8 +17039,7 @@ local function read_macro_args_with_sig(ps, i, sig, implicit_args)
       if sig then
          expected = sig.kinds[arg_index] or (sig.vararg ~= "" and sig.vararg or nil)
       end
-      local first = ps2.tokens[ii].tk
-      if expected == "stmt" or (expected == "function" and (first == "local" or first == "const")) then
+      if expected == "stmt" then
          if is_macro_quote_token(ps2.tokens[ii]) then
             local ni, q = read_macro_quote(ps2, ii)
             return ni, q, n + 1

@@ -35,6 +35,14 @@ describe('macro parameter kinds', function()
       assert.not_same({}, errs2)
    end)
 
+   it('rejects Function annotations on fixed and variadic macro parameters', function()
+      for _, args in ipairs({'fn: Function', '...: Function'}) do
+         local _, errors = tl.parse('local macro bad!(' .. args .. ') return `1` end')
+         assert.equals(1, #errors)
+         assert.matches("argument type must be 'Statement' or 'Expression'", errors[1].msg, 1, true)
+      end
+   end)
+
    it('passes decorated variables, functions, and records as declarations', function()
       local code = [=[
          local count = 0
@@ -60,8 +68,8 @@ describe('macro parameter kinds', function()
 
    it('stacks function decorators before generic parameters', function()
       assert.same({4, 'five'}, {run([[
-         local macro inline!(fn: Function) return fn end
-         local macro pure!(fn: Function) return fn end
+         local macro inline!(fn: Statement) return fn end
+         local macro pure!(fn: Statement) return fn end
          local function pair<inline!, pure!><T, U>(x: T, y: U): T, U
             return x, y
          end
@@ -106,7 +114,7 @@ describe('macro parameter kinds', function()
 
    it('preserves const when decorators are stacked', function()
       local result = check([[
-         local macro keep!(fn: Function) return fn end
+         local macro keep!(fn: Statement) return fn end
          const function f<keep!, keep!>(): integer return 1 end
          f = function(): integer return 2 end
       ]])

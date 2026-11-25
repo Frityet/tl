@@ -205,9 +205,9 @@ the declaration in the macro call. For example, `f<log!("read")>` passes the
 function declaration as the first argument and `"read"` as the second.
 
 Declare the macro parameter as `Statement` to accept the declaration block.
-Declare it as `Function` to accept a local function declaration or a function
-literal. For example, import `async!` from `auxlib.async` to make a function
-return a task when called.
+The `async!` decorator from `auxlib.async` makes a local function return a
+task when called. For an anonymous function, pass a `return` statement
+containing the literal to the same macro.
 
 ```teal
 local tasks = require("auxlib.async")
@@ -216,7 +216,7 @@ local macro async! = tasks.async!
 local function fetch<async!>(id: integer): string
    return tostring(id)
 end
-local fetch_default = async!(|| -> fetch(1):await())
+local fetch_default = async!(return || -> fetch(1):await())
 ```
 
 #### Object records

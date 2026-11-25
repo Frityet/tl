@@ -42,7 +42,7 @@ describe('auxlib async macros', function()
             tasks.sleep(0):await()
             return "profile:" .. tostring(id)
          end
-         local load_alerts = async!(|id: integer|: {string} -> do
+         local load_alerts = async!(return |id: integer|: {string} -> do
             tasks.sleep(0):await()
             return {"alert:" .. tostring(id)}
          end)
@@ -50,7 +50,7 @@ describe('auxlib async macros', function()
          local function load_dashboard<tasks.async!>(id: integer): Dashboard
             return tasks.nursery(function(scope: Scope): Dashboard
                local profile = scope:spawn(|| -> load_profile(id))
-               local alerts = scope:spawn(async!(|| -> load_alerts(id):await()))
+               local alerts = scope:spawn(async!(return || -> load_alerts(id):await()))
                return { profile = profile:await(), alerts = alerts:await() }
             end):await()
          end
@@ -87,7 +87,7 @@ describe('auxlib async macros', function()
          local number = 5
          async!(local function echo(value: integer): integer return value end)
          local function set<async!>(value: integer) number = value end
-         local job = async!(||: integer -> do
+         local job = async!(return ||: integer -> do
             local pending: tasks.Task<nil> = set(7)
             assert(pending:await() == nil)
             local empty: tasks.Task<string | nil> = tasks.from_callback(
@@ -104,10 +104,11 @@ describe('auxlib async macros', function()
       ]]))
    end)
 
-   it('keeps decorated functions recursive', function()
+   it('keeps decorated functions recursive when stacked with a Statement decorator', function()
       assert.equals(7, run([[
          local loop = tasks.configure()
-         local function count<async!>(value: integer): integer
+         local macro keep!(declaration: Statement) return declaration end
+         local function count<async!, keep!>(value: integer): integer
             if value == 0 then return 4 end
             return count(value - 1):await() + 1
          end
@@ -118,14 +119,16 @@ describe('auxlib async macros', function()
    end)
 
    it('checks the declared result of the original async function', function()
-      local result = compile([[local bad = async!(||: integer -> "wrong")]])
+      local result = compile([[local bad = async!(return ||: integer -> "wrong")]])
       assert.matches('expected integer', result.type_errors[1].msg, 1, true)
    end)
 
-   it('requires a function literal for async', function()
-      local _, errors = tl.parse(imports .. 'local bad = async!(42)', 'async-fixture.tl')
-      assert.is_true(#errors > 0)
-      assert.matches('must be a Function literal or local function declaration', errors[1].msg, 1, true)
+   it('requires a local function declaration or a returned function literal', function()
+      for _, code in ipairs({'async!(local value = 42)', 'local bad = async!(return 42)'}) do
+         local _, errors = tl.parse(imports .. code, 'async-fixture.tl')
+         assert.equals(1, #errors)
+         assert.matches('async! expects a local function declaration or a return statement with one function literal', errors[1].msg, 1, true)
+      end
    end)
 end)
 

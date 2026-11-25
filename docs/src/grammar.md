@@ -58,7 +58,7 @@ precedence, see below.
 
 *  decorator ::= Name {‘.’ Name} ‘!’ [‘(’ [macroarg {‘,’ macroarg}] ‘)’]
 
-*  macroarg ::= exp | stat
+*  macroarg ::= exp | stat | retstat
 
    varlist ::= var {‘,’ var}
 

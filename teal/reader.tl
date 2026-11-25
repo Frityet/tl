@@ -453,9 +453,6 @@ local function build_macro_sig(args: Block, errs: {Error}, filename: string, mac
          elseif tname == "Expression" then
             ok = true
             mode = "expr"
-         elseif tname == "Function" then
-            ok = true
-            mode = "function"
          end
       end
       if not ok then
@@ -463,7 +460,7 @@ local function build_macro_sig(args: Block, errs: {Error}, filename: string, mac
             filename = filename,
             y = (annot and annot.y) or ab.y,
             x = (annot and annot.x) or ab.x,
-            msg = "macro '" .. macro_name .. "' argument type must be 'Statement', 'Expression', or 'Function'",
+            msg = "macro '" .. macro_name .. "' argument type must be 'Statement' or 'Expression'",
          })
       else
          if ab.tk == "..." then
@@ -1251,8 +1248,7 @@ local function read_macro_args_with_sig(ps: ReadState, i: integer, sig: MacroSig
       if sig then
          expected = sig.kinds[arg_index] or (sig.vararg ~= "" and sig.vararg or nil)
       end
-      local first = ps2.tokens[ii].tk
-      if expected == "stmt" or (expected == "function" and (first == "local" or first == "const")) then
+      if expected == "stmt" then
          if is_macro_quote_token(ps2.tokens[ii]) then
             local ni, q = read_macro_quote(ps2, ii)
             return ni, q, n + 1
