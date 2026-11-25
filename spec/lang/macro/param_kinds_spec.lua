@@ -39,8 +39,44 @@ describe('macro parameter kinds', function()
       for _, args in ipairs({'fn: Function', '...: Function'}) do
          local _, errors = tl.parse('local macro bad!(' .. args .. ') return `1` end')
          assert.equals(1, #errors)
-         assert.matches("argument type must be 'Statement' or 'Expression'", errors[1].msg, 1, true)
+         assert.matches("argument type must be 'Statement', 'Expression', or 'Statement | Expression'", errors[1].msg, 1, true)
       end
+   end)
+
+   it('prefers whole expressions and accepts explicit statement blocks for union parameters', function()
+      assert.same({'expression', 'statement', 'statement', 'statement'}, {run([[
+         local macro kind!(arg: Statement | Expression)
+            if arg.kind == "statements" then return `"statement"` end
+            assert(arg.kind == "op_funcall")
+            return `"expression"`
+         end
+         local function f() end
+         local x = 0
+         return kind!(f()), kind!(do f() end), kind!(x = 1), kind!(f() f())
+      ]])})
+   end)
+
+   it('accepts either annotation order and mixes expression and statement varargs', function()
+      assert.equals('expression statement expression statement ', run([[
+         local macro echo!(value: Expression) return value end
+         local macro kinds!(...: Expression | Statement)
+            local kinds = ""
+            for i = 1, select("#", ...) do
+               local arg = select(i, ...)
+               kinds = kinds .. (arg.kind == "statements" and "statement " or "expression ")
+            end
+            local text = block("string")
+            text.tk = string.format("%q", kinds)
+            return text
+         end
+         return kinds!(echo!(42), do print(1) end, 7, local x = 4)
+      ]]))
+   end)
+
+   it('rejects unions with types other than Statement and Expression', function()
+      local _, errors = tl.parse('local macro bad!(arg: Expression | number) return `1` end')
+      assert.equals(1, #errors)
+      assert.matches("argument type must be 'Statement', 'Expression', or 'Statement | Expression'", errors[1].msg, 1, true)
    end)
 
    it('passes decorated variables, functions, and records as declarations', function()

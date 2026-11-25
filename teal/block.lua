@@ -144,6 +144,7 @@ local block = { Block = {} }
 
 
 
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -478,6 +479,27 @@ local BLOCK_KINDS = {
 
 block.BLOCK_INDEXES = BLOCK_INDEXES
 block.BLOCK_KINDS = BLOCK_KINDS
+
+local function simple_macro_parameter_kind(annot)
+   if annot and annot.kind == "nominal_type" and #annot == 1 then
+      local name = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME]
+      if name.kind == "identifier" then
+         if name.tk == "Statement" then return "stmt" end
+         if name.tk == "Expression" then return "expr" end
+      end
+   end
+end
+
+function block.macro_parameter_kind(annot)
+   if annot and annot.kind == "union_type" and #annot == 2 then
+      local a, b = simple_macro_parameter_kind(annot[1]), simple_macro_parameter_kind(annot[2])
+      if (a == "stmt" and b == "expr") or (a == "expr" and b == "stmt") then
+         return "either"
+      end
+   else
+      return simple_macro_parameter_kind(annot)
+   end
+end
 
 local fixed_child_limits = {}
 for kind, slots in pairs(block.BLOCK_INDEXES) do

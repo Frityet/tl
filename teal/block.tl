@@ -139,6 +139,7 @@ local record block
 
    BLOCK_INDEXES: {string : {string : integer}}
    BLOCK_KINDS: {string : boolean}
+   macro_parameter_kind: function(Block): string
    child_limit: function(Block): integer
    is_long_string: function(Block): boolean
    string_value: function(Block): string
@@ -478,6 +479,27 @@ local BLOCK_KINDS <total>: {block.BlockKind: boolean} = {
 
 block.BLOCK_INDEXES = BLOCK_INDEXES
 block.BLOCK_KINDS = BLOCK_KINDS as {string: boolean}
+
+local function simple_macro_parameter_kind(annot: block.Block): string
+   if annot and annot.kind == "nominal_type" and #annot == 1 then
+      local name = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME]
+      if name.kind == "identifier" then
+         if name.tk == "Statement" then return "stmt" end
+         if name.tk == "Expression" then return "expr" end
+      end
+   end
+end
+
+function block.macro_parameter_kind(annot: block.Block): string
+   if annot and annot.kind == "union_type" and #annot == 2 then
+      local a, b = simple_macro_parameter_kind(annot[1]), simple_macro_parameter_kind(annot[2])
+      if (a == "stmt" and b == "expr") or (a == "expr" and b == "stmt") then
+         return "either"
+      end
+   else
+      return simple_macro_parameter_kind(annot)
+   end
+end
 
 local fixed_child_limits: {string: integer} = {}
 for kind, slots in pairs(block.BLOCK_INDEXES) do

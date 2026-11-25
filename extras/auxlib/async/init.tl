@@ -571,19 +571,18 @@ end
 
 --- Make a function schedule a task when called.
 --- Decorate a declaration with `local function name<async!>(): Result`.
---- Use `async!(return || -> value)` to create a scheduler function from a literal.
---- @param source A local function declaration or a return statement with one function literal.
+--- Use `async!(|| -> value)` to create a scheduler function from a literal.
+--- @param source A local function declaration or a function literal with fixed parameters.
 --- @return A function that starts a task. A body with no result gives a `Task<nil>`.
-macro Async.async!(source: Statement)
+macro Async.async!(source: Statement | Expression)
    local B = BLOCK_INDEXES
    local F = B.FUNCTION
-   local fn = #source == 1 and source[1]
-   if fn and fn.kind == "return" then
-      local values = fn[B.RETURN.EXPS]
-      fn = #values == 1 and values[1]
+   local fn = source
+   if source.kind == "statements" then
+      fn = #source == 1 and source[1]
    end
    assert(fn and (fn.kind == "local_function" or fn.kind == "function"),
-      "async! expects a local function declaration or a return statement with one function literal")
+      "async! expects a local function declaration or a function literal")
    local named = fn.kind == "local_function"
    assert(not fn[F.TYPEARGS], "async functions cannot declare type parameters")
    for _, arg in ipairs(fn[F.ARGS]) do

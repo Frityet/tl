@@ -2726,6 +2726,7 @@ local block = { Block = {} }
 
 
 
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -3060,6 +3061,27 @@ local BLOCK_KINDS = {
 
 block.BLOCK_INDEXES = BLOCK_INDEXES
 block.BLOCK_KINDS = BLOCK_KINDS
+
+local function simple_macro_parameter_kind(annot)
+   if annot and annot.kind == "nominal_type" and #annot == 1 then
+      local name = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME]
+      if name.kind == "identifier" then
+         if name.tk == "Statement" then return "stmt" end
+         if name.tk == "Expression" then return "expr" end
+      end
+   end
+end
+
+function block.macro_parameter_kind(annot)
+   if annot and annot.kind == "union_type" and #annot == 2 then
+      local a, b = simple_macro_parameter_kind(annot[1]), simple_macro_parameter_kind(annot[2])
+      if (a == "stmt" and b == "expr") or (a == "expr" and b == "stmt") then
+         return "either"
+      end
+   else
+      return simple_macro_parameter_kind(annot)
+   end
+end
 
 local fixed_child_limits = {}
 for kind, slots in pairs(block.BLOCK_INDEXES) do
@@ -14967,23 +14989,12 @@ local function compile_local_macro(mb, filename, read_lang, env, errs)
    if args then
       local idx = 1
       for _, ab in ipairs(args) do
-         local expected
          local annot = ab[BLOCK_INDEXES.ARGUMENT.TYPE]
+         local expected = block.macro_parameter_kind(annot)
          if not annot then
-            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement' or 'Expression'" })
-         else
-            if annot.kind == "nominal_type" and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
-               local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
-               if tname == "Statement" then
-                  expected = "stmt"
-               elseif tname == "Expression" then
-                  expected = "expr"
-               else
-                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
-               end
-            else
-               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
-            end
+            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement', 'Expression', or 'Statement | Expression'" })
+         elseif not expected then
+            table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement', 'Expression', or 'Statement | Expression'" })
          end
          if ab.tk == "..." then
             sig.vararg = expected or "expr"
@@ -15135,6 +15146,9 @@ eval_macro_invocation = function(b, filename, env, errs, context)
          local expected
          if sig then
             expected = sig.kinds and sig.kinds[i] or (sig.vararg ~= "" and sig.vararg or nil)
+         end
+         if expected == "either" then
+            expected = ab.kind == "statements" and "stmt" or "expr"
          end
          if expected == "stmt" then
             if not ab or ab.kind ~= "statements" then
@@ -16231,33 +16245,19 @@ local function build_macro_sig(args, errs, filename, macro_name)
    local idx = 1
    for _, ab in ipairs(args) do
       local annot = ab and ab[BLOCK_INDEXES.ARGUMENT.TYPE]
-      local ok = false
-      local mode
-      if annot and annot.kind == "nominal_type" and
-         annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and
-         annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
-
-         local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
-         if tname == "Statement" then
-            ok = true
-            mode = "stmt"
-         elseif tname == "Expression" then
-            ok = true
-            mode = "expr"
-         end
-      end
-      if not ok then
+      local mode = block.macro_parameter_kind(annot)
+      if not mode then
          table.insert(errs, {
             filename = filename,
             y = (annot and annot.y) or ab.y,
             x = (annot and annot.x) or ab.x,
-            msg = "macro '" .. macro_name .. "' argument type must be 'Statement' or 'Expression'",
+            msg = "macro '" .. macro_name .. "' argument type must be 'Statement', 'Expression', or 'Statement | Expression'",
          })
       else
          if ab.tk == "..." then
-            sig.vararg = mode or "expr"
+            sig.vararg = mode
          else
-            sig.kinds[idx] = mode or "expr"
+            sig.kinds[idx] = mode
             idx = idx + 1
          end
       end
@@ -17042,6 +17042,43 @@ local function read_table_literal(ps, i)
    return i, node
 end
 
+local function copy_probe_tokens(tokens, i)
+   local copy = shallow_copy_table(tokens)
+   for j = i, #tokens do
+
+      if tokens[j].tk == ">>" then copy[j] = shallow_copy_table(tokens[j]) end
+   end
+   return copy
+end
+
+local function try_macro_argument_expression(ps, i)
+   local probe = shallow_copy_table(ps)
+   probe.errs = {}
+   probe.tokens = copy_probe_tokens(ps.tokens, i)
+   probe.features = shallow_copy_table(ps.features)
+   probe.macro_sigs = shallow_copy_table(ps.macro_sigs)
+   probe.imported_macro_keys = shallow_copy_table(ps.imported_macro_keys)
+   probe.imported_macro_decls = shallow_copy_table(ps.imported_macro_decls)
+   probe.macro_aliases = shallow_copy_table(ps.macro_aliases)
+   local next_i, expression = read_nested_expression(probe, i)
+   local following = probe.tokens[next_i].tk
+   if not expression or #probe.errs > 0 or (following ~= "," and following ~= ")") then
+      return i
+   end
+
+
+   local last = #probe.tokens == #ps.tokens and next_i - 1 or #probe.tokens
+   for j = i, last do ps.tokens[j] = probe.tokens[j] end
+   ps.end_alignment_hint = probe.end_alignment_hint
+   ps.features.needs_macro_pass = probe.features.needs_macro_pass
+   ps.features.has_continue = probe.features.has_continue
+   for key, sig in pairs(probe.macro_sigs) do ps.macro_sigs[key] = sig end
+   for key in pairs(probe.imported_macro_keys) do ps.imported_macro_keys[key] = true end
+   for j = #ps.imported_macro_decls + 1, #probe.imported_macro_decls do ps.imported_macro_decls[j] = probe.imported_macro_decls[j] end
+   for j = #ps.macro_aliases + 1, #probe.macro_aliases do ps.macro_aliases[j] = probe.macro_aliases[j] end
+   return next_i, expression
+end
+
 local function read_macro_args_with_sig(ps, i, sig, implicit_args)
    local node = new_block(ps, i, "expression_list")
    local function read_item(ps2, ii, n)
@@ -17050,7 +17087,11 @@ local function read_macro_args_with_sig(ps, i, sig, implicit_args)
       if sig then
          expected = sig.kinds[arg_index] or (sig.vararg ~= "" and sig.vararg or nil)
       end
-      if expected == "stmt" then
+      if expected == "either" and not is_macro_quote_token(ps2.tokens[ii]) then
+         local ni, expression = try_macro_argument_expression(ps2, ii)
+         if expression then return ni, expression, n + 1 end
+      end
+      if expected == "stmt" or expected == "either" then
          if is_macro_quote_token(ps2.tokens[ii]) then
             local ni, q = read_macro_quote(ps2, ii)
             return ni, q, n + 1
@@ -17077,8 +17118,7 @@ local function read_macro_args_with_sig(ps, i, sig, implicit_args)
             local can_split_on_comma = false
             if sig then
                local fixed = #sig.kinds
-               local has_vararg_stmt = sig.vararg == "stmt"
-               if arg_index < fixed or has_vararg_stmt then
+               if arg_index < fixed or sig.vararg ~= "" then
                   can_split_on_comma = true
                end
             end
@@ -17486,12 +17526,7 @@ local function is_nullable_suffix(ps, i, in_expression)
    local probe = shallow_copy_table(ps)
    probe.errs = {}
    probe.ternary_middle = true
-   probe.tokens = shallow_copy_table(ps.tokens)
-   for j = i + 1, #ps.tokens do
-      local token = ps.tokens[j]
-
-      if token.tk == ">>" then probe.tokens[j] = shallow_copy_table(token) end
-   end
+   probe.tokens = copy_probe_tokens(ps.tokens, i + 1)
    local colon, branch = read_expression(probe, i + 1)
    return not (branch and #probe.errs == 0 and probe.tokens[colon].tk == ":")
 end

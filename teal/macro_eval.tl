@@ -348,23 +348,12 @@ local function compile_local_macro(mb: Block, filename: string, read_lang: Block
    if args then
       local idx = 1
       for _, ab in ipairs(args) do
-         local expected: string
          local annot = ab[BLOCK_INDEXES.ARGUMENT.TYPE]
+         local expected = block.macro_parameter_kind(annot)
          if not annot then
-            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement' or 'Expression'" })
-         else
-            if annot.kind == "nominal_type" and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME] and annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].kind == "identifier" then
-               local tname = annot[BLOCK_INDEXES.NOMINAL_TYPE.NAME].tk
-               if tname == "Statement" then
-                  expected = "stmt"
-               elseif tname == "Expression" then
-                  expected = "expr"
-               else
-                  table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
-               end
-            else
-               table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement' or 'Expression'" })
-            end
+            table.insert(errs, { filename = filename, y = ab.y, x = ab.x, msg = "macro '" .. macro_key .. "' argument missing type; expected 'Statement', 'Expression', or 'Statement | Expression'" })
+         elseif not expected then
+            table.insert(errs, { filename = filename, y = annot.y, x = annot.x, msg = "macro '" .. macro_key .. "' argument type must be 'Statement', 'Expression', or 'Statement | Expression'" })
          end
          if ab.tk == "..." then
             sig.vararg = expected or "expr"
@@ -516,6 +505,9 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
          local expected: string
          if sig then
             expected = sig.kinds and sig.kinds[i] or (sig.vararg ~= "" and sig.vararg or nil)
+         end
+         if expected == "either" then
+            expected = ab.kind == "statements" and "stmt" or "expr"
          end
          if expected == "stmt" then
             if not ab or ab.kind ~= "statements" then

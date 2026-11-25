@@ -125,12 +125,8 @@ target. A call can still be the receiver of an assignable field or index.
 
 ## Macro arguments
 
-Macro parameters must be annotated as one of:
-
-- `Expression`
-- `Statement`
-- `...: Expression` (vararg)
-- `...: Statement` (vararg)
+Macro parameters accept `Expression`, `Statement`, or `Statement | Expression`.
+Varargs can use any of these annotations.
 
 Example:
 
@@ -149,6 +145,11 @@ end, "ok")
 
 `Statement` arguments are passed as a `statements` block, which can contain one
 or more statements.
+
+For `Statement | Expression` (in either order), Teal uses an expression when
+it can parse the entire argument as one. For example, `m!(f())` passes the
+call expression. Write `m!(do f() end)` to pass a statement block. Declarations
+and assignments also pass as statement blocks.
 
 Macro arguments are **AST blocks**. Teal expands any nested macro calls and
 operators in each argument before invoking the outer macro. For example, in
@@ -213,9 +214,9 @@ the declaration in the macro call. For example, `f<log!("read")>` passes the
 function declaration as the first argument and `"read"` as the second.
 
 Declare the macro parameter as `Statement` to accept the declaration block.
-The `async!` decorator from `auxlib.async` makes a local function return a
-task when called. For an anonymous function, pass a `return` statement
-containing the literal to the same macro.
+The `async!` macro from `auxlib.async` uses `Statement | Expression` to accept
+a local function declaration or a function literal. The resulting function
+starts a task when called.
 
 ```teal
 local tasks = require("auxlib.async")
@@ -224,7 +225,7 @@ local macro async! = tasks.async!
 local function fetch<async!>(id: integer): string
    return tostring(id)
 end
-local fetch_default = async!(return || -> fetch(1):await())
+local fetch_default = async!(|| -> fetch(1):await())
 ```
 
 #### Object records
@@ -428,7 +429,7 @@ print(z) -- prints 14
 | Scope and import | `local macro` declarations are file-local. Attached macros (`macro Owner.name!`) can be imported through `require` aliases when their owner record or interface is the returned owner or nested under it. |
 | Compile-time only | Macros run before type checking, and their declarations produce no runtime code. |
 | Restricted environment | Macro bodies run in a sandbox with a limited standard library (no `require`, file I/O, or OS access beyond basic timing functions). |
-| Argument types are fixed | Every parameter must be annotated as `Statement` or `Expression` (varargs allowed). Other annotations are errors. |
+| Argument types are fixed | Annotate each parameter as `Statement`, `Expression`, or their union. These annotations apply to fixed parameters and varargs. |
 | Quotes are only valid inside macros | Backtick quotes and `$name` splices are rejected outside `local macro` bodies. |
 | No macro calls inside macros | Macro bodies and both quote forms cannot invoke another macro, including custom operators and explicit operator macro calls. Use ordinary helper functions and construct the AST directly or quote built-in syntax. |
 | Invocation style | Use `owner.macro!()`. Method-style `owner:macro!()` is rejected. |
