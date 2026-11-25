@@ -13,7 +13,7 @@ end
 
 describe('auxlib strict nil contracts', function()
    for _, name in ipairs({'async/init', 'async/luv', 'database/init', 'database/sqlite',
-      'ffi', 'struct', 'tables', 'format'}) do
+      'argparse', 'ffi', 'struct', 'tables', 'format'}) do
       it('type-checks ' .. name .. ' with strict nil enabled', function()
          local root = assert(util.tl_executable:match('^(.*)[/\\]tl$'))
          local path = root .. '/extras/auxlib/' .. name .. '.tl'

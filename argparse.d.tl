@@ -52,6 +52,10 @@ local record argparse
 
    record Argument
       choices: function(self: Argument, choices: {string}): Argument
+      default: function(self: Argument, default: string): Argument
+      defmode: function(self: Argument, mode: string): Argument
+      argname: function(self: Argument, name: string): Argument
+      target: function(self: Argument, target: string): Argument
 
       convert: function(self: Argument, convert: function | {function}): Argument
       convert: function(self: Argument, convert: {string:string}): Argument
@@ -71,7 +75,7 @@ local record argparse
 
       choices: function(self: Option, {string}): Option
 
-      default: function(self: Option, string): Option
+      default: function(self: Option, string | boolean): Option
 
       defmode: function(self: Option, string): Option
 
