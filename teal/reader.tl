@@ -37,6 +37,11 @@ local record MacroSig
    vararg: string -- empty string means 'no vararg'
 end
 
+local record MacroScope
+   signatures: {string: MacroSig}
+   inherited: boolean
+end
+
 local record reader
    type Attribute = Attribute
    type Block = Block
@@ -169,7 +174,15 @@ local record ReadFeatures
    has_continue: boolean
 end
 
+-- A speculative expression shares the token array. Only the rare token edits
+-- are journalled, so an Expression | Statement argument does not copy the file.
+local record TokenEdit
+   index: integer
+   previous: Token
+end
+
 local record ReadState
+   token_edits: {TokenEdit}
    tokens: {Token}
    errs: {Error}
    filename: string
@@ -182,11 +195,55 @@ local record ReadState
    features: ReadFeatures
    custom_operators: {string: {string: OperatorSpec}}
    local_operators: {string: boolean}
-   macro_sigs: {string: MacroSig}
+   operators_shared: boolean
+   macro_scope: MacroScope
    require_aliases: {string: string}
    imported_macro_decls: {Block}
    imported_macro_keys: {string: boolean}
    macro_aliases: {Block}
+end
+
+local function writable_macro_signatures(ps: ReadState): {string: MacroSig}
+   local scope = ps.macro_scope
+   if scope.inherited then
+      scope.signatures = shallow_copy_table(scope.signatures)
+      scope.inherited = false
+   end
+   return scope.signatures
+end
+
+local function insert_token(ps: ReadState, i: integer, token: Token)
+   if ps.token_edits then
+      ps.token_edits[#ps.token_edits + 1] = { index = i }
+   end
+   table.insert(ps.tokens, i, token)
+end
+
+local function editable_token(ps: ReadState, i: integer): Token
+   local token = ps.tokens[i]
+   if ps.token_edits then
+      ps.token_edits[#ps.token_edits + 1] = { index = i, previous = token }
+      token = shallow_copy_table(token)
+      ps.tokens[i] = token
+   end
+   return token
+end
+
+local function split_greater_token(ps: ReadState, i: integer)
+   editable_token(ps, i).tk = ">"
+end
+
+local function rollback_tokens(ps: ReadState, mark: integer)
+   local edits = ps.token_edits
+   for j = #edits, mark + 1, -1 do
+      local edit = edits[j]
+      if edit.previous then
+         ps.tokens[edit.index] = edit.previous
+      else
+         table.remove(ps.tokens, edit.index)
+      end
+      edits[j] = nil
+   end
 end
 
 local enum BlockTypeListMode
@@ -294,9 +351,7 @@ local function new_block(ps: ReadState, i: integer, kind?: BlockKind): Block
    }, node_mt)
 end
 
-local function new_type(ps: ReadState, i: integer, typename: BlockKind): Block
-   return new_block(ps, i, typename)
-end
+local new_type = new_block
 
 local function split_dotted_path(path: string): {string}
    local out: {string} = {}
@@ -355,23 +410,22 @@ local function clone_block_deep(b: Block): Block
       yend = b.yend,
       xend = b.xend,
    }
-   local child_indexes: {integer} = {}
-   for k, child in pairs(b as {string|integer: Block | nil}) do
-      if k is integer and child then
-         table.insert(child_indexes, k)
-      end
-   end
-   table.sort(child_indexes)
-   for _, idx in ipairs(child_indexes) do
-      copy[idx] = clone_block_deep(b[idx])
+   for idx = 1, block.child_limit(b) do
+      local child = b[idx]
+      if child then copy[idx] = clone_block_deep(child) end
    end
    return setmetatable(copy, node_mt)
 end
 
 local function make_comment_block(ps: ReadState, c: Comment): Block
    local text = c.text
-   local _, newlines = string.gsub(text, "\n", "")
-   local last_line = text:match("([^\n]*)$") or ""
+   local newlines = 0
+   local last_line = ""
+   if text:find("\n", 1, true) then
+      local _, count = string.gsub(text, "\n", "")
+      newlines = count
+      last_line = text:match("([^\n]*)$") or ""
+   end
   local cb: Block = {
       f = ps.filename,
       y = c.y,
@@ -384,16 +438,14 @@ local function make_comment_block(ps: ReadState, c: Comment): Block
    return setmetatable(cb, node_mt)
 end
 
-local function collect_comment_blocks(ps: ReadState, i: integer): {Block}
-   local t = ps.tokens[i]
-   if not (t and t.comments) then
-      return {}
+local function append_comment_blocks(ps: ReadState, i: integer, out: Block)
+   local comments = ps.tokens[i].comments
+   if comments then
+      local n = #out
+      for j = 1, #comments do
+         out[n + j] = make_comment_block(ps, comments[j])
+      end
    end
-   local out: {Block} = {}
-   for _, c in ipairs(t.comments) do
-      table.insert(out, make_comment_block(ps, c))
-   end
-   return out
 end
 
 local function new_generic(ps: ReadState, i: integer, typeargs: Block, typ: Block): Block
@@ -562,10 +614,58 @@ local function operator_macro_call_at(ps: ReadState, i: integer): boolean
    local symbol = table.concat(parts)
    if ps.tokens[j].tk ~= ")" or not ps.tokens[j + 1] or ps.tokens[j + 1].tk ~= "!" or not valid_operator_symbol(symbol) then return false end
    -- Preserve ordinary `(name)!(...)` calls unless an operator of that name exists.
-   return ps.macro_sigs["(" .. symbol .. ")"] ~= nil or not symbol:match("^[%a_][%w_]*$")
+   return ps.macro_scope.signatures["(" .. symbol .. ")"] ~= nil or not symbol:match("^[%a_][%w_]*$")
+end
+
+-- Match spelling prefixes once per token byte. Accept a symbol only at a
+-- token boundary: read_program callers may provide a different segmentation
+-- from the lexer, and a symbol such as #! lexes differently at source start.
+local record OperatorTrie
+   {OperatorTrie}
+   spec: OperatorSpec
+   length: integer
+end
+local type OperatorRegistry = {string: OperatorSpec}
+local operator_tries: {OperatorRegistry: OperatorTrie} = setmetatable({}, { __mode = "k" })
+local operator_byte = string.byte
+
+local function add_operator_to_trie(root: OperatorTrie, symbol: string, spec: OperatorSpec)
+   local node = root
+   for i = 1, #symbol do
+      local c = operator_byte(symbol, i) as integer
+      local child = node[c]
+      if not child then
+         child = {}
+         node[c] = child
+      end
+      node = child
+   end
+   node.spec = spec
+   root.length = math.max(root.length, #symbol)
+end
+
+local function operator_trie(registry: OperatorRegistry): OperatorTrie
+   local root = operator_tries[registry]
+   if not root then
+      root = { length = 0 }
+      for symbol, spec in pairs(registry) do
+         add_operator_to_trie(root, symbol, spec)
+      end
+      operator_tries[registry] = root
+   end
+   return root
 end
 
 local function register_operator(ps: ReadState, spec: OperatorSpec, where: Block)
+   if ps.operators_shared and ps.custom_operators then
+      local inherited = ps.custom_operators
+      ps.custom_operators = {
+         prefix = shallow_copy_table(inherited.prefix),
+         infix = shallow_copy_table(inherited.infix),
+         postfix = shallow_copy_table(inherited.postfix),
+      }
+   end
+   ps.operators_shared = false
    ps.custom_operators = ps.custom_operators or { prefix = {}, infix = {}, postfix = {} }
    ps.local_operators = ps.local_operators or {}
    local registry = ps.custom_operators[spec.fixity]
@@ -584,6 +684,8 @@ local function register_operator(ps: ReadState, spec: OperatorSpec, where: Block
    end
    ps.local_operators[key] = true
    registry[spec.symbol] = spec
+   local trie = operator_tries[registry]
+   if trie then add_operator_to_trie(trie, spec.symbol, spec) end
 end
 
 local function operator_word(b: Block): string
@@ -678,22 +780,27 @@ local function operator_spec_from_block(node: Block): OperatorSpec
 end
 
 local function find_operator(ps: ReadState, at: integer, fixity: string): OperatorSpec, integer
+   local node = operator_trie(ps.custom_operators[fixity])
+   local remaining = node.length
    local best: OperatorSpec
    local width = 0
-   for symbol, spec in pairs(ps.custom_operators[fixity]) do
-      local text = ""
-      local previous: Token
-      for j = at, #ps.tokens do
-         local token = ps.tokens[j]
-         if previous and (token.y ~= previous.y or token.x ~= previous.x + #previous.tk) then break end
-         text = text .. token.tk
-         if text == symbol then
-            if not best or #symbol > #best.symbol then best = spec; width = j - at + 1 end
-            break
-         end
-         if #text >= #symbol or symbol:sub(1, #text) ~= text then break end
-         previous = token
+   local previous: Token
+   for j = at, #ps.tokens do
+      local token = ps.tokens[j]
+      if previous and (token.y ~= previous.y or token.x ~= previous.x + #previous.tk) then break end
+      local text = token.tk
+      remaining = remaining - #text
+      if remaining < 0 then break end
+      for k = 1, #text do
+         node = node[operator_byte(text, k) as integer]
+         if not node then return best, width end
       end
+      if node.spec then
+         best = node.spec
+         width = j - at + 1
+      end
+      if remaining == 0 then break end
+      previous = token
    end
    return best, width
 end
@@ -813,6 +920,7 @@ local function skip(ps: ReadState, i: integer, skip_fn: SkipFunction): integer, 
    local err_ps: ReadState = {
       filename = ps.filename,
       tokens = ps.tokens,
+      token_edits = ps.token_edits,
       errs = {},
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
@@ -821,7 +929,8 @@ local function skip(ps: ReadState, i: integer, skip_fn: SkipFunction): integer, 
       custom_operators = ps.custom_operators,
       features = ps.features,
       local_operators = ps.local_operators,
-      macro_sigs = ps.macro_sigs,
+      operators_shared = ps.operators_shared,
+      macro_scope = ps.macro_scope,
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
       imported_macro_keys = ps.imported_macro_keys,
@@ -1009,8 +1118,8 @@ local function ensure_required_alias_macros(ps: ReadState, alias: string)
       local imported_key = alias .. "." .. exp.key
       if not ps.imported_macro_keys[imported_key] then
          ps.imported_macro_keys[imported_key] = true
-         ps.macro_sigs[imported_key] = exp.sig
-         if exp.sig.operator then ps.macro_sigs[exp.sig.operator.binding] = exp.sig end
+         writable_macro_signatures(ps)[imported_key] = exp.sig
+         if exp.sig.operator then writable_macro_signatures(ps)[exp.sig.operator.binding] = exp.sig end
 
          local imported_decl = clone_block_deep(exp.decl)
          local parts = split_dotted_path(imported_key)
@@ -1120,6 +1229,7 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
          local try_ps: ReadState = {
             filename = ps.filename,
             tokens = ps.tokens,
+            token_edits = ps.token_edits,
             errs = {},
             read_lang = ps.read_lang,
             allow_macro_vars = ps.allow_macro_vars,
@@ -1128,7 +1238,8 @@ local function read_table_item(ps: ReadState, i: integer, n?: integer): integer,
             custom_operators = ps.custom_operators,
             features = ps.features,
             local_operators = ps.local_operators,
-            macro_sigs = ps.macro_sigs,
+            operators_shared = ps.operators_shared,
+            macro_scope = ps.macro_scope,
             require_aliases = ps.require_aliases,
             imported_macro_decls = ps.imported_macro_decls,
             imported_macro_keys = ps.imported_macro_keys,
@@ -1213,7 +1324,7 @@ local function read_list<T>(ps: ReadState, i: integer, list: {T}, close: {string
          -- * otherwise, if we have a line break, insert expected terminator token.
          if first ~= "}" and ps.tokens[i].y ~= ps.tokens[i-1].y then
             -- FIXME closing token may not be a keyword (but non-keywords are checked with verify_tk, so it should work)
-            table.insert(ps.tokens, i, { tk = first, y = ps.tokens[i-1].y, x = ps.tokens[i-1].x + 1, kind = "keyword" })
+            insert_token(ps, i, { tk = first, y = ps.tokens[i-1].y, x = ps.tokens[i-1].x + 1, kind = "keyword" })
             return i, list
          end
       end
@@ -1221,9 +1332,18 @@ local function read_list<T>(ps: ReadState, i: integer, list: {T}, close: {string
    return i, list
 end
 
+local list_closers: {string: {string: boolean}} = {
+   [")"] = { [")"] = true },
+   ["}"] = { ["}"] = true },
+   [">"] = { [">"] = true },
+   ["in"] = { ["in"] = true },
+   ["do"] = { ["do"] = true },
+}
+local type_list_closers: {string: boolean} = { [">"] = true, [">>"] = true }
+
 local function read_bracket_list<T>(ps: ReadState, i: integer, list: {T}, open: string, close: string, sep: SeparatorMode, read_item: ReadItem<T>): integer, {T}
    i = verify_tk(ps, i, open)
-   i = read_list(ps, i, list, { [close] = true }, sep, read_item)
+   i = read_list(ps, i, list, list_closers[close], sep, read_item)
    i = verify_tk(ps, i, close)
    return i, list
 end
@@ -1237,37 +1357,29 @@ local function read_table_literal(ps: ReadState, i: integer): integer, Block
    return i, node
 end
 
-local function copy_probe_tokens(tokens: {Token}, i: integer): {Token}
-   local copy = shallow_copy_table(tokens)
-   for j = i, #tokens do
-      -- Reading a generic type can split a closing '>>' token.
-      if tokens[j].tk == ">>" then copy[j] = shallow_copy_table(tokens[j]) end
-   end
-   return copy
-end
-
 local function try_macro_argument_expression(ps: ReadState, i: integer): integer, Block
    local probe = shallow_copy_table(ps)
    probe.errs = {}
-   probe.tokens = copy_probe_tokens(ps.tokens, i)
+   probe.token_edits = ps.token_edits or {}
+   local edit_mark = #probe.token_edits
    probe.features = shallow_copy_table(ps.features)
-   probe.macro_sigs = shallow_copy_table(ps.macro_sigs)
+   probe.macro_scope = { signatures = shallow_copy_table(ps.macro_scope.signatures) }
    probe.imported_macro_keys = shallow_copy_table(ps.imported_macro_keys)
    probe.imported_macro_decls = shallow_copy_table(ps.imported_macro_decls)
    probe.macro_aliases = shallow_copy_table(ps.macro_aliases)
    local next_i, expression = read_nested_expression(probe, i)
    local following = probe.tokens[next_i].tk
    if not expression or #probe.errs > 0 or (following ~= "," and following ~= ")") then
+      rollback_tokens(probe, edit_mark)
       return i
    end
 
-   -- Keep token rewrites and macro imports only from the selected parse.
-   local last = #probe.tokens == #ps.tokens and next_i - 1 or #probe.tokens
-   for j = i, last do ps.tokens[j] = probe.tokens[j] end
+   -- Successful token edits are already in place. Keep macro imports only from
+   -- the selected parse; an enclosing speculative parse retains the journal.
    ps.end_alignment_hint = probe.end_alignment_hint
    ps.features.needs_macro_pass = probe.features.needs_macro_pass
    ps.features.has_continue = probe.features.has_continue
-   for key, sig in pairs(probe.macro_sigs) do ps.macro_sigs[key] = sig end
+   for key, sig in pairs(probe.macro_scope.signatures) do writable_macro_signatures(ps)[key] = sig end
    for key in pairs(probe.imported_macro_keys) do ps.imported_macro_keys[key] = true end
    for j = #ps.imported_macro_decls + 1, #probe.imported_macro_decls do ps.imported_macro_decls[j] = probe.imported_macro_decls[j] end
    for j = #ps.macro_aliases + 1, #probe.macro_aliases do ps.macro_aliases[j] = probe.macro_aliases[j] end
@@ -1323,7 +1435,12 @@ local function read_macro_args_with_sig(ps: ReadState, i: integer, sig: MacroSig
                local nt = 0
                for k = ii, jend - 1 do
                   nt = nt + 1
-                  slice[nt] = ps2.tokens[k]
+                  local token = ps2.tokens[k]
+                  -- The nested reader shares token objects, but not this probe's
+                  -- journal. Isolate its only in-place edit before it can split
+                  -- a generic closer, so an outer rollback restores it too.
+                  if ps2.token_edits and token.tk == ">>" then token = editable_token(ps2, k) end
+                  slice[nt] = token
                end
                nt = nt + 1
                local eof_prev = ps2.tokens[math.max(ii, jend - 1)]
@@ -1383,7 +1500,12 @@ local function read_macro_args_with_sig(ps: ReadState, i: integer, sig: MacroSig
                local nt = 0
                for k = (sblk and curr_i or ii), j - 1 do
                   nt = nt + 1
-                  slice[nt] = ps2.tokens[k]
+                  local token = ps2.tokens[k]
+                  -- The nested reader shares token objects, but not this probe's
+                  -- journal. Isolate its only in-place edit before it can split
+                  -- a generic closer, so an outer rollback restores it too.
+                  if ps2.token_edits and token.tk == ">>" then token = editable_token(ps2, k) end
+                  slice[nt] = token
                end
                nt = nt + 1
                local eof_prev = ps2.tokens[math.max(ii, j - 1)]
@@ -1442,6 +1564,7 @@ local function read_trying_list<T>(ps: ReadState, i: integer, list: {T}, read_it
    local try_ps: ReadState = {
       filename = ps.filename,
       tokens = ps.tokens,
+      token_edits = ps.token_edits,
       errs = {},
       read_lang = ps.read_lang,
       allow_macro_vars = ps.allow_macro_vars,
@@ -1450,7 +1573,8 @@ local function read_trying_list<T>(ps: ReadState, i: integer, list: {T}, read_it
       custom_operators = ps.custom_operators,
       features = ps.features,
       local_operators = ps.local_operators,
-      macro_sigs = ps.macro_sigs,
+      operators_shared = ps.operators_shared,
+      macro_scope = ps.macro_scope,
       require_aliases = ps.require_aliases,
       imported_macro_decls = ps.imported_macro_decls,
       imported_macro_keys = ps.imported_macro_keys,
@@ -1483,19 +1607,19 @@ local function read_anglebracket_list(ps: ReadState, i: integer, read_item: Read
       return fail(ps, i+1, "type argument list cannot be empty")
    elseif second.tk == ">>" then
       -- tokenizer hack: consume one bracket from '>>', don't skip over it
-      second.tk = ">"
+      split_greater_token(ps, i + 1)
       fail(ps, i+1, "type argument list cannot be empty")
       return i+1
    end
 
    local typelist: Block = new_type(ps, i, "type_list")
    i = verify_tk(ps, i, "<")
-   i = read_list(ps, i, typelist, { [">"] = true, [">>"] = true, }, "sep", read_item)
+   i = read_list(ps, i, typelist, type_list_closers, "sep", read_item)
    if ps.tokens[i].tk == ">" then
       i = i + 1
    elseif ps.tokens[i].tk == ">>" then
       -- tokenizer hack: consume one bracket from '>>', don't increment i
-      ps.tokens[i].tk = ">"
+      split_greater_token(ps, i)
    else
       return fail(ps, i, "syntax error, expected '>'")
    end
@@ -1721,9 +1845,12 @@ local function is_nullable_suffix(ps: ReadState, i: integer, in_expression?: boo
    local probe = shallow_copy_table(ps)
    probe.errs = {}
    probe.ternary_middle = true
-   probe.tokens = copy_probe_tokens(ps.tokens, i + 1)
+   probe.token_edits = ps.token_edits or {}
+   local edit_mark = #probe.token_edits
    local colon, branch = read_expression(probe, i + 1)
-   return not (branch and #probe.errs == 0 and probe.tokens[colon].tk == ":")
+   local nullable = not (branch and #probe.errs == 0 and probe.tokens[colon].tk == ":")
+   rollback_tokens(probe, edit_mark)
+   return nullable
 end
 
 local function read_union_type(ps: ReadState, i: integer, in_expression?: boolean): integer, Block
@@ -1859,12 +1986,12 @@ local function read_declaration_macro(ps: ReadState, i: integer): integer, Block
 end
 
 local function find_macro_signature(ps: ReadState, name: string): MacroSig
-   local sig = name and ps.macro_sigs[name]
+   local sig = name and ps.macro_scope.signatures[name]
    if not sig and name then
       local alias = name:match("^([^.]+)%.")
       if alias then
          ensure_required_alias_macros(ps, alias)
-         sig = ps.macro_sigs[name]
+         sig = ps.macro_scope.signatures[name]
       end
    end
    return sig
@@ -2432,7 +2559,7 @@ do
             end
             ps.features.needs_macro_pass = true
             local inv: Block = { f = ps.filename, y = args.y, x = args.x, kind = "macro_invocation", [BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = e1, [BLOCK_INDEXES.MACRO_INVOCATION.ARGS] = args, tk = tkop.tk }
-            local signature = mname and ps.macro_sigs[mname]
+            local signature = mname and ps.macro_scope.signatures[mname]
             if signature and signature.operator then
                inv[BLOCK_INDEXES.MACRO_INVOCATION.MACRO] = {
                   kind = "identifier", tk = signature.operator.binding, f = ps.filename, y = e1.y, x = e1.x,
@@ -2442,7 +2569,7 @@ do
          elseif tkop.tk == "(" then
             local prev_tk = ps.tokens[i - 1]
             if tkop.y > prev_tk.y and (ps.read_lang ~= "lua" or not after_valid_prefixexp(ps, e1, i)) then
-               table.insert(ps.tokens, i, { y = prev_tk.y, x = prev_tk.x + #prev_tk.tk, tk = ";", kind = ";" })
+               insert_token(ps, i, { y = prev_tk.y, x = prev_tk.x + #prev_tk.tk, tk = ";", kind = ";" })
                break
             end
 
@@ -2947,10 +3074,10 @@ local function read_forin(ps: ReadState, i: integer): integer, Block
    local node = new_block(ps, i, "forin")
    i = i + 1
    node[BLOCK_INDEXES.FORIN.VARS] = new_block(ps, i, "variable_list")
-   i, node[BLOCK_INDEXES.FORIN.VARS] = read_list(ps, i, node[BLOCK_INDEXES.FORIN.VARS], { ["in"] = true }, "sep", read_identifier)
+   i, node[BLOCK_INDEXES.FORIN.VARS] = read_list(ps, i, node[BLOCK_INDEXES.FORIN.VARS], list_closers["in"], "sep", read_identifier)
    i = verify_tk(ps, i, "in")
    node[BLOCK_INDEXES.FORIN.EXPS] = new_block(ps, i, "expression_list")
-   i = read_list(ps, i, node[BLOCK_INDEXES.FORIN.EXPS], { ["do"] = true }, "sep", read_expression)
+   i = read_list(ps, i, node[BLOCK_INDEXES.FORIN.EXPS], list_closers["do"], "sep", read_expression)
    if #node[BLOCK_INDEXES.FORIN.EXPS] < 1 then
       return fail(ps, i, "missing iterator expression in generic for")
    elseif #node[BLOCK_INDEXES.FORIN.EXPS] > 3 then
@@ -3083,13 +3210,11 @@ end
 
 read_enum_body = function(ps: ReadState, i: integer, def: Block): integer, boolean
    while ps.tokens[i].tk ~= "$EOF$" and ps.tokens[i].tk ~= "end" do
-      local comment_blocks = collect_comment_blocks(ps, i)
+      local comment_i = i
       local item: Block
       i, item = verify_kind(ps, i, "string", "string")
       if item then
-         for _, cb in ipairs(comment_blocks) do
-            table.insert(def, cb)
-         end
+         append_comment_blocks(ps, comment_i, def)
          table.insert(def, item)
       end
    end
@@ -3260,13 +3385,11 @@ read_record_body = function(ps: ReadState, i: integer, def: Block): integer, boo
    local meta_fields: Block
 
    while not (ps.tokens[i].kind == "$EOF$" or ps.tokens[i].tk == "end") do
-      local comment_blocks = collect_comment_blocks(ps, i)
+      local comment_i = i
       local tn = ps.tokens[i].tk
       local tn_kind = type_body_kinds[tn]
       if ps.tokens[i].tk == "userdata" and ps.tokens[i+1].tk ~= ":" then
-         for _, cb in ipairs(comment_blocks) do
-            table.insert(def, cb)
-         end
+         append_comment_blocks(ps, comment_i, def)
          table.insert(def, new_block(ps, i, "userdata"))
          i = i + 1
       elseif ps.tokens[i].tk == "{" then
@@ -3280,9 +3403,7 @@ read_record_body = function(ps: ReadState, i: integer, def: Block): integer, boo
             return fail(ps, i, "expected a type definition")
          end
 
-         for _, cb in ipairs(comment_blocks) do
-            table.insert(fields, cb)
-         end
+         append_comment_blocks(ps, comment_i, fields)
          table.insert(fields, lt)
       elseif tn_kind and ps.tokens[i+1].tk ~= ":" then
          if def.kind == "interface" and tn == "record" then
@@ -3291,9 +3412,7 @@ read_record_body = function(ps: ReadState, i: integer, def: Block): integer, boo
             local lt: Block
             i, lt = read_nested_type(ps, i, tn_kind)
             if lt then
-               for _, cb in ipairs(comment_blocks) do
-                  table.insert(fields, cb)
-               end
+               append_comment_blocks(ps, comment_i, fields)
                table.insert(fields, lt)
             end
          end
@@ -3345,9 +3464,7 @@ read_record_body = function(ps: ReadState, i: integer, def: Block): integer, boo
                end
             end
 
-            for _, cb in ipairs(comment_blocks) do
-               table.insert(current_fields, cb)
-            end
+            append_comment_blocks(ps, comment_i, current_fields)
 
             if ps.tokens[i].tk == "=" and ps.tokens[i + 1].tk == "macroexp" then
                local tt = t.kind == "generic_type" and t[BLOCK_INDEXES.GENERIC_TYPE.BASE] or t
@@ -3684,10 +3801,10 @@ local function register_macro_signature(ps: ReadState, node: Block, key: string)
       local signature = build_macro_sig(node[BLOCK_INDEXES.LOCAL_MACRO.ARGS], ps.errs, ps.filename, key)
       local spec = read_operator_annotation(ps, node, key)
       signature.operator = spec
-      ps.macro_sigs[key] = signature
+      writable_macro_signatures(ps)[key] = signature
       if spec then
          node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] = operator_spec_block(node, spec)
-         ps.macro_sigs[spec.binding] = signature
+         writable_macro_signatures(ps)[spec.binding] = signature
          if not node[BLOCK_INDEXES.LOCAL_MACRO.OWNER] then register_operator(ps, spec, node) end
       end
    end
@@ -3715,10 +3832,10 @@ local function bind_macro_alias(ps: ReadState, node: Block, signature: MacroSig)
          kind = "identifier", tk = original.binding, f = ps.filename, y = name.y, x = name.x,
       }, node_mt)
       signature = { kinds = signature.kinds, vararg = signature.vararg, operator = spec }
-      ps.macro_sigs[spec.binding] = signature
+      writable_macro_signatures(ps)[spec.binding] = signature
       register_operator(ps, spec, node)
    end
-   ps.macro_sigs[name.tk] = signature
+   writable_macro_signatures(ps)[name.tk] = signature
 end
 
 local function read_macro_alias_target(ps: ReadState, i: integer, node: Block): integer, Block
@@ -3733,10 +3850,10 @@ local function read_macro_alias_target(ps: ReadState, i: integer, node: Block): 
    i = verify_tk(ps, i, "!")
    node[BLOCK_INDEXES.LOCAL_MACRO.TARGET] = target
    local key = path_block_to_string(target)
-   local signature = key and ps.macro_sigs[key]
+   local signature = key and ps.macro_scope.signatures[key]
    if not signature and key then
       local alias = key:match("^([^.]+)%.")
-      if alias then ensure_required_alias_macros(ps, alias); signature = ps.macro_sigs[key] end
+      if alias then ensure_required_alias_macros(ps, alias); signature = ps.macro_scope.signatures[key] end
    end
    if signature then
       bind_macro_alias(ps, node, signature)
@@ -3830,18 +3947,18 @@ local function resolve_macro_aliases(ps: ReadState)
          local name = node[BLOCK_INDEXES.LOCAL_MACRO.NAME]
          local target = node[BLOCK_INDEXES.LOCAL_MACRO.TARGET]
          local target_key = path_block_to_string(target)
-         local sig = target_key and ps.macro_sigs[target_key]
+         local sig = target_key and ps.macro_scope.signatures[target_key]
 
          if not sig and target_key then
             local require_alias = target_key:match("^([^.]+)%.")
             if require_alias then
                ensure_required_alias_macros(ps, require_alias)
-               sig = ps.macro_sigs[target_key]
+               sig = ps.macro_scope.signatures[target_key]
             end
          end
 
          if name and sig then
-            if not ps.macro_sigs[name.tk] or not node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then bind_macro_alias(ps, node, sig) end
+            if not ps.macro_scope.signatures[name.tk] or not node[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then bind_macro_alias(ps, node, sig) end
             resolved_any = true
          else
             table.insert(unresolved, node)
@@ -4042,18 +4159,14 @@ needs_local_or_global = {
 
 read_statements = function(ps: ReadState, i: integer, toplevel?: boolean): integer, Block
    local outer_operators = ps.custom_operators
-   local outer_macro_sigs = ps.macro_sigs
-   ps.macro_sigs = {}
-   for key, signature in next, outer_macro_sigs do ps.macro_sigs[key] = signature end
-   local outer_local_operators = ps.local_operators
-   ps.local_operators = nil
-   if outer_operators then
-      local operators: {string: {string: OperatorSpec}} = { prefix = {}, infix = {}, postfix = {} }
-      for fixity, bindings in next, outer_operators do
-         for symbol, spec in next, bindings do operators[fixity][symbol] = spec end
-      end
-      ps.custom_operators = operators
+   local outer_macro_scope = ps.macro_scope
+   if not toplevel then
+      ps.macro_scope = { signatures = outer_macro_scope.signatures, inherited = true }
    end
+   local outer_local_operators = ps.local_operators
+   local outer_operators_shared = ps.operators_shared
+   ps.local_operators = nil
+   ps.operators_shared = true
    local node = new_block(ps, i, "statements")
    local item: Block
    while true do
@@ -4066,10 +4179,8 @@ read_statements = function(ps: ReadState, i: integer, toplevel?: boolean): integ
          break
       end
       local tk = ps.tokens[i].tk
-      local comment_blocks = collect_comment_blocks(ps, i)
-      for _, cb in ipairs(comment_blocks) do
-         table.insert(node, cb)
-      end
+      local comment_i = i
+      append_comment_blocks(ps, comment_i, node)
 
       if (not toplevel) and stop_statement_list[tk] then
          break
@@ -4116,7 +4227,8 @@ read_statements = function(ps: ReadState, i: integer, toplevel?: boolean): integ
    end_at(node, ps.tokens[i])
    ps.custom_operators = outer_operators
    ps.local_operators = outer_local_operators
-   if not toplevel then ps.macro_sigs = outer_macro_sigs end
+   ps.operators_shared = outer_operators_shared
+   if not toplevel then ps.macro_scope = outer_macro_scope end
    return i, node
 end
 
@@ -4125,6 +4237,7 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       module_macro_cache = {}
       module_macro_missing = {}
       module_macro_loading = {}
+      operator_tries = setmetatable({}, { __mode = "k" })
    end
    read_program_depth = read_program_depth + 1
 
@@ -4133,6 +4246,15 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    read_lang = read_lang or lang_heuristic(filename)
    if allow_macro_vars == nil then
       allow_macro_vars = true
+   end
+   -- A public operator context may provide just one fixity. Scope inheritance
+   -- shares registries, so fill absent registries before any operator lookup.
+   if operator_context and (not operator_context.prefix or not operator_context.infix or not operator_context.postfix) then
+      operator_context = {
+         prefix = operator_context.prefix or {},
+         infix = operator_context.infix or {},
+         postfix = operator_context.postfix or {},
+      }
    end
    local ps: ReadState = {
       tokens = tokens,
@@ -4144,7 +4266,7 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
       in_macro_quote = in_macro_quote or false,
       features = {},
       custom_operators = operator_context,
-      macro_sigs = {},
+      macro_scope = { signatures = {} },
       require_aliases = {},
       imported_macro_decls = {},
       imported_macro_keys = {},
@@ -4155,8 +4277,8 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
          for symbol, spec in pairs(operator_context[fixity] or {}) do
             local signature: MacroSig = { kinds = { "expr" }, vararg = "", operator = spec }
             if fixity == "infix" then signature.kinds[2] = "expr" end
-            ps.macro_sigs["(" .. symbol .. ")"] = signature
-            ps.macro_sigs[spec.binding] = signature
+            writable_macro_signatures(ps)["(" .. symbol .. ")"] = signature
+            writable_macro_signatures(ps)[spec.binding] = signature
          end
       end
    end
@@ -4202,12 +4324,12 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
                msg = "method-style macro invocation is not supported; use owner.macro!()",
             })
          elseif name then
-            local sig = ps.macro_sigs[name]
+            local sig = ps.macro_scope.signatures[name]
             if not sig then
                local alias = name:match("^([^.]+)%.")
                if alias then
                   ensure_required_alias_macros(ps, alias)
-                  sig = ps.macro_sigs[name]
+                  sig = ps.macro_scope.signatures[name]
                end
             end
             if sig then
@@ -4268,7 +4390,11 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
    end
 
    local validating_continue: {Block: boolean} = {}
-   local function validate_continue(b: Block, loop: Block, pending: {Block})
+   -- Macro code may return sparse children beyond the fixed Block slots. Keep
+   -- their numeric order, but recycle an index buffer at each recursion depth
+   -- instead of allocating and collecting one array for every visited block.
+   local continue_index_buffers: {{integer}} = {}
+   local function validate_continue(b: Block, loop: Block, pending: {Block}, depth: integer)
       if validating_continue[b] then return end
       validating_continue[b] = true
       if b.kind == "function" or b.kind == "local_function" or b.kind == "global_function" or b.kind == "record_function" then
@@ -4284,12 +4410,21 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
             table.insert(pending, b)
          end
       end
-      local indexes: {integer} = {}
-      for key, _ in pairs(b as {string|integer: Block | nil}) do
-         if not (key is string) then table.insert(indexes, key) end
+      local indexes = continue_index_buffers[depth]
+      if not indexes then
+         indexes = {}
+         continue_index_buffers[depth] = indexes
+      end
+      local count = 0
+      for key in pairs(b as {string|integer: Block | nil}) do
+         if not (key is string) then
+            count = count + 1
+            indexes[count] = key
+         end
       end
       table.sort(indexes)
-      for _, j in ipairs(indexes) do
+      for child_index = 1, count do
+         local j = indexes[child_index]
          local child = b[j]
          if b.kind == "statements" and (child.kind == "local_declaration" or child.kind == "local_function" or child.kind == "local_type") and loop and loop.kind == "repeat" and b == loop[BLOCK_INDEXES.REPEAT.BODY] then
             for _, jump in ipairs(pending) do
@@ -4303,11 +4438,12 @@ function reader.read_program(tokens: {Token}, errs: {Error}, filename?: string, 
                table.insert(errs, { filename = filename, y = child.y, x = child.x, msg = "continue must be the last statement of its block" })
             end
          end
-         validate_continue(child, loop, pending)
+         validate_continue(child, loop, pending, depth + 1)
       end
+      for j = 1, count do indexes[j] = nil end
       validating_continue[b] = nil
    end
-   if read_program_depth == 1 and not skip_macro_expand then validate_continue(node, nil, {}) end
+   if read_program_depth == 1 and not skip_macro_expand then validate_continue(node, nil, {}, 1) end
 
    errors.clear_redundant_errors(errs)
    read_program_depth = read_program_depth - 1

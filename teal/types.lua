@@ -781,13 +781,14 @@ local function a_vararg(w, t)
 end
 
 local function raw_type(f, y, x, typename)
-   local t = setmetatable({}, type_mt)
-   t.typeid = new_typeid()
-   t.f = f
-   t.x = x
-   t.y = y
-   t.typename = typename
-   return t
+
+   return setmetatable({
+      typeid = new_typeid(),
+      f = f,
+      x = x,
+      y = y,
+      typename = typename,
+   }, type_mt)
 end
 
 local function shallow_copy_new_type(t)

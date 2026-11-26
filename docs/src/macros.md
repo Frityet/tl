@@ -740,3 +740,30 @@ ARGUMENT.TYPE
 A parenthesized macro such as `(@)!` returning `Operator<infix, multiplicative>` declares an operator
 that expands through that macro. See [Custom operators](custom_operators.md)
 for named and symbolic spellings, fixities, precedence, scope, and imports.
+
+## Execution and reuse
+
+Macro functions execute on the compiler's LuaJIT host. The compiler emits quoted
+blocks directly as Lua constructors during macro compilation; public block and
+AST parsing APIs keep their existing representations. Every splice still clones
+its input, so changing a generated block does not change another invocation's
+argument.
+
+Repeated compilations can reuse a macro's compiled bytecode. This cache stores
+prototypes and immutable syntax snapshots, never executed macro results or live
+functions. Every compilation loads the prototype into a fresh sandbox and binds
+`parse_expression` to the current reader. Macro state therefore behaves the same
+on the first and subsequent compilations, and macros still execute on every
+invocation.
+
+A cache candidate is verified against the complete declaration syntax, including
+source positions, filename, parsing language, and sparse integer block children.
+Changing a declaration or its parsed operator structure invalidates that
+candidate. Retention is limited to 1,024 declarations and an estimated 8 MiB of
+syntax, bytecode, and table storage, with FIFO eviction. The cache is local to the
+compiler process and is never written to disk.
+
+Statement expansions and macro declaration removal use linear compaction rather
+than repeated insertion into the middle of a statement list. Macro-only imports
+are checked together; references from imports removed later in the file are
+subtracted before earlier imports are considered.

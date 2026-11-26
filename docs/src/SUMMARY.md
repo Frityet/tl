@@ -44,6 +44,7 @@
 - [The Teal Standard Library and Lua compatibility](./teal_standard_library_and_lua_compatibility.md)
 - [Compiler options](./compiler_options.md)
 - [Compiler performance](./compiler_performance.md)
+- [Reader, parser, and macro performance](./frontend_performance.md)
 
 ## The Teal project
 

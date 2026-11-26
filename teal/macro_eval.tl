@@ -3,6 +3,8 @@ local block = require("teal.block")
 local type Block = block.Block
 local type BlockLang = block.BlockLang
 local BLOCK_INDEXES = block.BLOCK_INDEXES
+local child_limit = block.child_limit
+local protected_call = pcall
 
 local errors = require("teal.errors")
 local type Error = errors.Error
@@ -25,6 +27,7 @@ local record MacroSig
 end
 
 local type MacroFunction = function(...: Block): Block
+local type HostMacroFunction = function(...: any): Block
 
 local type MacroValue = nil | boolean | number | string | MacroFunction | Block
 
@@ -32,25 +35,10 @@ local record MacroEnv
    macros: {string: MacroFunction}
    signatures: {string: MacroSig}
    imported_aliases: {string: boolean}
+   visited: {Block: boolean}
    where: Where
 
    sandbox: {string:any}
-end
-
-local function children_iter(b: Block, at: integer): integer, Block
-   while true do
-      at = at + 1
-      local val = b[at]
-      if val then
-         return at, val
-      elseif at >= block.child_limit(b) then
-         return
-      end
-   end
-end
-
-local function children(b: Block): function(Block, integer): (integer, Block), Block, integer
-   return children_iter, b, 0
 end
 
 local function clone_value(v: Block, splice_name?: string): Block
@@ -67,10 +55,97 @@ local function clone_value(v: Block, splice_name?: string): Block
       yend = v.yend,
       xend = v.xend,
    }
-   for idx, child in children(v) do
-      out[idx] = clone_value(child)
+   for idx = 1, child_limit(v) do
+      local child = v[idx]
+      if child then out[idx] = clone_value(child) end
    end
    return out
+end
+
+-- Cache only the compiled prototype, never a closure or its sandbox. The key
+-- selects a candidate quickly; an exact immutable block snapshot verifies it,
+-- including positions and operator-expanded syntax. Editing a macro at the same
+-- source location therefore cannot reuse stale code. The bounded FIFO also
+-- limits retention in long-running compiler/LSP processes.
+local record MacroSyntax
+   is {MacroSyntax}, Where
+   kind: block.BlockKind
+   tk: string
+   yend: integer
+   xend: integer
+   child_count: integer
+end
+
+local record CompiledMacro
+   syntax: MacroSyntax
+   bytecode: string
+   size: integer
+   slot: integer
+end
+local compiled_macros: {string:CompiledMacro} = {}
+local compiled_macro_keys: {string} = {}
+local compiled_macro_slot = 0
+local compiled_macro_bytes = 0
+local COMPILED_MACRO_SLOTS <const> = 1024
+local COMPILED_MACRO_BYTES <const> = 8 * 1024 * 1024
+
+local function same_macro_syntax(a: Block, b: MacroSyntax): boolean
+   if not a or not b then return not a and not b end
+   if a.kind ~= b.kind or a.tk ~= b.tk or a.f ~= b.f or
+      a.y ~= b.y or a.x ~= b.x or a.yend ~= b.yend or a.xend ~= b.xend then
+      return false
+   end
+   local count = 0
+   for key, child in pairs(a as {string|integer:any}) do
+      if key is integer and child is Block then
+         if not same_macro_syntax(child, b[key]) then return false end
+         count = count + 1
+      end
+   end
+   return count == b.child_count
+end
+
+local function snapshot_macro(b: Block): MacroSyntax, integer
+   local copy: MacroSyntax = {
+      kind = b.kind, tk = b.tk, f = b.f, y = b.y, x = b.x,
+      yend = b.yend, xend = b.xend, child_count = 0,
+   }
+   -- Include conservative table/slot overhead as well as retained source text.
+   local size = 256 + #(b.tk or "") + #(b.f or "")
+   -- Public Block input can have sparse children outside the fixed ABI slots.
+   -- Quote serialization consumes all integer keys; the cache must do so too.
+   for key, child in pairs(b as {string|integer:any}) do
+      if key is integer and child is Block then
+         local child_copy, child_size = snapshot_macro(child)
+         copy[key] = child_copy
+         copy.child_count = copy.child_count + 1
+         size = size + child_size + 32
+      end
+   end
+   return copy, size
+end
+
+local function cache_compiled_macro(key: string, syntax: MacroSyntax, bytecode: string, size: integer)
+   size = size + #key + #bytecode
+   if size > COMPILED_MACRO_BYTES then return end
+   local old = compiled_macros[key]
+   if old then
+      compiled_macro_bytes = compiled_macro_bytes - old.size
+      compiled_macro_keys[old.slot] = nil
+      compiled_macros[key] = nil
+   end
+   repeat
+      compiled_macro_slot = compiled_macro_slot % COMPILED_MACRO_SLOTS + 1
+      local evicted_key = compiled_macro_keys[compiled_macro_slot]
+      if evicted_key then
+         compiled_macro_bytes = compiled_macro_bytes - compiled_macros[evicted_key].size
+         compiled_macros[evicted_key] = nil
+         compiled_macro_keys[compiled_macro_slot] = nil
+      end
+   until compiled_macro_bytes + size <= COMPILED_MACRO_BYTES
+   compiled_macros[key] = { syntax = syntax, bytecode = bytecode, size = size, slot = compiled_macro_slot }
+   compiled_macro_keys[compiled_macro_slot] = key
+   compiled_macro_bytes = compiled_macro_bytes + size
 end
 
 local function reanchor_block_positions(b: Block, where_y: integer | nil, where_x: integer | nil,
@@ -91,16 +166,18 @@ local function reanchor_block_positions(b: Block, where_y: integer | nil, where_
       end
    end
 
-   for idx, child in children(b) do
-      reanchor_block_positions(child, where_y, where_x, seen_blocks, keep_positions)
+   for idx = 1, child_limit(b) do
+      local child = b[idx]
+      if child then reanchor_block_positions(child, where_y, where_x, seen_blocks, keep_positions) end
    end
 end
 
 local function remember_blocks(b: Block, blocks: {Block:boolean})
    if blocks[b] then return end
    blocks[b] = true
-   for _, child in children(b) do
-      remember_blocks(child, blocks)
+   for idx = 1, child_limit(b) do
+      local child = b[idx]
+      if child then remember_blocks(child, blocks) end
    end
 end
 
@@ -167,6 +244,7 @@ function macro_eval.new_env(errs: {Error}, parse_expression?: function(string): 
       macros = {},
       signatures = {},
       imported_aliases = {},
+      visited = {},
       where = { f = "@macro", y = 1, x = 1 },
       sandbox = {
          block = function(_: block.BlockKind): Block
@@ -285,12 +363,15 @@ local function validate_statement_positions(b: Block, statement: boolean): Block
       end
    end
    if b.kind ~= "macro_quote" and b.kind ~= "local_macro" then
-      for i, child in children(b) do
-         local checked = validate_statement_positions(child, b.kind == "statements")
-         if not checked then
-            return nil
+      for i = 1, child_limit(b) do
+         local child = b[i]
+         if child then
+            local checked = validate_statement_positions(child, b.kind == "statements")
+            if not checked then
+               return nil
+            end
+            b[i] = checked
          end
-         b[i] = checked
       end
    end
    return b
@@ -325,8 +406,9 @@ local function add_for_shadows(b: Block)
       end
    end
 
-   for _, child in children(b) do
-      add_for_shadows(child)
+   for idx = 1, child_limit(b) do
+      local child = b[idx]
+      if child then add_for_shadows(child) end
    end
 end
 
@@ -364,25 +446,38 @@ local function compile_local_macro(mb: Block, filename: string, read_lang: Block
       end
    end
 
-   local lua_generator = require("teal.gen.lua_generator")
-   local single: Block = { kind = "statements", y = mb.y, x = mb.x, tk = mb.tk, yend = mb.yend, xend = mb.xend }
-   single[1] = mb
+   local cache_key = filename .. "\0" .. read_lang .. "\0" .. macro_key .. "\0" ..
+      tostring(mb.y) .. ":" .. tostring(mb.x)
+   local cached = compiled_macros[cache_key]
+   local chunk: function
+   local load_err: string
+   if cached and same_macro_syntax(mb, cached.syntax) then
+      chunk, load_err = load(cached.bytecode, name, "b", env.sandbox)
+   else
+      local snapshot, snapshot_size = snapshot_macro(mb)
+      local lua_generator = require("teal.gen.lua_generator")
+      local single: Block = { kind = "statements", y = mb.y, x = mb.x, tk = mb.tk, yend = mb.yend, xend = mb.xend }
+      single[1] = mb
 
-   add_for_shadows(single)
+      add_for_shadows(single)
 
-   local mast, perrs = ast.parse_blocks(single, filename, read_lang)
-   if #perrs > 0 then
-      for _, e in ipairs(perrs) do table.insert(errs, e) end
-      return
+      local mast, perrs = ast.parse_macro(single, filename, read_lang)
+      if #perrs > 0 then
+         for _, e in ipairs(perrs) do table.insert(errs, e) end
+         return
+      end
+
+      local host_name = name
+      if name:sub(1, 1) == "(" then
+         host_name = "__teal_operator_macro"
+         (mast as ParserNode)[1].name.tk = host_name
+      end
+      local code = lua_generator.generate(mast as ParserNode, macro_gen_target, lua_generator.fast_opts)
+      chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
+      if chunk then
+         cache_compiled_macro(cache_key, snapshot, string.dump(chunk), snapshot_size)
+      end
    end
-
-   local host_name = name
-   if name:sub(1, 1) == "(" then
-      host_name = "__teal_operator_macro"
-      (mast as ParserNode)[1].name.tk = host_name
-   end
-   local code = lua_generator.generate(mast as ParserNode, macro_gen_target, lua_generator.fast_opts)
-   local chunk, load_err = load(code .. "\nreturn " .. host_name, name, "t", env.sandbox)
    if not chunk then
       table.insert(errs, { filename = filename, y = mb.y, x = mb.x, msg = load_err })
       return
@@ -450,8 +545,6 @@ local function compile_macro_aliases(aliases: {Block}, env: MacroEnv)
       pending = unresolved
    end
 end
-
-local seen: {Block:boolean}
 
 local traverse_invoking_macros: function(b: Block, filename: string, env: MacroEnv, errs: {Error}, context: string): Block
 local eval_macro_invocation: function(b: Block, filename: string, env: MacroEnv, errs: {Error}, context: string): Block
@@ -541,10 +634,17 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    local prev_where = env.where
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }
    env.where = current_where
-   local function invoke_macro(): Block
-      return fn(table.unpack(argv, 1, #argv))
+   local ok: boolean
+   local res: Block
+   if #argv <= 64 then
+      ok, res = protected_call(fn as HostMacroFunction, table.unpack(argv, 1, #argv))
+   else
+      -- Unpacking enormous vararg lists can itself fail before pcall starts.
+      -- Keep that rare path protected without allocating a closure per call.
+      ok, res = protected_call(function(): Block
+         return fn(table.unpack(argv, 1, #argv))
+      end)
    end
-   local ok, res = pcall(invoke_macro)
    env.where = prev_where
    if not ok then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = tostring(res) })
@@ -556,7 +656,7 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    end
    local wy = current_where.y
    local wx = current_where.x
-   reanchor_block_positions(res, wy, wx, setmetatable({}, { __mode = "k" }), keep_positions)
+   reanchor_block_positions(res, wy, wx, {}, keep_positions)
    if context == "expr" and res.kind == "statements" then
       if #res == 1 and is_expression_kind(res[1].kind) then
          res = res[1]
@@ -611,43 +711,59 @@ local function expand_assignment_target(target: Block, filename: string, env: Ma
 end
 
 traverse_invoking_macros = function(b: Block, filename: string, env: MacroEnv, errs: {Error}, context: string): Block
-   -- FIXME Why do we need this? Blocks must form a tree, not a DAG, much less a cyclic graph.
-   if seen and seen[b] then return b end
-   if seen then seen[b] = true end
+   -- Macro callbacks can return shared blocks. Keep visitation local to this
+   -- expansion so a reentrant parse_expression call cannot replace its state.
+   local seen = env.visited
+   if seen[b] then return b end
+   seen[b] = true
    if b.kind == "macro_invocation" then
       return eval_macro_invocation(b, filename, env, errs, context)
    end
 
    local patches: {integer:Block}
-   for i, child in children(b) do
-      local ret: Block
-      if b.kind == "assignment" and i == BLOCK_INDEXES.ASSIGNMENT.VARS then
-         for j, target in ipairs(child) do
-            child[j] = expand_assignment_target(target, filename, env, errs)
-         end
-      elseif child.kind == "macro_invocation" then
-         ret = eval_macro_invocation(child, filename, env, errs, b.kind == "statements" and "stmt" or "expr")
-         if ret.kind == "statements" then
-            patches = patches or {}
-            patches[i] = ret
+   local kind = b.kind
+   for i = 1, child_limit(b) do
+      local child = b[i]
+      if child then
+         local ret: Block
+         if kind == "assignment" and i == BLOCK_INDEXES.ASSIGNMENT.VARS then
+            for j, target in ipairs(child) do
+               child[j] = expand_assignment_target(target, filename, env, errs)
+            end
+         elseif child.kind == "macro_invocation" then
+            ret = eval_macro_invocation(child, filename, env, errs, kind == "statements" and "stmt" or "expr")
+            if ret.kind == "statements" then
+               patches = patches or {}
+               patches[i] = ret
+            else
+               b[i] = ret
+            end
          else
-            b[i] = ret
+            traverse_invoking_macros(child, filename, env, errs, context)
          end
-      else
-         traverse_invoking_macros(child, filename, env, errs, context)
       end
    end
 
    if patches then
-      for i = #b, 1, -1 do
+      -- Inserting each expansion shifts the remaining statements repeatedly.
+      -- Flatten once, including empty expansions, and retain the block identity.
+      local expanded: {Block} = {}
+      local at = 0
+      local count = #b
+      for i = 1, count do
          local patch = patches[i]
          if patch then
-            table.remove(b, i)
             for j = 1, #patch do
-               table.insert(b, i+j-1, patch[j])
+               at = at + 1
+               expanded[at] = patch[j]
             end
+         else
+            at = at + 1
+            expanded[at] = b[i]
          end
       end
+      for i = 1, at do b[i] = expanded[i] end
+      for i = at + 1, count do b[i] = nil end
    end
 
    return b
@@ -673,37 +789,71 @@ local function local_require_alias(stmt: Block): string
    return v.tk
 end
 
-local function block_uses_name(b: Block, name: string, skip: Block): boolean
-   local pending = { b }
-   local visited: {Block: boolean} = { [skip] = true }
-   while #pending > 0 do
-      local current = table.remove(pending)
-      if not visited[current] then
-         visited[current] = true
-         if current.kind == "identifier" and current.tk == name then return true end
-         for index, child in children(current) do
-            -- A member spelling such as string.format is not a reference to a
-            -- local require alias named format.
-            local member_name = (current.kind == "op_dot" or current.kind == "op_colon") and index == BLOCK_INDEXES.OP.E2
-            if not member_name and not visited[child] then table.insert(pending, child) end
-         end
+-- Count imported-name references by their owning top-level statement. Removing
+-- a macro-only import can make an earlier import unused too (for example in a
+-- type annotation), so decrement those references in the original reverse order.
+-- Each statement is traversed once, rather than once for every imported alias.
+local function collect_alias_uses(b: Block, owner: Block, aliases: {string:boolean},
+      uses: {Block:{string:boolean}}, counts: {string:integer}, visited: {Block:Block})
+   if visited[b] == owner then return end
+   visited[b] = owner
+   local kind = b.kind
+   if kind == "identifier" and aliases[b.tk] then
+      local own = uses[owner]
+      if not own then
+         own = {}
+         uses[owner] = own
+      end
+      if not own[b.tk] then
+         own[b.tk] = true
+         counts[b.tk] = (counts[b.tk] or 0) + 1
       end
    end
-   return false
+   local member = kind == "op_dot" or kind == "op_colon"
+   for i = 1, child_limit(b) do
+      local child = b[i]
+      if child and not (member and i == BLOCK_INDEXES.OP.E2) then
+         collect_alias_uses(child, owner, aliases, uses, counts, visited)
+      end
+   end
 end
 
 local function remove_macro_only_requires(node: Block, imported_aliases: {string:boolean})
-   for i = #node, 1, -1 do
+   if not next(imported_aliases) then return end
+   local uses: {Block:{string:boolean}} = {}
+   local counts: {string:integer} = {}
+   local visited: {Block:Block} = {}
+   local occurrences: {Block:integer} = {}
+   local count = #node
+   for i = 1, count do
+      local stmt = node[i]
+      occurrences[stmt] = (occurrences[stmt] or 0) + 1
+      collect_alias_uses(stmt, stmt, imported_aliases, uses, counts, visited)
+   end
+   local removed: {integer:boolean} = {}
+   for i = count, 1, -1 do
       local stmt = node[i]
       local alias = local_require_alias(stmt)
-      if alias and imported_aliases[alias] and not block_uses_name(node, alias, stmt) then
-         table.remove(node, i)
+      local own = uses[stmt]
+      if alias and imported_aliases[alias] and (counts[alias] or 0) == (own and own[alias] and 1 or 0) then
+         removed[i] = true
+         occurrences[stmt] = occurrences[stmt] - 1
+         if occurrences[stmt] == 0 and own then
+            for name in pairs(own) do counts[name] = counts[name] - 1 end
+         end
       end
    end
+   local at = 0
+   for i = 1, count do
+      if not removed[i] then
+         at = at + 1
+         node[at] = node[i]
+      end
+   end
+   for i = at + 1, count do node[i] = nil end
 end
 
 function macro_eval.compile_all_and_expand(node: Block, filename: string, read_lang: BlockLang, errs: {Error}, parse_expression?: function(string): Block): Block
-   seen = setmetatable({}, { __mode = "k" })
    local env = macro_eval.new_env(errs, parse_expression)
    local aliases: {Block} = {}
 
@@ -712,34 +862,50 @@ function macro_eval.compile_all_and_expand(node: Block, filename: string, read_l
       if collected_operators[b] then return end
       collected_operators[b] = true
       if b.kind == "local_macro" or b.kind == "macro_quote" then return end
-      local remove: {integer} = {}
-      for index, child in children(b) do
-         if child.kind == "local_macro" and child[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then
-            if child[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then table.insert(aliases, child)
-            else compile_local_macro(child, filename, read_lang, env, errs) end
-            table.insert(remove, 1, index)
-         else
-            collect_operators(child)
+      local remove: {integer:boolean}
+      for index = 1, child_limit(b) do
+         local child = b[index]
+         if child then
+            if child.kind == "local_macro" and child[BLOCK_INDEXES.LOCAL_MACRO.OPERATOR] then
+               if child[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then aliases[#aliases + 1] = child
+               else compile_local_macro(child, filename, read_lang, env, errs) end
+               remove = remove or {}
+               remove[index] = true
+            else
+               collect_operators(child)
+            end
          end
       end
-      for _, index in ipairs(remove) do table.remove(b, index) end
+      if remove then
+         local at = 0
+         local count = #b
+         for index = 1, count do
+            if not remove[index] then
+               at = at + 1
+               b[at] = b[index]
+            end
+         end
+         for index = at + 1, count do b[index] = nil end
+      end
    end
    collect_operators(node)
 
-   local i = 1
-   while i <= #node do
+   local at = 0
+   local count = #node
+   for i = 1, count do
       local it = node[i]
       if it and it.kind == "local_macro" then
-         table.remove(node, i)
          if it[BLOCK_INDEXES.LOCAL_MACRO.TARGET] then
-            table.insert(aliases, it)
+            aliases[#aliases + 1] = it
          else
             compile_local_macro(it, filename, read_lang, env, errs)
          end
       else
-         i = i + 1
+         at = at + 1
+         node[at] = it
       end
    end
+   for i = at + 1, count do node[i] = nil end
 
    compile_macro_aliases(aliases, env)
 

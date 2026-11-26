@@ -781,13 +781,14 @@ local function a_vararg(w: Where, t: {Type}): TupleType
 end
 
 local function raw_type(f: string, y: integer, x: integer, typename: TypeName): Type
-   local t: Type = setmetatable({}, type_mt)
-   t.typeid = new_typeid()
-   t.f = f
-   t.x = x
-   t.y = y
-   t.typename = typename
-   return t
+   -- Reserve the hash slots in one allocation; every parsed type needs them.
+   return setmetatable({
+      typeid = new_typeid(),
+      f = f,
+      x = x,
+      y = y,
+      typename = typename,
+   } as Type, type_mt)
 end
 
 local function shallow_copy_new_type<T is Type>(t: T): T

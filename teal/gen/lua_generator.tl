@@ -332,6 +332,12 @@ function lua_generator.generate(ast: Node, gen_target: GenTarget, opts?: Options
    end
 
    visit_node.cbs = {
+      ["macro_quote"] = {
+         after = function(_: nil, node: Node, _children: {Output}): Output
+            assert(node.macro_quote_code, "unlowered macro quote")
+            return { y = node.y, h = 0, node.macro_quote_code }
+         end,
+      },
       ["statements"] = {
          after = function(_: nil, node: Node, children: {Output}): Output
             local out: Output

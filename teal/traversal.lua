@@ -286,6 +286,7 @@ local function extra_callback(name,
 end
 
 local no_traverse_nodes = {
+   ["macro_quote"] = true,
    ["..."] = true,
    ["nil"] = true,
    ["cast"] = true,

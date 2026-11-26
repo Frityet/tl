@@ -187,6 +187,8 @@ of this repository.
 
 See [compiler performance](docs/src/compiler_performance.md) for measurements
 and steps to profile the compiler.
+See [reader, parser, and macro performance](docs/src/frontend_performance.md)
+for the frontend changes, compatibility checks, and stage benchmarks.
 
 ## Type definitions
 

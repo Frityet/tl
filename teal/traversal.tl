@@ -286,6 +286,7 @@ local function extra_callback<S, T>(name: VisitorExtraCallback,
 end
 
 local no_traverse_nodes: {NodeKind : boolean} = {
+   ["macro_quote"] = true,
    ["..."] = true,
    ["nil"] = true,
    ["cast"] = true,
