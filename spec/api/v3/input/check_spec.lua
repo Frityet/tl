@@ -24,6 +24,24 @@ describe("Input.check", function()
       end
    end)
 
+   it("recovers from a missing until condition with type reporting enabled", function()
+      local compiler = teal.compiler()
+      compiler:enable_type_reporting(true)
+      local input = compiler:input([[repeat
+   local value: integer = "wrong"
+   print(value)
+until]], "repeat-recovery.tl")
+      local module, check_err = input:check()
+
+      assert(module)
+      assert(compiler:get_type_report())
+      assert.equals(1, #check_err.syntax_errors)
+      assert.equals("expected an expression", check_err.syntax_errors[1].msg)
+      assert.equals(4, check_err.syntax_errors[1].y)
+      assert.equals(1, #check_err.type_errors)
+      assert.equals(2, check_err.type_errors[1].y)
+   end)
+
    it("can check Teal code", function()
       local tl_code = [[
          local foo: string = "hello"

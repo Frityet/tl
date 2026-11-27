@@ -1283,7 +1283,7 @@ parse_fns["repeat"] = function(state, block)
    if node.body then
       node.body.is_repeat = true
    end
-   node.exp = parse_expression(state, block[BLOCK_INDEXES.REPEAT.COND])
+   node.exp = parse_expression(state, block[BLOCK_INDEXES.REPEAT.COND]) or new_node(state, block, "error_node")
    return node
 end
 
