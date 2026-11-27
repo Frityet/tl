@@ -13074,13 +13074,13 @@ function lua_generator.generate(ast, gen_target, opts)
                   table.insert(out, ";")
                end
                add_child(out, child, space, indent)
-               if statement.semicolon then
-                  table.insert(out, ";")
-                  space = " "
-               else
-                  space = "; "
-               end
                if #child > 0 then
+                  if statement.semicolon then
+                     table.insert(out, ";")
+                     space = " "
+                  else
+                     space = "; "
+                  end
                   previous_statement = statement
                end
             end
@@ -14772,7 +14772,8 @@ local macro_eval = {}
 
 
 
-local function clone_value(v, splice_name)
+
+local function clone_value(v, splice_name, keep_positions)
    if type(v) ~= "table" or not v.kind then
       local subject = splice_name and ("macro splice '$" .. splice_name .. "'") or "macro clone"
       error(subject .. " expected a Block, got " .. type(v), 0)
@@ -14786,9 +14787,12 @@ local function clone_value(v, splice_name)
       yend = v.yend,
       xend = v.xend,
    }
+   if keep_positions and keep_positions[v] then
+      keep_positions[out] = true
+   end
    for idx = 1, child_limit(v) do
       local child = v[idx]
-      if child then out[idx] = clone_value(child) end
+      if child then out[idx] = clone_value(child, nil, keep_positions) end
    end
    return out
 end
@@ -14912,6 +14916,18 @@ local function remember_blocks(b, blocks)
    end
 end
 
+local function propagate_kept(b, keep_positions, prev_keep, seen)
+   if seen[b] then return end
+   seen[b] = true
+   if keep_positions[b] then
+      prev_keep[b] = true
+   end
+   for idx = 1, child_limit(b) do
+      local child = b[idx]
+      if child then propagate_kept(child, keep_positions, prev_keep, seen) end
+   end
+end
+
 local function path_block_to_string(node)
    if not node then
       return nil
@@ -14976,6 +14992,7 @@ function macro_eval.new_env(errs, parse_expression)
       signatures = {},
       imported_aliases = {},
       visited = {},
+      keep_positions = nil,
       where = { f = "@macro", y = 1, x = 1 },
       sandbox = {
          block = function(_)
@@ -14985,7 +15002,9 @@ function macro_eval.new_env(errs, parse_expression)
             error("macro env not initialized")
             return nil
          end,
-         clone = clone_value,
+         clone = function(v, splice_name)
+            return clone_value(v, splice_name)
+         end,
 
          BLOCK_INDEXES = BLOCK_INDEXES,
 
@@ -15052,6 +15071,9 @@ function macro_eval.new_env(errs, parse_expression)
       return nil
    end
 
+   env.sandbox.clone = function(v, splice_name)
+      return clone_value(v, splice_name, env.keep_positions)
+   end
    env.sandbox.string_value = block.string_value
 
    env.sandbox.parse_expression = function(source)
@@ -15357,14 +15379,13 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    end
 
 
-   local keep_positions
-   if (b.tk == "record" or b.tk == "local" or b.tk == "global" or b.tk == "const" or b.tk == "function") and not operator_use then
-      keep_positions = {}
-      for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
-   end
+   local keep_positions = {}
+   for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
    local prev_where = env.where
+   local prev_keep = env.keep_positions
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }
    env.where = current_where
+   env.keep_positions = keep_positions
    local ok
    local res
    if #argv <= 64 then
@@ -15377,6 +15398,7 @@ eval_macro_invocation = function(b, filename, env, errs, context)
       end)
    end
    env.where = prev_where
+   env.keep_positions = prev_keep
    if not ok then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = tostring(res) })
       return b
@@ -15388,6 +15410,9 @@ eval_macro_invocation = function(b, filename, env, errs, context)
    local wy = current_where.y
    local wx = current_where.x
    reanchor_block_positions(res, wy, wx, {}, keep_positions)
+   if prev_keep then
+      propagate_kept(res, keep_positions, prev_keep, {})
+   end
    if context == "expr" and res.kind == "statements" then
       if #res == 1 and is_expression_kind(res[1].kind) then
          res = res[1]
@@ -15980,7 +16005,7 @@ end
 
 -- module teal.precompiled.default_env from teal/precompiled/default_env.lua
 package.preload["teal.precompiled.default_env"] = function(...)
-local K1,K2,K3,K4,K5,K6,K7,K8,K9,K10="typename","typeid","./teal/default/stdlib.d.tl","tuple","typevar","./teal/default/prelude.d.tl","min_arity","is_method","function","maybe_method"
+local K1,K2,K3,K4,K5,K6,K7,K8,K9,K10="typename","typeid","/Users/frityet/Projects/ASIFuture/extern/tl/teal/default/stdlib.d.tl","tuple","typevar","/Users/frityet/Projects/ASIFuture/extern/tl/teal/default/prelude.d.tl","min_arity","is_method","function","maybe_method"
 local K11,K12,K13,K14,K15,K16,K17,K18,K19,K20="typearg","string","types","integer","union","number","is_va","nominal","names","found"
 local K21,K22,K23,K24,K25,K26,K27,K28,K29,K30="typeargs","generic","const","attribute","identifier","is_global","declared_at","typedecl","boolean","fresh"
 local K31,K32,K33,K34,K35,K36,K37,K38,K39,K40="--- @return The result values; check for nil where indicated in the signature.","declname","needs_compat","values","elements","array","meta_field_comments","fields","field_order","field_comments"

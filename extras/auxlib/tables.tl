@@ -58,6 +58,34 @@ function Tables.reduce<K, V, U>(source: {K:V}, accumulator: U, step: function(U,
    return accumulator
 end
 
+--- Filter a dense array in index order, keeping matching items in a new dense array.
+--- @param source Dense input array.
+--- @param predicate Function that receives `(value, index)` and returns true to keep the entry.
+--- @return A new dense array with matching items.
+function Tables.select<T>(source: {T}, predicate: function(T, integer): boolean): {T}
+   local output: {T} = {}
+   for idx, value in ipairs(source) do
+      if predicate(value, idx) then
+         output[#output + 1] = value
+      end
+   end
+   return output
+end
+
+--- Count entries in a table that match a predicate.
+--- @param source Table to read with `pairs`.
+--- @param predicate Function that receives `(value, key)` and returns true to count the entry.
+--- @return Number of matching entries.
+function Tables.count<K, V>(source: {K:V}, predicate: function(V, K): boolean): integer
+   local n: integer = 0
+   for key, value in pairs(source) do
+      if predicate(value, key) then
+         n = n + 1
+      end
+   end
+   return n
+end
+
 --- Copy the entries that pass a test. Keep their keys. An array result can have gaps.
 --- @param source Table to read with `pairs`.
 --- @param predicate Function that receives `(value, key)` and returns true to keep the entry.
@@ -209,6 +237,38 @@ end
 --- @return A new table with the matching entries. An array result can have gaps.
 macro Tables.(?>)!(source: Expression, predicate: Expression): Operator<infix, shift>
    return `require("auxlib.tables").filter($source, $predicate)`
+end
+
+--- Filter a dense array in index order and return a new dense array.
+---
+--- ```teal
+--- local nums: {integer} = { 1, 4, 2, 7 }
+--- local big = nums ?>> |v, _| -> v >= 4 -- { 4, 7 }
+--- ```
+---
+--- @param source Dense input array.
+--- @param predicate Function that receives `(value, index)` and returns true to keep the entry.
+--- @return A new dense array with matching elements.
+macro Tables.(?>>)!(source: Expression, predicate: Expression): Operator<infix, shift>
+   return `require("auxlib.tables").select($source, $predicate)`
+end
+
+--- Return the left expression if it is not nil, otherwise evaluate and return the right expression.
+--- Preserves `false` on the left operand and evaluates the left operand only once.
+---
+--- ```teal
+--- local title = props.title |? "Untitled"
+--- ```
+---
+--- @param left Nullable expression.
+--- @param right Fallback expression evaluated only when left is nil.
+--- @return Non-nil value.
+macro Tables.(|?)!(left: Expression, right: Expression): Operator<infix, conditional>
+   return `(|| -> do
+      local __v = $left
+      if __v ~= nil then return __v end
+      return $right
+   end)()`
 end
 
 --- Bind fields to const locals. Evaluate the source once. Read the fields

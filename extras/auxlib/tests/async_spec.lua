@@ -38,16 +38,16 @@ describe('auxlib async macros', function()
             alerts: {string}
          end
 
-         local function load_profile<async!>(id: integer): string
+         local function load_profile<async!>(id: integer): tasks.Task<string>
             tasks.sleep(0):await()
             return "profile:" .. tostring(id)
          end
-         local load_alerts = async!(|id: integer|: {string} -> do
+         local load_alerts = async!(|id: integer|: tasks.Task<{string}> -> do
             tasks.sleep(0):await()
             return {"alert:" .. tostring(id)}
          end)
 
-         local function load_dashboard<tasks.async!>(id: integer): Dashboard
+         local function load_dashboard<tasks.async!>(id: integer): tasks.Task<Dashboard>
             return tasks.nursery(function(scope: Scope): Dashboard
                local profile = scope:spawn(|| -> load_profile(id))
                local alerts = scope:spawn(async!(|| -> load_alerts(id):await()))
@@ -85,9 +85,9 @@ describe('auxlib async macros', function()
       assert.equals(7, run([[
          local loop = tasks.configure()
          local number = 5
-         async!(local function echo(value: integer): integer return value end)
-         local function set<async!>(value: integer) number = value end
-         local job = async!(||: integer -> do
+         async!(local function echo(value: integer): tasks.Task<integer> return value end)
+         local function set<async!>(value: integer): tasks.Task<nil> number = value end
+         local job = async!(||: tasks.Task<integer> -> do
             local pending: tasks.Task<nil> = set(7)
             assert(pending:await() == nil)
             local empty: tasks.Task<string | nil> = tasks.from_callback(
@@ -108,7 +108,7 @@ describe('auxlib async macros', function()
       assert.equals(7, run([[
          local loop = tasks.configure()
          local macro keep!(declaration: Statement) return declaration end
-         local function count<async!, keep!>(value: integer): integer
+         local function count<async!, keep!>(value: integer): tasks.Task<integer>
             if value == 0 then return 4 end
             return count(value - 1):await() + 1
          end
@@ -119,8 +119,28 @@ describe('auxlib async macros', function()
    end)
 
    it('checks the declared result of the original async function', function()
-      local result = compile([[local bad = async!(||: integer -> "wrong")]])
+      local result = compile([[local bad = async!(||: tasks.Task<integer> -> "wrong")]])
       assert.matches('expected integer', result.type_errors[1].msg, 1, true)
+   end)
+
+   it('requires declared async functions to return Task<T>', function()
+      for _, code in ipairs({
+         'local function f<async!>() end',
+         'local function f<async!>(): integer return 1 end',
+         'local f = async!(||: integer -> 1)',
+         'local function f<async!>(): tasks.Task<integer, string> return 1 end',
+      }) do
+         local _, errors = tl.parse(imports .. code, 'async-fixture.tl')
+         assert.is_true(#errors >= 1)
+         assert.matches('async functions must declare a Task<T> return type', errors[1].msg, 1, true)
+      end
+
+      local fake_res = compile([[
+         local record Task<T> value: T end
+         local function f<async!>(): Task<integer> return 1 end
+         local _ = f
+      ]])
+      assert.is_true(#fake_res.type_errors >= 1)
    end)
 
    it('requires a local function declaration or a function literal', function()

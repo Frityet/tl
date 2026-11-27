@@ -36,12 +36,13 @@ local record MacroEnv
    signatures: {string: MacroSig}
    imported_aliases: {string: boolean}
    visited: {Block: boolean}
+   keep_positions: {Block: boolean} | nil
    where: Where
 
    sandbox: {string:any}
 end
 
-local function clone_value(v: Block, splice_name?: string): Block
+local function clone_value(v: Block, splice_name?: string, keep_positions?: {Block: boolean}): Block
    if type(v) ~= "table" or not v.kind then
       local subject = splice_name and ("macro splice '$" .. splice_name .. "'") or "macro clone"
       error(subject .. " expected a Block, got " .. type(v), 0)
@@ -55,9 +56,12 @@ local function clone_value(v: Block, splice_name?: string): Block
       yend = v.yend,
       xend = v.xend,
    }
+   if keep_positions and keep_positions[v] then
+      keep_positions[out] = true
+   end
    for idx = 1, child_limit(v) do
       local child = v[idx]
-      if child then out[idx] = clone_value(child) end
+      if child then out[idx] = clone_value(child, nil, keep_positions) end
    end
    return out
 end
@@ -181,6 +185,18 @@ local function remember_blocks(b: Block, blocks: {Block:boolean})
    end
 end
 
+local function propagate_kept(b: Block, keep_positions: {Block: boolean}, prev_keep: {Block: boolean}, seen: {Block: boolean})
+   if seen[b] then return end
+   seen[b] = true
+   if keep_positions[b] then
+      prev_keep[b] = true
+   end
+   for idx = 1, child_limit(b) do
+      local child = b[idx]
+      if child then propagate_kept(child, keep_positions, prev_keep, seen) end
+   end
+end
+
 local function path_block_to_string(node: Block): string
    if not node then
       return nil
@@ -245,6 +261,7 @@ function macro_eval.new_env(errs: {Error}, parse_expression?: function(string): 
       signatures = {},
       imported_aliases = {},
       visited = {},
+      keep_positions = nil,
       where = { f = "@macro", y = 1, x = 1 },
       sandbox = {
          block = function(_: block.BlockKind): Block
@@ -254,7 +271,9 @@ function macro_eval.new_env(errs: {Error}, parse_expression?: function(string): 
             error("macro env not initialized")
             return nil
          end,
-         clone = clone_value,
+         clone = function(v: Block, splice_name?: string): Block
+            return clone_value(v, splice_name)
+         end,
 
          BLOCK_INDEXES = BLOCK_INDEXES,
 
@@ -321,6 +340,9 @@ function macro_eval.new_env(errs: {Error}, parse_expression?: function(string): 
       return nil
    end
 
+   env.sandbox.clone = function(v: Block, splice_name?: string): Block
+      return clone_value(v, splice_name, env.keep_positions)
+   end
    env.sandbox.string_value = block.string_value
    -- The reader supplies pure parsing; the macro sandbox never executes source.
    env.sandbox.parse_expression = function(source: string): Block
@@ -624,16 +646,15 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    if #errs > argument_errors then
       return b
    end
-   -- A decorator can return the original declaration with new children.
-   -- Keep the original positions for diagnostics in the declaration.
-   local keep_positions: {Block:boolean}
-   if (b.tk == "record" or b.tk == "local" or b.tk == "global" or b.tk == "const" or b.tk == "function") and not operator_use then
-      keep_positions = {}
-      for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
-   end
+   -- Preserve original source coordinates for all AST blocks coming from macro
+   -- arguments (including cloned/spliced subtrees) so diagnostics report accurate lines.
+   local keep_positions: {Block:boolean} = {}
+   for _, ab in ipairs(argv) do remember_blocks(ab, keep_positions) end
    local prev_where = env.where
+   local prev_keep = env.keep_positions
    local current_where = { f = filename, y = mname_block.y, x = mname_block.x }
    env.where = current_where
+   env.keep_positions = keep_positions
    local ok: boolean
    local res: Block
    if #argv <= 64 then
@@ -646,6 +667,7 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
       end)
    end
    env.where = prev_where
+   env.keep_positions = prev_keep
    if not ok then
       table.insert(errs, { filename = filename, y = b.y, x = b.x, msg = tostring(res) })
       return b
@@ -657,6 +679,9 @@ eval_macro_invocation = function(b: Block, filename: string, env: MacroEnv, errs
    local wy = current_where.y
    local wx = current_where.x
    reanchor_block_positions(res, wy, wx, {}, keep_positions)
+   if prev_keep then
+      propagate_kept(res, keep_positions, prev_keep, {})
+   end
    if context == "expr" and res.kind == "statements" then
       if #res == 1 and is_expression_kind(res[1].kind) then
          res = res[1]

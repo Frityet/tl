@@ -67,7 +67,7 @@ local function add_compat_entries(program: Node, used_set: {string: boolean}, ge
       elseif name == "table.pack" then
          load_code(name, [[local _tl_table_pack = table.pack or function(...) return { n = select("#", ...), ... } end]])
       elseif name == "bit32" then
-         load_code(name, "local bit32 = bit32; if not bit32 then local p, m = " .. req("bit32") .. "; if p then bit32 = m end")
+         load_code(name, "local bit32 = bit32; if not bit32 then local pb, mb = pcall(require, 'bit'); if pb then bit32 = mb else local p, m = " .. req("bit32") .. "; if p then bit32 = m end end end")
       elseif name == "mt" then
          load_code(name, "local _tl_mt = function(m, s, a, b) return (getmetatable(s == 1 and a or b)[m](a, b) end")
       elseif name == "math.maxinteger" then
@@ -257,7 +257,11 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
                   convert_node_to_compat_call(node, "math", "floor", div)
                end
             elseif bit_operators[node.op.op] and gen_target == "5.1" then
-               if node.op.meta_on_operand then
+               if node.compound_value then
+                  if not node.op.meta_on_operand then
+                     needs_compat["bit32"] = true
+                  end
+               elseif node.op.meta_on_operand then
                   needs_compat["mt"] = true
                   convert_node_to_compat_mt_call(node, binop_to_metamethod[node.op.op], node.op.meta_on_operand, node.e1, node.e2)
                else

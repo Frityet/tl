@@ -82,6 +82,14 @@ local spaced_op = {
 }
 
 
+local bit_compat_fns = {
+   ["&"] = "bit32.band",
+   ["|"] = "bit32.bor",
+   ["~"] = "bit32.bxor",
+   [">>"] = "bit32.rshift",
+   ["<<"] = "bit32.lshift",
+}
+
 lua_generator.default_opts = {
    preserve_indent = true,
    preserve_newlines = true,
@@ -248,6 +256,266 @@ function lua_generator.generate(ast, gen_target, opts)
       return n.is_longstring
    end
 
+   local tmp_id = 0
+   local function next_tmp(prefix)
+      tmp_id = tmp_id + 1
+      return prefix .. tostring(tmp_id)
+   end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   local method_recvs = {}
+   local opt_chains = {}
+   local lhs_parts_map = {}
+   local loop_stack = {}
+   local loop_ctx_by_node = {}
+   local repeat_hoist_skip = {}
+
+   local function contains_varargs(n)
+      if not n then return false end
+      local k = n.kind
+      if k == "..." then return true end
+      if k == "function" or k == "local_function" or k == "global_function" or k == "record_function" then
+         return false
+      end
+      if contains_varargs(n.e1) or contains_varargs(n.e2) or contains_varargs(n.e3) or contains_varargs(n.exp) then
+         return true
+      end
+      if n.vars and contains_varargs(n.vars) then return true end
+      if n.exps and contains_varargs(n.exps) then return true end
+      for i = 1, #n do
+         if contains_varargs(n[i]) then return true end
+      end
+      return false
+   end
+
+   local function scan_loop_body(n)
+      if not n then return false, false end
+      local has_c, has_b = false, false
+      local function walk(cur)
+         if not cur then return end
+         local ck = cur.kind
+         if ck == "continue" then
+            has_c = true
+            return
+         elseif ck == "break" then
+            has_b = true
+            return
+         elseif ck == "while" or ck == "fornum" or ck == "forin" or ck == "repeat" or
+            ck == "function" or ck == "local_function" or ck == "global_function" or ck == "record_function" then
+            return
+         end
+         if cur.body then walk(cur.body) end
+         if cur.if_blocks then
+            for _, ib in ipairs(cur.if_blocks) do walk(ib) end
+         end
+         for i = 1, #cur do walk(cur[i]) end
+      end
+      walk(n)
+      return has_c, has_b
+   end
+
+   local function emit_arshift_call(y, lhs_out, rhs_out)
+      local out = { y = y, h = 0 }
+      table.insert(out, "(function(_tl_a, _tl_b) _tl_a = math.floor(_tl_a) % 4294967296; if _tl_a >= 2147483648 then _tl_a = _tl_a - 4294967296 end; return math.floor(_tl_a / (2 ^ (math.floor(_tl_b) % 32))) end)(")
+      add_child(out, lhs_out)
+      table.insert(out, ", ")
+      add_child(out, rhs_out)
+      table.insert(out, ")")
+      return out
+   end
+
+   local function emit_binop_out(y, op_str, lhs_out, rhs_out)
+      if op_str == "~>>" then
+         return emit_arshift_call(y, lhs_out, rhs_out)
+      end
+      local bf = gen_target == "5.1" and bit_compat_fns[op_str] or nil
+      if bf then
+         local out = { y = y, h = 0 }
+         table.insert(out, bf .. "(")
+         add_child(out, lhs_out)
+         table.insert(out, ", ")
+         add_child(out, rhs_out)
+         table.insert(out, ")")
+         return out
+      end
+      local out = { y = y, h = 0 }
+      table.insert(out, "((")
+      add_child(out, lhs_out)
+      table.insert(out, ") " .. op_str .. " (")
+      add_child(out, rhs_out)
+      table.insert(out, "))")
+      return out
+   end
+
+   local function materialize_chain(ch)
+      local out = { y = ch.y, h = 0 }
+      if ch.has_va then
+         table.insert(out, "(function(...) ")
+      else
+         table.insert(out, "(function() ")
+      end
+      local cur = next_tmp("_tl_o")
+      table.insert(out, "local " .. cur .. " = ")
+      add_child(out, ch.base)
+      table.insert(out, "; ")
+      local nsteps = #ch.steps
+      for idx, st in ipairs(ch.steps) do
+         local is_last = idx == nsteps
+         if st.kind == "method_call" then
+            if st.safe then
+               table.insert(out, "if " .. cur .. " == nil then return nil end; ")
+            end
+            local mvar = next_tmp("_tl_m")
+            table.insert(out, "local " .. mvar .. " = " .. cur .. ".")
+            add_child(out, st.name)
+            table.insert(out, "; ")
+            if st.safe_call then
+               table.insert(out, "if " .. mvar .. " == nil then return nil end; ")
+            end
+            if is_last then
+               table.insert(out, "return " .. mvar .. "(" .. cur)
+               if #st.args > 0 then
+                  table.insert(out, ", ")
+                  add_child(out, st.args)
+               end
+               table.insert(out, ")")
+            else
+               local nxt = next_tmp("_tl_o")
+               table.insert(out, "local " .. nxt .. " = " .. mvar .. "(" .. cur)
+               if #st.args > 0 then
+                  table.insert(out, ", ")
+                  add_child(out, st.args)
+               end
+               table.insert(out, "); ")
+               cur = nxt
+            end
+         else
+            if st.safe then
+               table.insert(out, "if " .. cur .. " == nil then return nil end; ")
+            end
+            local expr = { y = ch.y, h = 0 }
+            table.insert(expr, cur)
+            if st.kind == "field" then
+               table.insert(expr, ".")
+               add_child(expr, st.name)
+            elseif st.kind == "index" then
+               table.insert(expr, "[")
+               add_child(expr, st.key)
+               table.insert(expr, "]")
+            elseif st.kind == "call" then
+               table.insert(expr, "(")
+               add_child(expr, st.args)
+               table.insert(expr, ")")
+            end
+            if is_last then
+               table.insert(out, "return ")
+               add_child(out, expr)
+            else
+               local nxt = next_tmp("_tl_o")
+               table.insert(out, "local " .. nxt .. " = ")
+               add_child(out, expr)
+               table.insert(out, "; ")
+               cur = nxt
+            end
+         end
+      end
+      if ch.has_va then
+         table.insert(out, " end)(...)")
+      else
+         table.insert(out, " end)()")
+      end
+      return out
+   end
+
+   local function loop_before(_, node)
+      if gen_target ~= "luajit" and node.body then
+         local hc, hb = scan_loop_body(node.body)
+         local ctx = {
+            has_continue = hc,
+            has_break = hb,
+            brk_var = (hc and hb) and next_tmp("_tl_brk") or nil,
+            is_repeat = node.kind == "repeat",
+            repeat_locals = nil,
+         }
+         if hc and node.kind == "repeat" then
+            for i = 1, #node.body do
+               local st = node.body[i]
+               if st.kind == "local_declaration" then
+                  if not ctx.repeat_locals then ctx.repeat_locals = {} end
+                  for _, v in ipairs(st.vars) do
+                     table.insert(ctx.repeat_locals, v.tk)
+                  end
+                  repeat_hoist_skip[st] = true
+               elseif st.kind == "local_function" then
+                  if not ctx.repeat_locals then ctx.repeat_locals = {} end
+                  table.insert(ctx.repeat_locals, st.name.tk)
+                  repeat_hoist_skip[st] = true
+               end
+            end
+         end
+         loop_ctx_by_node[node] = ctx
+         table.insert(loop_stack, ctx)
+      end
+      if increment_indent then
+         increment_indent(nil, node)
+      end
+   end
+
+   local function wrap_loop_body(_node, body_out, parent_ctx)
+      if not parent_ctx or not parent_ctx.has_continue then
+         return body_out
+      end
+      local out = { y = body_out.y, h = 0 }
+      if parent_ctx.repeat_locals and #parent_ctx.repeat_locals > 0 then
+         table.insert(out, "local " .. table.concat(parent_ctx.repeat_locals, ", ") .. "; ")
+      end
+      if parent_ctx.brk_var then
+         table.insert(out, "local " .. parent_ctx.brk_var .. " = false; ")
+      end
+      table.insert(out, "repeat ")
+      add_child(out, body_out)
+      table.insert(out, " until true")
+      if parent_ctx.brk_var then
+         table.insert(out, "; if " .. parent_ctx.brk_var .. " then break end")
+      end
+      return out
+   end
+
    local function drop_initial_indentation(out)
       if not out then
          return
@@ -296,19 +564,27 @@ function lua_generator.generate(ast, gen_target, opts)
          local out = { y = node.y, h = 0 }
 
          if kind == "local" then
-            table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
+            if repeat_hoist_skip[node] then
+               add_child(out, children[1], "")
+               table.insert(out, " = function(")
+            else
+               table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
+               table.insert(out, "function")
+            end
+         else
+            table.insert(out, "function")
          end
-
-         table.insert(out, "function")
 
          if kind == "record" then
             add_child(out, children[1], " ")
             table.insert(out, node.is_method and ":" or ".")
             add_child(out, children[2])
-         elseif kind ~= "anonymous" then
+         elseif kind ~= "anonymous" and not (kind == "local" and repeat_hoist_skip[node]) then
             add_child(out, children[1], " ")
          end
-         table.insert(out, "(")
+         if not (kind == "local" and repeat_hoist_skip[node]) then
+            table.insert(out, "(")
+         end
 
 
          local args = children[arguments_index]
@@ -353,18 +629,18 @@ function lua_generator.generate(ast, gen_target, opts)
                local statement = node[i]
 
 
-               if statement.kind == "assignment" and previous_statement and not previous_statement.semicolon and
+               if (statement.kind == "assignment" or first_output_character(child) == "(") and previous_statement and not previous_statement.semicolon and
                   opts.preserve_newlines and child.y > out.y + out.h and first_output_character(child) == "(" then
                   table.insert(out, ";")
                end
                add_child(out, child, space, indent)
-               if statement.semicolon then
-                  table.insert(out, ";")
-                  space = " "
-               else
-                  space = "; "
-               end
                if #child > 0 then
+                  if statement.semicolon then
+                     table.insert(out, ";")
+                     space = " "
+                  else
+                     space = "; "
+                  end
                   previous_statement = statement
                end
             end
@@ -374,6 +650,20 @@ function lua_generator.generate(ast, gen_target, opts)
       ["local_declaration"] = {
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
+            if repeat_hoist_skip[node] then
+               if not children[3] then
+                  return out
+               end
+               for i, var in ipairs(node.vars) do
+                  if i > 1 then
+                     add_string(out, ", ")
+                  end
+                  add_string(out, var.tk)
+               end
+               table.insert(out, " =")
+               add_child(out, children[3], " ")
+               return out
+            end
             table.insert(out, node.lj_const and gen_target == "luajit" and "const " or "local ")
             for i, var in ipairs(node.vars) do
                if i > 1 then
@@ -428,6 +718,120 @@ function lua_generator.generate(ast, gen_target, opts)
       ["assignment"] = {
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
+            local chain = gen_target ~= "luajit" and opt_chains[children[1]] or nil
+            if chain then
+               table.insert(out, "do local ")
+               local cur = next_tmp("_tl_o")
+               table.insert(out, cur .. " = ")
+               add_child(out, chain.base)
+               table.insert(out, "; ")
+               local open_ifs = 0
+               local nsteps = #chain.steps
+               for idx = 1, nsteps - 1 do
+                  local st = chain.steps[idx]
+                  if st.safe then
+                     table.insert(out, "if " .. cur .. " ~= nil then ")
+                     open_ifs = open_ifs + 1
+                  end
+                  local nxt = next_tmp("_tl_o")
+                  if st.kind == "method_call" then
+                     local mvar = next_tmp("_tl_m")
+                     table.insert(out, "local " .. mvar .. " = " .. cur .. ".")
+                     add_child(out, st.name)
+                     table.insert(out, "; ")
+                     if st.safe_call then
+                        table.insert(out, "if " .. mvar .. " ~= nil then ")
+                        open_ifs = open_ifs + 1
+                     end
+                     table.insert(out, "local " .. nxt .. " = " .. mvar .. "(" .. cur)
+                     if #st.args > 0 then
+                        table.insert(out, ", ")
+                        add_child(out, st.args)
+                     end
+                     table.insert(out, "); ")
+                  else
+                     table.insert(out, "local " .. nxt .. " = " .. cur)
+                     if st.kind == "field" then
+                        table.insert(out, ".")
+                        add_child(out, st.name)
+                     elseif st.kind == "index" then
+                        table.insert(out, "[")
+                        add_child(out, st.key)
+                        table.insert(out, "]")
+                     elseif st.kind == "call" then
+                        table.insert(out, "(")
+                        add_child(out, st.args)
+                        table.insert(out, ")")
+                     end
+                     table.insert(out, "; ")
+                  end
+                  cur = nxt
+               end
+               local last = chain.steps[nsteps]
+               if last.safe then
+                  table.insert(out, "if " .. cur .. " ~= nil then ")
+                  open_ifs = open_ifs + 1
+               end
+               local target_lhs = { y = node.y, h = 0 }
+               if last.kind == "field" then
+                  table.insert(target_lhs, cur .. ".")
+                  add_child(target_lhs, last.name)
+               else
+                  local kvar = next_tmp("_tl_k")
+                  table.insert(out, "local " .. kvar .. " = ")
+                  add_child(out, last.key)
+                  table.insert(out, "; ")
+                  table.insert(target_lhs, cur .. "[" .. kvar .. "]")
+               end
+               add_child(out, target_lhs)
+               table.insert(out, " = ")
+               if node.compound then
+                  add_child(out, emit_binop_out(node.y, node.compound, target_lhs, children[3]))
+               else
+                  add_child(out, children[3])
+               end
+               for _ = 1, open_ifs do
+                  table.insert(out, " end")
+               end
+               table.insert(out, " end")
+               return out
+            end
+
+            if gen_target ~= "luajit" and node.compound then
+               local parts = lhs_parts_map[children[1]]
+               if parts and parts.kind == "field" then
+                  local tvar = next_tmp("_tl_t")
+                  table.insert(out, "do local " .. tvar .. " = ")
+                  add_child(out, parts.obj)
+                  local acc = { y = node.y, h = 0, tvar, "." }
+                  add_child(acc, parts.key)
+                  table.insert(out, "; " .. tvar .. ".")
+                  add_child(out, parts.key)
+                  table.insert(out, " = ")
+                  add_child(out, emit_binop_out(node.y, node.compound, acc, children[3]))
+                  table.insert(out, " end")
+                  return out
+               elseif parts and parts.kind == "index" then
+                  local tvar = next_tmp("_tl_t")
+                  local kvar = next_tmp("_tl_k")
+                  table.insert(out, "do local " .. tvar .. ", " .. kvar .. " = ")
+                  add_child(out, parts.obj)
+                  table.insert(out, ", ")
+                  add_child(out, parts.key)
+                  local acc = { y = node.y, h = 0, tvar, "[", kvar, "]" }
+                  table.insert(out, "; " .. tvar .. "[" .. kvar .. "] = ")
+                  add_child(out, emit_binop_out(node.y, node.compound, acc, children[3]))
+                  table.insert(out, " end")
+                  return out
+               else
+
+                  add_child(out, children[1])
+                  table.insert(out, " = ")
+                  add_child(out, emit_binop_out(node.y, node.compound, children[1], children[3]))
+                  return out
+               end
+            end
+
             add_child(out, children[1])
             table.insert(out, " " .. (node.compound or "") .. "=")
             add_child(out, children[3], " ")
@@ -436,6 +840,18 @@ function lua_generator.generate(ast, gen_target, opts)
       },
       ["conditional"] = {
          after = function(_, node, children)
+            if gen_target ~= "luajit" then
+               local out = { y = node.y, h = 0 }
+               local has_va = contains_varargs(node)
+               table.insert(out, has_va and "(function(...) if " or "(function() if ")
+               add_child(out, children[1])
+               table.insert(out, " then return ")
+               add_child(out, children[2])
+               table.insert(out, " else return ")
+               add_child(out, children[3])
+               table.insert(out, has_va and " end end)(...)" or " end end)()")
+               return out
+            end
             local out = { y = node.y, h = 0, "(" }
             add_child(out, children[1])
             table.insert(out, " ? (")
@@ -477,23 +893,25 @@ function lua_generator.generate(ast, gen_target, opts)
          end,
       },
       ["while"] = {
-         before = increment_indent,
+         before = loop_before,
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
             table.insert(out, "while")
             add_child(out, children[1], " ")
             table.insert(out, " do")
-            add_block(out, children[2], node)
+            local ctx = gen_target ~= "luajit" and table.remove(loop_stack) or nil
+            add_block(out, wrap_loop_body(node, children[2], ctx), node)
             add_child(out, { y = node.yend, h = 0, [1] = "end" }, " ", indent)
             return out
          end,
       },
       ["repeat"] = {
-         before = increment_indent,
+         before = loop_before,
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
             table.insert(out, "repeat")
-            add_block(out, children[1], node)
+            local ctx = gen_target ~= "luajit" and table.remove(loop_stack) or nil
+            add_block(out, wrap_loop_body(node, children[1], ctx), node)
             add_child(out, { y = node.yend, h = 0, [1] = "until " }, " ", indent)
             add_child(out, children[2])
             return out
@@ -510,7 +928,7 @@ function lua_generator.generate(ast, gen_target, opts)
          end,
       },
       ["forin"] = {
-         before = increment_indent,
+         before = loop_before,
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
             table.insert(out, "for")
@@ -518,13 +936,14 @@ function lua_generator.generate(ast, gen_target, opts)
             table.insert(out, " in")
             add_child(out, children[2], " ")
             table.insert(out, " do")
-            add_block(out, children[3], node)
+            local ctx = gen_target ~= "luajit" and table.remove(loop_stack) or nil
+            add_block(out, wrap_loop_body(node, children[3], ctx), node)
             add_child(out, { y = node.yend, h = 0, [1] = "end" }, " ", indent)
             return out
          end,
       },
       ["fornum"] = {
-         before = increment_indent,
+         before = loop_before,
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
             table.insert(out, "for")
@@ -538,7 +957,8 @@ function lua_generator.generate(ast, gen_target, opts)
                add_child(out, children[4], " ")
             end
             table.insert(out, " do")
-            add_block(out, children[5], node)
+            local ctx = gen_target ~= "luajit" and table.remove(loop_stack) or nil
+            add_block(out, wrap_loop_body(node, children[5], ctx), node)
             add_child(out, { y = node.yend, h = 0, [1] = "end" }, " ", indent)
             return out
          end,
@@ -556,7 +976,12 @@ function lua_generator.generate(ast, gen_target, opts)
       ["break"] = {
          after = function(_, node, _children)
             local out = { y = node.y, h = 0 }
-            table.insert(out, "break")
+            local ctx = gen_target ~= "luajit" and loop_stack[#loop_stack] or nil
+            if ctx and ctx.brk_var then
+               table.insert(out, "do " .. ctx.brk_var .. " = true; break end")
+            else
+               table.insert(out, "break")
+            end
             return out
          end,
       },
@@ -570,6 +995,14 @@ function lua_generator.generate(ast, gen_target, opts)
                   space = " "
                end
                add_child(out, child, space, child.y ~= node.y and indent)
+            end
+            if gen_target ~= "luajit" and #children == 1 then
+               if opt_chains[children[1]] then
+                  opt_chains[out] = opt_chains[children[1]]
+               end
+               if lhs_parts_map[children[1]] then
+                  lhs_parts_map[out] = lhs_parts_map[children[1]]
+               end
             end
             return out
          end,
@@ -660,6 +1093,76 @@ function lua_generator.generate(ast, gen_target, opts)
             if node.compound_value then
                return children[3]
             end
+            if gen_target ~= "luajit" then
+               if node.op.op == "??" then
+                  local has_va = contains_varargs(node.e2)
+                  if has_va then
+                     table.insert(out, "(function(...) local _tl_v = ")
+                     add_child(out, children[1])
+                     table.insert(out, "; if _tl_v ~= nil then return _tl_v end; return ")
+                     add_child(out, children[3])
+                     table.insert(out, " end)(...)")
+                  else
+                     table.insert(out, "(function(_tl_v) if _tl_v ~= nil then return _tl_v end; return ")
+                     add_child(out, children[3])
+                     table.insert(out, " end)(")
+                     add_child(out, children[1])
+                     table.insert(out, ")")
+                  end
+                  return out
+               elseif node.op.op == "~>>" then
+                  return emit_arshift_call(node.y, children[1], children[3])
+               elseif node.optional_chain then
+                  if node.op.op == ":" then
+                     local mr = { recv = children[1], name = children[3], safe = node.safe_navigation == true }
+                     method_recvs[out] = mr
+                     return out
+                  end
+                  local mr = node.op.op == "@funcall" and method_recvs[children[1]] or nil
+                  local prev_base = mr and mr.recv or children[1]
+                  local prev_chain = opt_chains[prev_base]
+                  local steps = {}
+                  local base_out = prev_chain and prev_chain.base or prev_base
+                  local has_va = (prev_chain and prev_chain.has_va) or contains_varargs(node.e2)
+                  if prev_chain then
+                     for _, st in ipairs(prev_chain.steps) do
+                        table.insert(steps, st)
+                     end
+                  end
+                  if mr then
+                     table.insert(steps, {
+                        kind = "method_call",
+                        safe = mr.safe,
+                        safe_call = node.safe_navigation == true,
+                        name = mr.name,
+                        args = children[3],
+                     })
+                  elseif node.op.op == "@funcall" then
+                     table.insert(steps, {
+                        kind = "call",
+                        safe = node.safe_navigation == true,
+                        args = children[3],
+                     })
+                  elseif node.op.op == "@index" then
+                     table.insert(steps, {
+                        kind = "index",
+                        safe = node.safe_navigation == true,
+                        key = children[3],
+                     })
+                  else
+
+                     table.insert(steps, {
+                        kind = "field",
+                        safe = node.safe_navigation == true,
+                        name = children[3],
+                     })
+                  end
+                  local chain = { base = base_out, steps = steps, has_va = has_va, y = node.y }
+                  local mat = materialize_chain(chain)
+                  opt_chains[mat] = chain
+                  return mat
+               end
+            end
             if node.safe_navigation then
                table.insert(children[1], "?.")
             end
@@ -677,6 +1180,9 @@ function lua_generator.generate(ast, gen_target, opts)
                end
                add_child(out, children[3], "", indent)
                table.insert(out, "]")
+               if gen_target ~= "luajit" then
+                  lhs_parts_map[out] = { kind = "index", obj = children[1], key = children[3] }
+               end
             elseif node.op.op == "as" then
                add_child(out, children[1], "", indent)
             elseif node.op.op == "is" then
@@ -718,6 +1224,11 @@ function lua_generator.generate(ast, gen_target, opts)
                      table.insert(children[3], ")")
                   end
                   add_child(out, children[3], space, indent)
+                  if gen_target ~= "luajit" and node.op.op == ":" then
+                     method_recvs[out] = { recv = children[1], name = children[3], safe = false }
+                  elseif gen_target ~= "luajit" and node.op.op == "." then
+                     lhs_parts_map[out] = { kind = "field", obj = children[1], key = children[3] }
+                  end
                end
             else
                error("unknown node op " .. node.op.op)
@@ -823,14 +1334,24 @@ function lua_generator.generate(ast, gen_target, opts)
          end,
       },
 
-      ["continue"] = emit_exactly_visitor_cbs,
+      ["continue"] = {
+         after = function(_, node, _children)
+            if gen_target ~= "luajit" then
+               return { y = node.y, h = 0, "do break end" }
+            end
+            return { y = node.y, h = 0, node.tk }
+         end,
+      },
       ["variable"] = emit_exactly_visitor_cbs,
       ["identifier"] = emit_exactly_visitor_cbs,
       ["number"] = {
          after = function(_, node)
             local text = node.tk:gsub("_", "")
-            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
-               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            if gen_target ~= "luajit" then
+               text = text:gsub("[uU]?[lL][lL]$", ""):gsub("[iI]$", "")
+               if text:match("^0[bB][01]+$") then
+                  text = string.format("%.17g", tonumber(text:sub(3), 2))
+               end
             end
             return { y = node.y, h = 0, text }
          end,
@@ -838,8 +1359,11 @@ function lua_generator.generate(ast, gen_target, opts)
       ["integer"] = {
          after = function(_, node)
             local text = node.tk:gsub("_", "")
-            if gen_target ~= "luajit" and text:match("^0[bB][01]+$") then
-               text = string.format("%.17g", tonumber(text:sub(3), 2))
+            if gen_target ~= "luajit" then
+               text = text:gsub("[uU]?[lL][lL]$", ""):gsub("[iI]$", "")
+               if text:match("^0[bB][01]+$") then
+                  text = string.format("%.17g", tonumber(text:sub(3), 2))
+               end
             end
             return { y = node.y, h = 0, text }
          end,
@@ -908,14 +1432,6 @@ function lua_generator.generate(ast, gen_target, opts)
    visit_node.cbs["expression_list"] = visit_node.cbs["variable_list"]
    visit_node.cbs["argument_list"] = visit_node.cbs["variable_list"]
 
-   visit_node.after = function(_, node, _children, out)
-      if gen_target ~= "luajit" and
-         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
-         (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
-         error("this extension requires the luajit generation target")
-      end
-      return out
-   end
    local out = traversal.traverse_nodes(nil, ast, visit_node, visit_type)
 
    local code

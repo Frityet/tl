@@ -222,7 +222,7 @@ starts a task when called.
 local tasks = require("auxlib.async")
 local macro async! = tasks.async!
 
-local function fetch<async!>(id: integer): string
+local function fetch<async!>(id: integer): tasks.Task<string>
    return tostring(id)
 end
 local fetch_default = async!(|| -> fetch(1):await())

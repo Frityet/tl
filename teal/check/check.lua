@@ -43,11 +43,6 @@ local check = {}
 local function extension_type_after(fn)
    return function(self, node, children, t)
       t = fn and fn(self, node, children, t) or t
-      if self.env.opts.gen_target ~= "luajit" and
-         (node.kind == "conditional" or node.kind == "continue" or node.safe_navigation or node.compound or node.luajit_literal or
-         (node.op and (node.op.op == "??" or node.op.op == "~>>"))) then
-         self.errs:add(node, "this extension requires the luajit generation target")
-      end
       if node.optional_chain then node.chain_value_type = t end
       if node.optional_chain and not node.is_lvalue then
          if t.typename == "tuple" then

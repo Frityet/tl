@@ -663,8 +663,8 @@ local function load_workspace_config(server)
          config.include_dir[index] = server.root .. "/" .. include
       end
    end
-   if config.global_env_def and config.global_env_def:sub(1, 1) ~= "/" and not config.global_env_def:match("^%a:[/\\]") then
-      config.global_env_def = server.root .. "/" .. config.global_env_def
+   if config.source_dir and config.source_dir:sub(1, 1) ~= "/" and not config.source_dir:match("^%a:[/\\]") then
+      config.source_dir = server.root .. "/" .. config.source_dir
    end
    configuration.merge_config_and_args(config, server.args)
    lfs.chdir(previous)

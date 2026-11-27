@@ -312,12 +312,95 @@ describe('LuaJIT 3.0 syntax backported to 2.1', function()
       type_error('const n = 1; n += 2', 'const')
    end)
 
-   it('rejects native-only extensions on standard Lua generation targets', function()
-      for _, code in ipairs({'return true ? 1 : 2', 'return nil ?? 2', 'return -1 ~>> 1', 'local n = 1; n += 2'}) do
-         local result = checked(code, '5.1')
-         assert.is_true(#result.type_errors > 0, code)
-         assert.has_error(function() tl.generate(result.ast, '5.1') end)
+   it('lowers all LuaJIT syntax extensions cleanly to standard Lua 5.1', function()
+      local function run51(code, gen_compat)
+         local env = assert(tl.new_env({defaults = {gen_target = '5.1', gen_compat = gen_compat or 'optional', feat_strict_nil = 'on'}}))
+         local res = tl.check_string(code, env, 'lower51.tl')
+         assert.same({}, res.syntax_errors)
+         assert.same({}, res.type_errors)
+         local lua_compat_mod = require('teal.gen.lua_compat')
+         lua_compat_mod.apply(res)
+         local out = tl.generate(res.ast, '5.1')
+         assert.not_matches('%?%.', out)
+         assert.not_matches('%?%?', out)
+         assert.not_matches('~>>', out, 1, true)
+         assert.not_matches('%+=', out)
+         return {assert(loadstring(out), out)()}, out
       end
+
+      -- Ternary, nullish coalescing (retains false & short-circuits), arithmetic shift, literals
+      assert.same({false, 7, 1, -1, 1000, 10}, run51([[
+         local calls = 0
+         local function bump(): boolean calls += 1; return true end
+         local f: boolean? = false
+         local n: integer? = nil
+         local cond = (n == nil) ? false : bump()
+         local coal = f ?? bump()
+         local fall = n ?? 7
+         local ar = (-2) ~>> 1
+         local lit = 1_000 + 0b1010 + 0ULL
+         assert(cond == false and coal == false and calls == 0)
+         return coal, fall, 0b1, ar, 1_000, (0b1010 + 0ULL)
+      ]]))
+
+      -- Compound assignment precedence, single-eval receiver/key, bitwise compound
+      assert.same({21, 1, 1, 6, 'ab'}, run51([[
+         local t: {string: integer} = {x = 2}
+         local recs = 0
+         local keys = 0
+         local function rec(): {string: integer} recs += 1; return t end
+         local function k(): string keys += 1; return "x" end
+         rec()[k()] *= 5 + 5
+         t.x += 1
+         local bits: integer = 12
+         bits &= 10
+         bits |= 4
+         bits ~>>= 1
+         local s = "a"; s ..= "b"
+         return t.x, recs, keys, bits, s
+      ]], 'required'))
+
+      -- Safe navigation & optional calls / methods + short-circuiting optional LHS assignment
+      assert.same({'bc', 'bc', 'bc', nil, 0, 14}, run51([[
+         local calls = 0
+         local function key(): string calls += 1; return "x" end
+         local function rhs(): integer calls += 1; return 9 end
+         local missing: (function(integer): integer)? = nil
+         local nt: {string: {string: integer}}? = nil
+         nt?.[key()].x = rhs()
+         nt?.[key()].x += rhs()
+         local present: {string: {string: integer}}? = { a = { x = 5 } }
+         present?.a.x += rhs()
+         return ("abcd")?.:sub(2, 3), ("abcd"):sub?.(2, 3), ("abcd")?.:sub?.(2, 3), missing?.(1), calls - 1, present?.a.x
+      ]]))
+
+      -- Continue in fornum, forin, while, repeat (with locals & break), and nested loops
+      assert.same({24, 6}, run51([[
+         local n = 0
+         for i = 1, 3 do if i == 2 then continue end; n += i end
+         for _, i in ipairs({1, 2, 3}) do if i == 2 then continue end; n += i end
+         local i = 0
+         while i < 3 do i += 1; if i == 2 then continue end; n += i end
+         i = 0
+         repeat
+            i += 1
+            local keep = i * 3
+            if i == 2 then continue end
+            n += i
+            if keep > 10 then break end
+         until keep >= 9
+         for a = 1, 2 do
+            for b = 1, 3 do if b == 2 then continue end; n += 1 end
+            n += 2
+         end
+         local wsum = 0
+         for k = 1, 5 do
+            if k == 2 then continue end
+            if k == 4 then break end
+            wsum += k + (k > 0 ? 1 : 0)
+         end
+         return n, wsum
+      ]]))
    end)
 
    it('does not suppress genuine nullable intermediate fields', function()
