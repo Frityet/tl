@@ -112,6 +112,39 @@ local rules: {Rule} = {
          s:emit(n, "Each iteration makes a table. LuaJIT can remove the allocation. If garbage collection takes too much time, use the same table when it is safe.")
       end,
    },
+   {
+      id = "luajit/loop-vararg", severity = "hint", in_loop = true,
+      description = "Find multi-result vararg expressions inside loops.",
+      kinds = {"op", "literal_table", "return"}, operators = {"@funcall"}, bindings = true,
+      check = function(s: State, n: Node, _t: Type, _children: {Type})
+         local varg: Node
+         if n.kind == "op" and n.op and n.op.op == "@funcall" then
+            if s:path(n.e1) == "select" then return end
+            local args = n.e2
+            if args and #args > 0 then
+               local last = model.unwrap(args[#args])
+               if last and last.kind == "..." then varg = last end
+            end
+         elseif n.kind == "literal_table" then
+            if #n > 0 then
+               local item = n[#n]
+               if item.key_parsed == "implicit" then
+                  local val = model.unwrap(item.value)
+                  if val and val.kind == "..." then varg = val end
+               end
+            end
+         elseif n.kind == "return" then
+            local exps = n.exps
+            if exps and #exps > 0 then
+               local last = model.unwrap(exps[#exps])
+               if last and last.kind == "..." then varg = last end
+            end
+         end
+         if varg then
+            s:emit(varg, "Upstream LuaJIT 2.1 stops recording at multi-result varargs. Pack the arguments into a table before the loop. Then index the table inside the loop.")
+         end
+      end,
+   },
 }
 
 return rules

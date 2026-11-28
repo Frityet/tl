@@ -11491,7 +11491,7 @@ end
 
 -- module teal.diagnostics.lua from teal/diagnostics/lua.lua
 package.preload["teal.diagnostics.lua"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 
 local model = require("teal.diagnostics.model")
 local types = require("teal.types")
@@ -11499,6 +11499,132 @@ local types = require("teal.types")
 
 
 
+
+
+local non_numeric_self_eq = {
+   ["string"] = true, ["enum"] = true, ["boolean"] = true,
+   ["nil"] = true, ["function"] = true, ["thread"] = true,
+}
+
+local pure_op = {
+   ["not"] = true, ["#"] = true, ["-"] = true, ["~"] = true,
+   ["+"] = true, ["*"] = true, ["/"] = true, ["//"] = true, ["%"] = true, ["^"] = true,
+   [".."] = true, ["&"] = true, ["|"] = true, ["<<"] = true, [">>"] = true,
+   ["=="] = true, ["~="] = true, ["<"] = true, ["<="] = true, [">"] = true, [">="] = true,
+   ["and"] = true, ["or"] = true, ["??"] = true, ["."] = true, ["@index"] = true,
+}
+
+local function pure_expr_equal(a, b, depth)
+   if depth > 16 then return false end
+   a, b = model.unwrap(a), model.unwrap(b)
+   if not a or not b or a.kind ~= b.kind then return false end
+   local kind = a.kind
+   if kind == "variable" or kind == "identifier" or kind == "boolean" then
+      return a.tk == b.tk
+   elseif kind == "nil" then
+      return true
+   elseif kind == "number" or kind == "integer" then
+      return a.constnum ~= nil and a.constnum == b.constnum
+   elseif kind == "string" then
+      return a.conststr ~= nil and a.conststr == b.conststr
+   elseif kind == "op" and a.op and b.op and a.op.op == b.op.op and a.op.arity == b.op.arity and pure_op[a.op.op] then
+      if a.op.arity == 1 then
+         return pure_expr_equal(a.e1, b.e1, depth + 1)
+      end
+      return pure_expr_equal(a.e1, b.e1, depth + 1) and pure_expr_equal(a.e2, b.e2, depth + 1)
+   end
+   return false
+end
+
+local function is_nan_literal(n)
+   n = model.unwrap(n)
+   return n ~= nil and n.op ~= nil and n.op.op == "/" and model.number(n.e1) == 0 and model.number(n.e2) == 0
+end
+
+local function string_call_parts(s, n)
+   local p = s:path(n.e1)
+   if p == "string.find" or p == "string.match" or p == "string.gmatch" or p == "string.gsub" then
+      return p:sub(8), n.e2[2], n.e2[3], n.e2[4]
+   end
+   local callee = n.e1
+   if callee.op and callee.op.op == ":" then
+      local recv = model.unwrap(callee.e1)
+      local is_str = (callee.receiver and (callee.receiver.typename == "string" or callee.receiver.typename == "enum")) or
+      (recv and recv.kind == "string")
+      if is_str then
+         local m = callee.e2.tk
+         if m == "find" or m == "match" or m == "gmatch" or m == "gsub" then
+            return m, n.e2[1], n.e2[2], n.e2[3]
+         end
+      end
+   end
+end
+
+local function scan_pattern_captures(pat)
+   local len = #pat
+   local i = 1
+   local total = 0
+   local open = {}
+   local closed = {}
+   local backref_err
+   while i <= len do
+      local b = pat:byte(i)
+      if b == 37 then
+         if i + 1 > len then return nil, nil end
+         local nb = pat:byte(i + 1)
+         if nb == 98 then
+            if i + 3 > len then return nil, nil end
+            i = i + 4
+         elseif nb == 102 then
+            if pat:byte(i + 2) ~= 91 then return nil, nil end
+            i = i + 2
+         elseif nb == 48 then
+            backref_err = backref_err or "This Lua pattern refers to capture %0. Pattern backreferences start at %1."
+            i = i + 2
+         elseif nb >= 49 and nb <= 57 then
+            if not closed[nb - 48] then
+               backref_err = backref_err or "This Lua pattern refers to an unavailable capture index. Reference only an earlier closed capture."
+            end
+            i = i + 2
+         else
+            i = i + 2
+         end
+      elseif b == 91 then
+         i = i + 1
+         if i <= len and pat:byte(i) == 94 then i = i + 1 end
+         if i <= len and pat:byte(i) == 93 then i = i + 1 end
+         local found_close = false
+         while i <= len do
+            local cb = pat:byte(i)
+            if cb == 93 then
+               found_close = true
+               i = i + 1
+               break
+            elseif cb == 37 then
+               if i + 1 > len then return nil, nil end
+               i = i + 2
+            else
+               i = i + 1
+            end
+         end
+         if not found_close then return nil, nil end
+      elseif b == 40 then
+         total = total + 1
+         open[#open + 1] = total
+         i = i + 1
+      elseif b == 41 then
+         local nopen = #open
+         if nopen == 0 then return nil, nil end
+         closed[open[nopen]] = true
+         open[nopen] = nil
+         i = i + 1
+      else
+         i = i + 1
+      end
+   end
+   if #open > 0 then return nil, nil end
+   return backref_err, total
+end
 
 local function call_is(s, n, name)
    local args = model.call_args(n)
@@ -11764,6 +11890,130 @@ local rules = {
          end
       end,
    },
+   {
+      id = "lua/nan-equality",
+      severity = "warning",
+      description = "Flag equality comparisons against a literal NaN expression.",
+      kinds = { "op" }, operators = { "==", "~=" },
+      check = function(s, n, _t, _children)
+         if is_nan_literal(n.e1) then
+            s:emit(n.e1, "NaN is never equal to any value, including itself. Test for NaN with x ~= x instead.")
+         elseif is_nan_literal(n.e2) then
+            s:emit(n.e2, "NaN is never equal to any value, including itself. Test for NaN with x ~= x instead.")
+         end
+      end,
+   },
+   {
+      id = "lua/self-comparison",
+      severity = "warning",
+      description = "Flag comparisons between identical variables.",
+      kinds = { "op" }, operators = { "<", "<=", ">", ">=", "==", "~=" },
+      check = function(s, n, _t, children)
+         if n.op.meta_on_operand then return end
+         local left, right = model.unwrap(n.e1), model.unwrap(n.e2)
+         if not left or not right or left.kind ~= "variable" or right.kind ~= "variable" or left.tk ~= right.tk then
+            return
+         end
+         if n.op.op == "==" or n.op.op == "~=" then
+            local left_t = children[1] and types.untuple(children[1])
+            if not left_t or not non_numeric_self_eq[left_t.typename] then return end
+         end
+         s:emit(n, "Both sides of this comparison use the same variable. Compare two different values or remove the test.")
+      end,
+   },
+   {
+      id = "lua/duplicate-branch-condition",
+      severity = "warning",
+      description = "Find repeated conditions in the same if-elseif chain.",
+      kinds = { "if" },
+      check = function(s, n, _t, _children)
+         local blocks = n.if_blocks
+         if not blocks or #blocks < 2 then return end
+         for i = 2, #blocks do
+            local cond = blocks[i].exp
+            if cond then
+               for j = 1, i - 1 do
+                  if blocks[j].exp and pure_expr_equal(blocks[j].exp, cond, 0) then
+                     s:emit(cond, "This condition repeats an earlier branch in the same if statement. This branch is unreachable.")
+                     break
+                  end
+               end
+            end
+         end
+      end,
+   },
+   {
+      id = "lua/for-control-var-modified",
+      severity = "warning",
+      description = "Flag assignments to a numeric for loop control variable.",
+      kinds = { "fornum" },
+      check = function(s, n, _t, _children)
+         if n.fornum_modifies_control_var then
+            s:emit(n.var, "Assigning to a numeric for variable does not change the loop counter. Use a while loop if you need to change the index.")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-pattern-backreference",
+      severity = "error",
+      description = "Flag invalid capture backreferences in literal Lua string patterns.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local method, pat_node, _, plain_node = string_call_parts(s, n)
+         if not method then return end
+         if method == "find" and plain_node then
+            local plain = model.unwrap(plain_node)
+            if not plain or (plain.kind ~= "nil" and not (plain.kind == "boolean" and plain.tk == "false")) then
+               return
+            end
+         end
+         local pat = model.unwrap(pat_node)
+         if pat and pat.kind == "string" and pat.conststr then
+            local problem = scan_pattern_captures(pat.conststr)
+            if problem then s:emit(pat, problem) end
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-gsub-replacement",
+      severity = "warning",
+      description = "Flag invalid % escapes or capture references in literal string.gsub replacements.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local method, pat_node, repl_node = string_call_parts(s, n)
+         if method ~= "gsub" then return end
+         local repl = model.unwrap(repl_node)
+         if not repl or repl.kind ~= "string" or not repl.conststr then return end
+         local pat_captures
+         local pat = model.unwrap(pat_node)
+         if pat and pat.kind == "string" and pat.conststr then
+            local _, caps = scan_pattern_captures(pat.conststr)
+            pat_captures = caps
+         end
+         local text = repl.conststr
+         local len, i = #text, 1
+         while i <= len do
+            if text:byte(i) == 37 then
+               local nb = text:byte(i + 1)
+               if not nb or (nb ~= 37 and (nb < 48 or nb > 57)) then
+                  s:emit(repl, "Only %% and %0 through %9 are valid in string.gsub replacements. Lua 5.3 and later raise an error for other % sequences.")
+                  return
+               end
+               if nb >= 49 and nb <= 57 and pat_captures ~= nil then
+                  local idx = nb - 48
+                  local max_cap = pat_captures > 0 and pat_captures or 1
+                  if idx > max_cap then
+                     s:emit(repl, "This replacement string refers to a capture that the pattern does not define. Use %0 or a valid capture index.")
+                     return
+                  end
+               end
+               i = i + 2
+            else
+               i = i + 1
+            end
+         end
+      end,
+   },
 }
 
 return rules
@@ -11776,10 +12026,40 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local model = require("teal.diagnostics.model")
+local types = require("teal.types")
 
 
 
 
+
+
+local unrecorded_tostring = {
+   ["record"] = true, ["interface"] = true, ["array"] = true, ["map"] = true,
+   ["tupletable"] = true, ["emptytable"] = true, ["function"] = true,
+   ["userdata"] = true, ["thread"] = true,
+}
+
+local function resolve(t)
+   while t.typename == "nominal" do
+      t = t.resolved or (t.found and t.found.def)
+   end
+   return t
+end
+
+local function format_has_pointer(fmt)
+   local pos = 1
+   while true do
+      local start = fmt:find("%", pos, true)
+      if not start then return false end
+      if fmt:sub(start + 1, start + 1) == "%" then
+         pos = start + 2
+      else
+         local spec = fmt:match("^%%[-+ #0]*%d*%.?%d*([%a])", start)
+         if spec == "p" then return true end
+         pos = start + 1
+      end
+   end
+end
 
 local function uses_pattern(pattern, plain)
    pattern, plain = model.unwrap(pattern), model.unwrap(plain)
@@ -11903,7 +12183,10 @@ local rules = {
       calls = { "table.sort", "table.maxn", "coroutine.status", "coroutine.running", "coroutine.resume", "coroutine.yield",
       "debug.getregistry", "debug.setmetatable", "debug.getfenv", "debug.setfenv", "debug.getinfo", "debug.getlocal",
       "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
-      "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo", },
+      "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo",
+      "math.fmod", "math.frexp", "math.modf", "math.randomseed",
+      "os.clock", "os.date", "os.execute", "os.getenv", "os.remove", "os.rename", "os.setlocale", "os.time", "os.tmpname",
+      "io.open", "io.popen", "io.tmpfile", },
       check = function(s, n, _t, _children)
          s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move inspection or setup before the loop if it does not change. Check the path with a profile.")
       end,
@@ -11992,6 +12275,36 @@ local rules = {
          end
       end,
    },
+   {
+      id = "luajit/string-format-pointer", severity = "hint", in_loop = true,
+      description = "Find string.format %p specifiers inside loops that LuaJIT does not compile.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local fmt_node
+         if s:path(n.e1) == "string.format" then
+            fmt_node = model.unwrap(n.e2[1])
+         elseif n.e1.op and n.e1.op.op == ":" and n.e1.e2.tk == "format" then
+            fmt_node = model.unwrap(n.e1.e1)
+         end
+         if fmt_node and fmt_node.kind == "string" and fmt_node.conststr and format_has_pointer(fmt_node.conststr) then
+            s:emit(n, "LuaJIT's string.format recorder does not compile %p. Move formatting before the loop if the value does not change. Check the path with a profile.")
+         end
+      end,
+   },
+   {
+      id = "luajit/hot-tostring", severity = "hint", in_loop = true,
+      description = "Find tostring calls on objects that LuaJIT does not record inside loops.",
+      kinds = { "op" }, bindings = true, calls = { "tostring" },
+      check = function(s, n, _t, children)
+         local args_t = children[3]
+         if args_t.typename == "tuple" then
+            local first = resolve(args_t.tuple[1])
+            if first and unrecorded_tostring[first.typename] then
+               s:emit(n, "LuaJIT records tostring for numbers, strings, booleans, and nil. Tables and other objects run in the interpreter. Cache or format the string before the loop if possible.")
+            end
+         end
+      end,
+   },
 }
 
 return rules
@@ -12048,6 +12361,9 @@ local routes = {
    ["cdef-volatile"] = { "ffi.cdef" },
    ["cdef-long-double"] = { "ffi.cdef" },
    ["negative-length"] = { "ffi.copy", "ffi.fill", "ffi.string" },
+   ["negative-vla-length"] = { "ffi.new" },
+   ["fill-zero-length"] = { "ffi.fill" },
+   ["fill-byte-range"] = { "ffi.fill" },
    ["copy-string-overread"] = { "ffi.copy" },
    ["copy-missing-length"] = { "ffi.copy" },
    ["temporary-array-pointer"] = { "ffi.cast" },
@@ -12212,6 +12528,24 @@ add("negative-length", "error", "Reject negative literal FFI memory lengths.", f
       s:emit(len, p .. " requires a byte length of zero or more.")
    end
 end)
+add("negative-vla-length", "error", "Reject negative literal lengths in variable-length FFI array allocations.", function(s, _n, a)
+   local decl = literal(a[1])
+   local count = a[2] and model.number(a[2])
+   if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") and count and count < 0 then
+      s:emit(a[2], "ffi.new requires a variable-length array count of zero or more.")
+   end
+end)
+add("fill-zero-length", "warning", "Find ffi.fill calls with a zero length and an explicit fill value.", function(s, _n, a)
+   if a[3] and model.number(a[2]) == 0 then
+      s:emit(a[2], "ffi.fill takes (dst, len, c), not (dst, c, len). A zero length fills no bytes.")
+   end
+end)
+add("fill-byte-range", "warning", "Find literal ffi.fill byte values outside the byte range.", function(s, _n, a)
+   local value = a[3] and model.number(a[3])
+   if value and (value < 0 or value > 255 or value % 1 ~= 0) then
+      s:emit(a[3], "ffi.fill truncates the fill value to one byte. Use an integer from 0 through 255.")
+   end
+end)
 add("copy-string-overread", "error", "Detect literal string copies that exceed the source buffer.", function(s, n, a)
    if path(s, n.e1) == "ffi.copy" then
       local str, len = literal(a[2]), a[3] and model.number(a[3])
@@ -12325,6 +12659,18 @@ local boxed_scalar_rule = {
    end,
 }
 table.insert(rules, boxed_scalar_rule)
+local truthy_null_pointer_rule = {
+   id = "luajit-ffi/truthy-null-pointer", severity = "warning",
+   description = "Find FFI pointer values tested directly for truthiness.",
+   kinds = { "if_block", "while", "repeat", "op" }, operators = { "not" }, bindings = true, ffi_origins = true,
+   check = function(s, n, _t, _children)
+      local target = n.kind == "op" and n.e1 or n.exp
+      if target and s:path(target) == "ffi.pointer()" then
+         s:emit(target, "A NULL cdata pointer is truthy in LuaJIT. Compare the pointer to nil with == or ~= instead.")
+      end
+   end,
+}
+table.insert(rules, truthy_null_pointer_rule)
 return rules
 
 end
@@ -12443,6 +12789,39 @@ local rules = {
       description = "Find table constructors inside loops.", kinds = { "literal_table" },
       check = function(s, n, _t, _children)
          s:emit(n, "Each iteration makes a table. LuaJIT can remove the allocation. If garbage collection takes too much time, use the same table when it is safe.")
+      end,
+   },
+   {
+      id = "luajit/loop-vararg", severity = "hint", in_loop = true,
+      description = "Find multi-result vararg expressions inside loops.",
+      kinds = { "op", "literal_table", "return" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local varg
+         if n.kind == "op" and n.op and n.op.op == "@funcall" then
+            if s:path(n.e1) == "select" then return end
+            local args = n.e2
+            if args and #args > 0 then
+               local last = model.unwrap(args[#args])
+               if last and last.kind == "..." then varg = last end
+            end
+         elseif n.kind == "literal_table" then
+            if #n > 0 then
+               local item = n[#n]
+               if item.key_parsed == "implicit" then
+                  local val = model.unwrap(item.value)
+                  if val and val.kind == "..." then varg = val end
+               end
+            end
+         elseif n.kind == "return" then
+            local exps = n.exps
+            if exps and #exps > 0 then
+               local last = model.unwrap(exps[#exps])
+               if last and last.kind == "..." then varg = last end
+            end
+         end
+         if varg then
+            s:emit(varg, "Upstream LuaJIT 2.1 stops recording at multi-result varargs. Pack the arguments into a table before the loop. Then index the table inside the loop.")
+         end
       end,
    },
 }
@@ -12921,6 +13300,11 @@ local function call_origin(state, n)
       if path == "ffi.cast" then
          local value = model.unwrap(args[2])
          if value and value.kind == "function" then return "ffi.callback()" end
+         local decl = model.unwrap(args[1])
+         if decl and decl.kind == "string" and decl.conststr and
+            decl.conststr:find("*", 1, true) and not decl.conststr:match("%(%s*%*%s*%)") then
+            return "ffi.pointer()"
+         end
       end
    end
 end
@@ -13237,17 +13621,55 @@ local primitive = {
    ["nil"] = true, ["thread"] = true, ["userdata"] = true,
 }
 
+local primitive_group_by_name = {
+   ["boolean"] = "boolean",
+   ["integer"] = "number",
+   ["number"] = "number",
+   ["string"] = "string",
+   ["enum"] = "string",
+   ["nil"] = "nil",
+   ["function"] = "function",
+   ["thread"] = "thread",
+   ["array"] = "table",
+   ["map"] = "table",
+   ["tupletable"] = "table",
+   ["emptytable"] = "table",
+}
+
 local known_non_nil = {
    ["boolean"] = true, ["integer"] = true, ["number"] = true, ["string"] = true,
    ["thread"] = true, ["userdata"] = true, ["enum"] = true, ["function"] = true,
    ["array"] = true, ["map"] = true, ["record"] = true, ["tupletable"] = true, ["emptytable"] = true,
 }
 
+local function resolve(t)
+   while t.typename == "nominal" do
+      t = t.resolved or (t.found and t.found.def)
+   end
+   return t
+end
+
 local function single(t)
-   return t and types.untuple(t)
+   return resolve(t and types.untuple(t))
+end
+
+local function disjoint_from_group(t, target_group, allow_nil)
+   t = resolve(t)
+   if not t then return false end
+   if t.typename == "union" then
+      for _, member in ipairs(t.types) do
+         if not disjoint_from_group(member, target_group, allow_nil) then return false end
+      end
+      return #t.types > 0
+   end
+   local group = primitive_group_by_name[t.typename]
+   if not group then return false end
+   if group == "nil" and not allow_nil then return false end
+   return group ~= target_group
 end
 
 local function cannot_be_nil(t)
+   t = resolve(t)
    if not t then return false end
    if t.typename == "union" then
       for _, member in ipairs(t.types) do
@@ -13259,6 +13681,7 @@ local function cannot_be_nil(t)
 end
 
 local function can_be_nil(t)
+   t = resolve(t)
    if not t then return false end
    if t.typename == "union" then
       for _, member in ipairs(t.types) do
@@ -13269,6 +13692,7 @@ local function can_be_nil(t)
 end
 
 local function boolean_or_nil(t)
+   t = resolve(t)
    if not t then return false, false end
    if t.typename == "nil" then return true, false end
    if t.typename == "boolean" then return true, t.literal ~= true end
@@ -13312,6 +13736,15 @@ local rules = {
          s:emit(n.e2, "This cast can hide a nil value from the checker. Add a nil check before the cast. You can also use a fallback value.")
       end
    end),
+   op("cast-between-primitives", "warning", "Find casts between incompatible primitive types.", { "as" },
+   function(s, n, _t, children)
+      local original, cast = single(children[1]), children[3]
+      if not original or not cast then return end
+      local target_group = primitive_group_by_name[cast.typename]
+      if target_group and target_group ~= "table" and disjoint_from_group(original, target_group, false) then
+         s:emit(n.e2, "The as operator changes only the static type. It does not convert values at runtime.")
+      end
+   end),
    op("redundant-primitive-cast", "hint", "Find variable casts to their existing primitive type.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
@@ -13325,6 +13758,27 @@ local rules = {
       if s.strict_nil and n.e1.kind == "variable" and original and test and primitive[test.typename] and
          (original.typename == test.typename or (original.typename == "integer" and test.typename == "number")) then
          s:emit(n.e2, "The static type of this variable already satisfies this test.")
+      end
+   end),
+   op("impossible-type-test", "warning", "Find primitive type tests that the static type never matches.", { "is" },
+   function(s, n, _t, children)
+      local original, test = single(children[1]), children[3]
+      if n.e1.kind ~= "variable" or n.op.meta_on_operand or not original or not test then return end
+      if test.typename == "nil" and not s.strict_nil then return end
+      local target_group = primitive_group_by_name[test.typename]
+      if target_group and disjoint_from_group(original, target_group, true) then
+         s:emit(n.e2, "The static type of this variable never matches the tested type. This test is always false.")
+      end
+   end),
+   op("impossible-nil-comparison", "warning", "Find comparisons between nil and a non-nil variable.", { "==", "~=" },
+   function(s, n, _t, children)
+      if not s.strict_nil then return end
+      local left, right = model.unwrap(n.e1), model.unwrap(n.e2)
+      local left_t, right_t = single(children[1]), single(children[3])
+      if left and right and left.kind == "variable" and right.kind == "nil" and cannot_be_nil(left_t) then
+         s:emit(n, "This variable has a non-nil type. Comparing it to nil always gives the same result.")
+      elseif left and right and right.kind == "variable" and left.kind == "nil" and cannot_be_nil(right_t) then
+         s:emit(n, "This variable has a non-nil type. Comparing it to nil always gives the same result.")
       end
    end),
    op("nil-coalescing-always-falls-back", "info", "Find nil-coalescing expressions whose left side is always nil.", { "??" },
@@ -13414,6 +13868,26 @@ local rules = {
                   s:emit(var, "This variable has type any. This type disables many checks on its uses.")
                end
             end
+         end
+      end,
+   },
+   {
+      id = "teal/typeof-untyped", severity = "info",
+      description = "Find typeof! queries on expressions typed as any or unknown.", kinds = { "typeof_expression" },
+      check = function(s, n, _t, _children)
+         local info = n.typeof_description and n.typeof_description.info
+         if info and (info.kind == "any" or info.kind == "unknown") then
+            s:emit(n.e1, "typeof! inspects the static type and sees " .. info.kind .. " here. Give the operand a more specific type if you need runtime fields.")
+         end
+      end,
+   },
+   {
+      id = "teal/typeof-type-parameter", severity = "hint",
+      description = "Find typeof! queries that resolve to a generic type parameter.", kinds = { "typeof_expression" },
+      check = function(s, n, _t, _children)
+         local info = n.typeof_description and n.typeof_description.info
+         if info and info.kind == "type_parameter" then
+            s:emit(n.e1, "typeof! describes the generic parameter rather than a call-site type. Pass a reflection.Type value if callers need their own type.")
          end
       end,
    },

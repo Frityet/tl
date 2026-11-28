@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 
 local model = require("teal.diagnostics.model")
 local types = require("teal.types")
@@ -6,6 +6,132 @@ local types = require("teal.types")
 
 
 
+
+
+local non_numeric_self_eq = {
+   ["string"] = true, ["enum"] = true, ["boolean"] = true,
+   ["nil"] = true, ["function"] = true, ["thread"] = true,
+}
+
+local pure_op = {
+   ["not"] = true, ["#"] = true, ["-"] = true, ["~"] = true,
+   ["+"] = true, ["*"] = true, ["/"] = true, ["//"] = true, ["%"] = true, ["^"] = true,
+   [".."] = true, ["&"] = true, ["|"] = true, ["<<"] = true, [">>"] = true,
+   ["=="] = true, ["~="] = true, ["<"] = true, ["<="] = true, [">"] = true, [">="] = true,
+   ["and"] = true, ["or"] = true, ["??"] = true, ["."] = true, ["@index"] = true,
+}
+
+local function pure_expr_equal(a, b, depth)
+   if depth > 16 then return false end
+   a, b = model.unwrap(a), model.unwrap(b)
+   if not a or not b or a.kind ~= b.kind then return false end
+   local kind = a.kind
+   if kind == "variable" or kind == "identifier" or kind == "boolean" then
+      return a.tk == b.tk
+   elseif kind == "nil" then
+      return true
+   elseif kind == "number" or kind == "integer" then
+      return a.constnum ~= nil and a.constnum == b.constnum
+   elseif kind == "string" then
+      return a.conststr ~= nil and a.conststr == b.conststr
+   elseif kind == "op" and a.op and b.op and a.op.op == b.op.op and a.op.arity == b.op.arity and pure_op[a.op.op] then
+      if a.op.arity == 1 then
+         return pure_expr_equal(a.e1, b.e1, depth + 1)
+      end
+      return pure_expr_equal(a.e1, b.e1, depth + 1) and pure_expr_equal(a.e2, b.e2, depth + 1)
+   end
+   return false
+end
+
+local function is_nan_literal(n)
+   n = model.unwrap(n)
+   return n ~= nil and n.op ~= nil and n.op.op == "/" and model.number(n.e1) == 0 and model.number(n.e2) == 0
+end
+
+local function string_call_parts(s, n)
+   local p = s:path(n.e1)
+   if p == "string.find" or p == "string.match" or p == "string.gmatch" or p == "string.gsub" then
+      return p:sub(8), n.e2[2], n.e2[3], n.e2[4]
+   end
+   local callee = n.e1
+   if callee.op and callee.op.op == ":" then
+      local recv = model.unwrap(callee.e1)
+      local is_str = (callee.receiver and (callee.receiver.typename == "string" or callee.receiver.typename == "enum")) or
+      (recv and recv.kind == "string")
+      if is_str then
+         local m = callee.e2.tk
+         if m == "find" or m == "match" or m == "gmatch" or m == "gsub" then
+            return m, n.e2[1], n.e2[2], n.e2[3]
+         end
+      end
+   end
+end
+
+local function scan_pattern_captures(pat)
+   local len = #pat
+   local i = 1
+   local total = 0
+   local open = {}
+   local closed = {}
+   local backref_err
+   while i <= len do
+      local b = pat:byte(i)
+      if b == 37 then
+         if i + 1 > len then return nil, nil end
+         local nb = pat:byte(i + 1)
+         if nb == 98 then
+            if i + 3 > len then return nil, nil end
+            i = i + 4
+         elseif nb == 102 then
+            if pat:byte(i + 2) ~= 91 then return nil, nil end
+            i = i + 2
+         elseif nb == 48 then
+            backref_err = backref_err or "This Lua pattern refers to capture %0. Pattern backreferences start at %1."
+            i = i + 2
+         elseif nb >= 49 and nb <= 57 then
+            if not closed[nb - 48] then
+               backref_err = backref_err or "This Lua pattern refers to an unavailable capture index. Reference only an earlier closed capture."
+            end
+            i = i + 2
+         else
+            i = i + 2
+         end
+      elseif b == 91 then
+         i = i + 1
+         if i <= len and pat:byte(i) == 94 then i = i + 1 end
+         if i <= len and pat:byte(i) == 93 then i = i + 1 end
+         local found_close = false
+         while i <= len do
+            local cb = pat:byte(i)
+            if cb == 93 then
+               found_close = true
+               i = i + 1
+               break
+            elseif cb == 37 then
+               if i + 1 > len then return nil, nil end
+               i = i + 2
+            else
+               i = i + 1
+            end
+         end
+         if not found_close then return nil, nil end
+      elseif b == 40 then
+         total = total + 1
+         open[#open + 1] = total
+         i = i + 1
+      elseif b == 41 then
+         local nopen = #open
+         if nopen == 0 then return nil, nil end
+         closed[open[nopen]] = true
+         open[nopen] = nil
+         i = i + 1
+      else
+         i = i + 1
+      end
+   end
+   if #open > 0 then return nil, nil end
+   return backref_err, total
+end
 
 local function call_is(s, n, name)
    local args = model.call_args(n)
@@ -268,6 +394,130 @@ local rules = {
       check = function(s, n, _t, _children)
          if s.is_lua and s.target ~= "5.1" and s.target ~= "luajit" then
             s:emit(n, "Use table.unpack on this Lua target.")
+         end
+      end,
+   },
+   {
+      id = "lua/nan-equality",
+      severity = "warning",
+      description = "Flag equality comparisons against a literal NaN expression.",
+      kinds = { "op" }, operators = { "==", "~=" },
+      check = function(s, n, _t, _children)
+         if is_nan_literal(n.e1) then
+            s:emit(n.e1, "NaN is never equal to any value, including itself. Test for NaN with x ~= x instead.")
+         elseif is_nan_literal(n.e2) then
+            s:emit(n.e2, "NaN is never equal to any value, including itself. Test for NaN with x ~= x instead.")
+         end
+      end,
+   },
+   {
+      id = "lua/self-comparison",
+      severity = "warning",
+      description = "Flag comparisons between identical variables.",
+      kinds = { "op" }, operators = { "<", "<=", ">", ">=", "==", "~=" },
+      check = function(s, n, _t, children)
+         if n.op.meta_on_operand then return end
+         local left, right = model.unwrap(n.e1), model.unwrap(n.e2)
+         if not left or not right or left.kind ~= "variable" or right.kind ~= "variable" or left.tk ~= right.tk then
+            return
+         end
+         if n.op.op == "==" or n.op.op == "~=" then
+            local left_t = children[1] and types.untuple(children[1])
+            if not left_t or not non_numeric_self_eq[left_t.typename] then return end
+         end
+         s:emit(n, "Both sides of this comparison use the same variable. Compare two different values or remove the test.")
+      end,
+   },
+   {
+      id = "lua/duplicate-branch-condition",
+      severity = "warning",
+      description = "Find repeated conditions in the same if-elseif chain.",
+      kinds = { "if" },
+      check = function(s, n, _t, _children)
+         local blocks = n.if_blocks
+         if not blocks or #blocks < 2 then return end
+         for i = 2, #blocks do
+            local cond = blocks[i].exp
+            if cond then
+               for j = 1, i - 1 do
+                  if blocks[j].exp and pure_expr_equal(blocks[j].exp, cond, 0) then
+                     s:emit(cond, "This condition repeats an earlier branch in the same if statement. This branch is unreachable.")
+                     break
+                  end
+               end
+            end
+         end
+      end,
+   },
+   {
+      id = "lua/for-control-var-modified",
+      severity = "warning",
+      description = "Flag assignments to a numeric for loop control variable.",
+      kinds = { "fornum" },
+      check = function(s, n, _t, _children)
+         if n.fornum_modifies_control_var then
+            s:emit(n.var, "Assigning to a numeric for variable does not change the loop counter. Use a while loop if you need to change the index.")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-pattern-backreference",
+      severity = "error",
+      description = "Flag invalid capture backreferences in literal Lua string patterns.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local method, pat_node, _, plain_node = string_call_parts(s, n)
+         if not method then return end
+         if method == "find" and plain_node then
+            local plain = model.unwrap(plain_node)
+            if not plain or (plain.kind ~= "nil" and not (plain.kind == "boolean" and plain.tk == "false")) then
+               return
+            end
+         end
+         local pat = model.unwrap(pat_node)
+         if pat and pat.kind == "string" and pat.conststr then
+            local problem = scan_pattern_captures(pat.conststr)
+            if problem then s:emit(pat, problem) end
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-gsub-replacement",
+      severity = "warning",
+      description = "Flag invalid % escapes or capture references in literal string.gsub replacements.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local method, pat_node, repl_node = string_call_parts(s, n)
+         if method ~= "gsub" then return end
+         local repl = model.unwrap(repl_node)
+         if not repl or repl.kind ~= "string" or not repl.conststr then return end
+         local pat_captures
+         local pat = model.unwrap(pat_node)
+         if pat and pat.kind == "string" and pat.conststr then
+            local _, caps = scan_pattern_captures(pat.conststr)
+            pat_captures = caps
+         end
+         local text = repl.conststr
+         local len, i = #text, 1
+         while i <= len do
+            if text:byte(i) == 37 then
+               local nb = text:byte(i + 1)
+               if not nb or (nb ~= 37 and (nb < 48 or nb > 57)) then
+                  s:emit(repl, "Only %% and %0 through %9 are valid in string.gsub replacements. Lua 5.3 and later raise an error for other % sequences.")
+                  return
+               end
+               if nb >= 49 and nb <= 57 and pat_captures ~= nil then
+                  local idx = nb - 48
+                  local max_cap = pat_captures > 0 and pat_captures or 1
+                  if idx > max_cap then
+                     s:emit(repl, "This replacement string refers to a capture that the pattern does not define. Use %0 or a valid capture index.")
+                     return
+                  end
+               end
+               i = i + 2
+            else
+               i = i + 1
+            end
          end
       end,
    },

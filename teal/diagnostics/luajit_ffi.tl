@@ -46,6 +46,9 @@ local routes: {string:{string}} = {
    ["cdef-volatile"] = { "ffi.cdef" },
    ["cdef-long-double"] = { "ffi.cdef" },
    ["negative-length"] = { "ffi.copy", "ffi.fill", "ffi.string" },
+   ["negative-vla-length"] = { "ffi.new" },
+   ["fill-zero-length"] = { "ffi.fill" },
+   ["fill-byte-range"] = { "ffi.fill" },
    ["copy-string-overread"] = { "ffi.copy" },
    ["copy-missing-length"] = { "ffi.copy" },
    ["temporary-array-pointer"] = { "ffi.cast" },
@@ -210,6 +213,24 @@ add("negative-length", "error", "Reject negative literal FFI memory lengths.", f
       s:emit(len, p .. " requires a byte length of zero or more.")
    end
 end)
+add("negative-vla-length", "error", "Reject negative literal lengths in variable-length FFI array allocations.", function(s: State, _n: Node, a: Node)
+   local decl = literal(a[1])
+   local count = a[2] and model.number(a[2])
+   if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") and count and count < 0 then
+      s:emit(a[2], "ffi.new requires a variable-length array count of zero or more.")
+   end
+end)
+add("fill-zero-length", "warning", "Find ffi.fill calls with a zero length and an explicit fill value.", function(s: State, _n: Node, a: Node)
+   if a[3] and model.number(a[2]) == 0 then
+      s:emit(a[2], "ffi.fill takes (dst, len, c), not (dst, c, len). A zero length fills no bytes.")
+   end
+end)
+add("fill-byte-range", "warning", "Find literal ffi.fill byte values outside the byte range.", function(s: State, _n: Node, a: Node)
+   local value = a[3] and model.number(a[3])
+   if value and (value < 0 or value > 255 or value % 1 ~= 0) then
+      s:emit(a[3], "ffi.fill truncates the fill value to one byte. Use an integer from 0 through 255.")
+   end
+end)
 add("copy-string-overread", "error", "Detect literal string copies that exceed the source buffer.", function(s: State, n: Node, a: Node)
    if path(s, n.e1) == "ffi.copy" then
       local str, len = literal(a[2]), a[3] and model.number(a[3])
@@ -323,4 +344,16 @@ local boxed_scalar_rule: Rule = {
    end,
 }
 table.insert(rules, boxed_scalar_rule)
+local truthy_null_pointer_rule: Rule = {
+   id = "luajit-ffi/truthy-null-pointer", severity = "warning",
+   description = "Find FFI pointer values tested directly for truthiness.",
+   kinds = {"if_block", "while", "repeat", "op"}, operators = {"not"}, bindings = true, ffi_origins = true,
+   check = function(s: State, n: Node, _t: Type, _children: {Type})
+      local target = n.kind == "op" and n.e1 or n.exp
+      if target and s:path(target) == "ffi.pointer()" then
+         s:emit(target, "A NULL cdata pointer is truthy in LuaJIT. Compare the pointer to nil with == or ~= instead.")
+      end
+   end,
+}
+table.insert(rules, truthy_null_pointer_rule)
 return rules

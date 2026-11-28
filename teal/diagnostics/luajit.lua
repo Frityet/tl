@@ -2,10 +2,40 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 
 
 local model = require("teal.diagnostics.model")
+local types = require("teal.types")
 
 
 
 
+
+
+local unrecorded_tostring = {
+   ["record"] = true, ["interface"] = true, ["array"] = true, ["map"] = true,
+   ["tupletable"] = true, ["emptytable"] = true, ["function"] = true,
+   ["userdata"] = true, ["thread"] = true,
+}
+
+local function resolve(t)
+   while t.typename == "nominal" do
+      t = t.resolved or (t.found and t.found.def)
+   end
+   return t
+end
+
+local function format_has_pointer(fmt)
+   local pos = 1
+   while true do
+      local start = fmt:find("%", pos, true)
+      if not start then return false end
+      if fmt:sub(start + 1, start + 1) == "%" then
+         pos = start + 2
+      else
+         local spec = fmt:match("^%%[-+ #0]*%d*%.?%d*([%a])", start)
+         if spec == "p" then return true end
+         pos = start + 1
+      end
+   end
+end
 
 local function uses_pattern(pattern, plain)
    pattern, plain = model.unwrap(pattern), model.unwrap(plain)
@@ -129,7 +159,10 @@ local rules = {
       calls = { "table.sort", "table.maxn", "coroutine.status", "coroutine.running", "coroutine.resume", "coroutine.yield",
       "debug.getregistry", "debug.setmetatable", "debug.getfenv", "debug.setfenv", "debug.getinfo", "debug.getlocal",
       "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
-      "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo", },
+      "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo",
+      "math.fmod", "math.frexp", "math.modf", "math.randomseed",
+      "os.clock", "os.date", "os.execute", "os.getenv", "os.remove", "os.rename", "os.setlocale", "os.time", "os.tmpname",
+      "io.open", "io.popen", "io.tmpfile", },
       check = function(s, n, _t, _children)
          s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move inspection or setup before the loop if it does not change. Check the path with a profile.")
       end,
@@ -214,6 +247,36 @@ local rules = {
                s:emit(callee.e2, pattern_message)
             elseif member == "match" or member == "gmatch" or member == "gsub" then
                s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it. Move work before the loop if its inputs do not change.")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit/string-format-pointer", severity = "hint", in_loop = true,
+      description = "Find string.format %p specifiers inside loops that LuaJIT does not compile.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local fmt_node
+         if s:path(n.e1) == "string.format" then
+            fmt_node = model.unwrap(n.e2[1])
+         elseif n.e1.op and n.e1.op.op == ":" and n.e1.e2.tk == "format" then
+            fmt_node = model.unwrap(n.e1.e1)
+         end
+         if fmt_node and fmt_node.kind == "string" and fmt_node.conststr and format_has_pointer(fmt_node.conststr) then
+            s:emit(n, "LuaJIT's string.format recorder does not compile %p. Move formatting before the loop if the value does not change. Check the path with a profile.")
+         end
+      end,
+   },
+   {
+      id = "luajit/hot-tostring", severity = "hint", in_loop = true,
+      description = "Find tostring calls on objects that LuaJIT does not record inside loops.",
+      kinds = { "op" }, bindings = true, calls = { "tostring" },
+      check = function(s, n, _t, children)
+         local args_t = children[3]
+         if args_t.typename == "tuple" then
+            local first = resolve(args_t.tuple[1])
+            if first and unrecorded_tostring[first.typename] then
+               s:emit(n, "LuaJIT records tostring for numbers, strings, booleans, and nil. Tables and other objects run in the interpreter. Cache or format the string before the loop if possible.")
             end
          end
       end,

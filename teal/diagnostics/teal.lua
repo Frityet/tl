@@ -13,17 +13,55 @@ local primitive = {
    ["nil"] = true, ["thread"] = true, ["userdata"] = true,
 }
 
+local primitive_group_by_name = {
+   ["boolean"] = "boolean",
+   ["integer"] = "number",
+   ["number"] = "number",
+   ["string"] = "string",
+   ["enum"] = "string",
+   ["nil"] = "nil",
+   ["function"] = "function",
+   ["thread"] = "thread",
+   ["array"] = "table",
+   ["map"] = "table",
+   ["tupletable"] = "table",
+   ["emptytable"] = "table",
+}
+
 local known_non_nil = {
    ["boolean"] = true, ["integer"] = true, ["number"] = true, ["string"] = true,
    ["thread"] = true, ["userdata"] = true, ["enum"] = true, ["function"] = true,
    ["array"] = true, ["map"] = true, ["record"] = true, ["tupletable"] = true, ["emptytable"] = true,
 }
 
+local function resolve(t)
+   while t.typename == "nominal" do
+      t = t.resolved or (t.found and t.found.def)
+   end
+   return t
+end
+
 local function single(t)
-   return t and types.untuple(t)
+   return resolve(t and types.untuple(t))
+end
+
+local function disjoint_from_group(t, target_group, allow_nil)
+   t = resolve(t)
+   if not t then return false end
+   if t.typename == "union" then
+      for _, member in ipairs(t.types) do
+         if not disjoint_from_group(member, target_group, allow_nil) then return false end
+      end
+      return #t.types > 0
+   end
+   local group = primitive_group_by_name[t.typename]
+   if not group then return false end
+   if group == "nil" and not allow_nil then return false end
+   return group ~= target_group
 end
 
 local function cannot_be_nil(t)
+   t = resolve(t)
    if not t then return false end
    if t.typename == "union" then
       for _, member in ipairs(t.types) do
@@ -35,6 +73,7 @@ local function cannot_be_nil(t)
 end
 
 local function can_be_nil(t)
+   t = resolve(t)
    if not t then return false end
    if t.typename == "union" then
       for _, member in ipairs(t.types) do
@@ -45,6 +84,7 @@ local function can_be_nil(t)
 end
 
 local function boolean_or_nil(t)
+   t = resolve(t)
    if not t then return false, false end
    if t.typename == "nil" then return true, false end
    if t.typename == "boolean" then return true, t.literal ~= true end
@@ -88,6 +128,15 @@ local rules = {
          s:emit(n.e2, "This cast can hide a nil value from the checker. Add a nil check before the cast. You can also use a fallback value.")
       end
    end),
+   op("cast-between-primitives", "warning", "Find casts between incompatible primitive types.", { "as" },
+   function(s, n, _t, children)
+      local original, cast = single(children[1]), children[3]
+      if not original or not cast then return end
+      local target_group = primitive_group_by_name[cast.typename]
+      if target_group and target_group ~= "table" and disjoint_from_group(original, target_group, false) then
+         s:emit(n.e2, "The as operator changes only the static type. It does not convert values at runtime.")
+      end
+   end),
    op("redundant-primitive-cast", "hint", "Find variable casts to their existing primitive type.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
@@ -101,6 +150,27 @@ local rules = {
       if s.strict_nil and n.e1.kind == "variable" and original and test and primitive[test.typename] and
          (original.typename == test.typename or (original.typename == "integer" and test.typename == "number")) then
          s:emit(n.e2, "The static type of this variable already satisfies this test.")
+      end
+   end),
+   op("impossible-type-test", "warning", "Find primitive type tests that the static type never matches.", { "is" },
+   function(s, n, _t, children)
+      local original, test = single(children[1]), children[3]
+      if n.e1.kind ~= "variable" or n.op.meta_on_operand or not original or not test then return end
+      if test.typename == "nil" and not s.strict_nil then return end
+      local target_group = primitive_group_by_name[test.typename]
+      if target_group and disjoint_from_group(original, target_group, true) then
+         s:emit(n.e2, "The static type of this variable never matches the tested type. This test is always false.")
+      end
+   end),
+   op("impossible-nil-comparison", "warning", "Find comparisons between nil and a non-nil variable.", { "==", "~=" },
+   function(s, n, _t, children)
+      if not s.strict_nil then return end
+      local left, right = model.unwrap(n.e1), model.unwrap(n.e2)
+      local left_t, right_t = single(children[1]), single(children[3])
+      if left and right and left.kind == "variable" and right.kind == "nil" and cannot_be_nil(left_t) then
+         s:emit(n, "This variable has a non-nil type. Comparing it to nil always gives the same result.")
+      elseif left and right and right.kind == "variable" and left.kind == "nil" and cannot_be_nil(right_t) then
+         s:emit(n, "This variable has a non-nil type. Comparing it to nil always gives the same result.")
       end
    end),
    op("nil-coalescing-always-falls-back", "info", "Find nil-coalescing expressions whose left side is always nil.", { "??" },
@@ -190,6 +260,26 @@ local rules = {
                   s:emit(var, "This variable has type any. This type disables many checks on its uses.")
                end
             end
+         end
+      end,
+   },
+   {
+      id = "teal/typeof-untyped", severity = "info",
+      description = "Find typeof! queries on expressions typed as any or unknown.", kinds = { "typeof_expression" },
+      check = function(s, n, _t, _children)
+         local info = n.typeof_description and n.typeof_description.info
+         if info and (info.kind == "any" or info.kind == "unknown") then
+            s:emit(n.e1, "typeof! inspects the static type and sees " .. info.kind .. " here. Give the operand a more specific type if you need runtime fields.")
+         end
+      end,
+   },
+   {
+      id = "teal/typeof-type-parameter", severity = "hint",
+      description = "Find typeof! queries that resolve to a generic type parameter.", kinds = { "typeof_expression" },
+      check = function(s, n, _t, _children)
+         local info = n.typeof_description and n.typeof_description.info
+         if info and info.kind == "type_parameter" then
+            s:emit(n.e1, "typeof! describes the generic parameter rather than a call-site type. Pass a reflection.Type value if callers need their own type.")
          end
       end,
    },

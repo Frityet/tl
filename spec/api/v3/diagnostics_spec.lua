@@ -279,4 +279,126 @@ end]=]
       assert.same({"lua/truthy-zero-or-empty"}, codes(checked))
       assert.same(checked.diagnostics, recalled.diagnostics)
    end)
+
+   it("flags incompatible casts, impossible tests, and typeof! reflection pitfalls", function()
+      local source = [[
+local s: string = "123"
+local n: integer = s as integer
+local ok = s is number
+local never_nil = n == nil
+local function inspect_any(raw: any): reflection.Type
+   return typeof!(raw)
+end
+local function inspect<T>(x: T): reflection.Type
+   return typeof!(x)
+end
+local _ = inspect_any(s)
+local _ = inspect(n)
+local _ = n as number
+print(ok, never_nil)]]
+      local rules = {
+         ["teal/cast-between-primitives"] = true,
+         ["teal/impossible-type-test"] = true,
+         ["teal/impossible-nil-comparison"] = true,
+         ["teal/typeof-untyped"] = true,
+         ["teal/typeof-type-parameter"] = true,
+      }
+      local result = check(source, {diagnostics = rules})
+      assert.same({}, result.type_errors)
+      for code in pairs(rules) do rules[code] = 1 end
+      assert.same(rules, counts(result))
+   end)
+
+   it("detects NaN equality, self comparisons, duplicate branches, modified for variables, and pattern/gsub mistakes", function()
+      local source = [[
+local x: number = 1.0
+local s: string = "abc"
+if x == 0 / 0 then end
+if x ~= x then end
+if x < x then end
+if s == s then end
+if x == 1 then
+   print(1)
+elseif x == 1 then
+   print(2)
+end
+for i = 1, 5 do
+   i = i + 1
+end
+local _ = string.match(s, "(%1)")
+local _ = string.match(s, "([a-z]+)%1")
+local _ = string.find(s, "%0")
+local _ = string.find(s, "%0", 1, true)
+local _ = string.gsub(s, "(a)", "%2")
+local _ = string.gsub(s, "a", "%1")
+local _ = string.gsub(s, "a", "100%")
+local _ = string.gsub(s, "a", "100%%")]]
+      local result = check(source, {diagnostics = {
+         ["lua/nan-equality"] = true,
+         ["lua/self-comparison"] = true,
+         ["lua/duplicate-branch-condition"] = true,
+         ["lua/for-control-var-modified"] = true,
+         ["lua/invalid-pattern-backreference"] = true,
+         ["lua/invalid-gsub-replacement"] = true,
+      }})
+      assert.same({}, result.type_errors)
+      assert.same({
+         ["lua/nan-equality"] = 1,
+         ["lua/self-comparison"] = 2,
+         ["lua/duplicate-branch-condition"] = 1,
+         ["lua/for-control-var-modified"] = 1,
+         ["lua/invalid-pattern-backreference"] = 2,
+         ["lua/invalid-gsub-replacement"] = 2,
+      }, counts(result))
+   end)
+
+   it("detects multi-result loop varargs, %p formatting, hot tostring, and FFI fill/VLA/null-pointer bugs", function()
+      local source = [[
+local ffi = require("ffi")
+local function step(...: integer)
+   local t: {integer} = { 1, 2 }
+   for i = 1, 10 do
+      local first = select(1, ...)
+      print(...)
+      local _ = { ... }
+      local _ = string.format("%p", t)
+      local _ = string.format("%d", i)
+      local _ = tostring(t)
+      local _ = tostring(i)
+      local _ = math.fmod(i, 3)
+      print(first)
+   end
+end
+step(1, 2)
+local buf: ffi.CData = ffi.new("uint8_t[8]")
+local _: ffi.CData = ffi.new("int[?]", -4)
+ffi.fill(buf, 0, 8)
+ffi.fill(buf, 8, 256)
+ffi.fill(buf, 8, 0)
+local ptr = ffi.cast("void *", 0)
+if ptr then end
+if not ptr then end
+if ptr ~= nil then end]]
+      local result = check(source, {diagnostic_target = "luajit", diagnostics = {
+         ["luajit/loop-vararg"] = true,
+         ["luajit/string-format-pointer"] = true,
+         ["luajit/hot-tostring"] = true,
+         ["luajit/unrecorded-library-call"] = true,
+         ["luajit-ffi/negative-vla-length"] = true,
+         ["luajit-ffi/fill-zero-length"] = true,
+         ["luajit-ffi/fill-byte-range"] = true,
+         ["luajit-ffi/truthy-null-pointer"] = true,
+      }})
+      assert.same({}, result.type_errors)
+      assert.same({
+         ["luajit/loop-vararg"] = 2,
+         ["luajit/string-format-pointer"] = 1,
+         ["luajit/hot-tostring"] = 1,
+         ["luajit/unrecorded-library-call"] = 1,
+         ["luajit-ffi/negative-vla-length"] = 1,
+         ["luajit-ffi/fill-zero-length"] = 1,
+         ["luajit-ffi/fill-byte-range"] = 1,
+         ["luajit-ffi/truthy-null-pointer"] = 2,
+      }, counts(result))
+   end)
 end)

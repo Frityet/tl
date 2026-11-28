@@ -41,31 +41,29 @@ such as `src` without repeating that directory in `include_dir`; any explicit
 
 ### Diagnostics
 
-Configure opt-in diagnostic packs in the `diagnostics` table in `tlconfig.lua`.
-Run `tl check main.tl` to see findings. Editors use the same project settings
-and show the rule ID and severity. Standard type errors and warnings use their
-usual settings.
+Teal supports optional diagnostic checks that you can enable in `tlconfig.lua`.
+They run when you use `tl check` and in editors through the language server.
 
-| Pack | Examples |
-| ---- | -------- |
-| `teal` | Casts that hide nil or erase type information, redundant type tests and nil fallbacks, optional receiver types |
-| `lua` | Truthiness, discarded multiple results, numeric loop bounds, invalid library arguments, and removed Lua 5.1 APIs |
-| `luajit` | Trace-sensitive work in loops, repeated allocations and compilation, string accumulation, and JIT controls |
-| `luajit-ffi` | C declaration and type reuse, buffer lengths, pointer lifetimes, callback types, and C varargs |
+Diagnostics are grouped into four packs:
 
-The Lua pack checks `.lua` and `.tl` files. The Teal pack checks Teal source.
-Enabling a LuaJIT or FFI rule in project config selects the LuaJIT analysis
-target by default, even if `gen_target` is `"5.1"`. Use `diagnostic_target` to
-set it explicitly. The optional rules analyze the checked AST in-process, so
-editor diagnostics require no separate LuaJIT process or program execution.
+| Pack | What it checks |
+| ---- | -------------- |
+| `teal` | Risky casts, redundant or impossible type checks, and `typeof!` usage. |
+| `lua` | Common Lua bugs such as truthiness pitfalls, bad loops, and legacy Lua 5.1 functions. |
+| `luajit` | Loop and performance hints for LuaJIT. |
+| `luajit-ffi` | Common mistakes and performance hints when using LuaJIT's FFI. |
+
+Enable packs or individual rules in the `diagnostics` table of `tlconfig.lua`:
 
 ```lua
--- tlconfig.lua
 return {
-   gen_target = "5.1",
    diagnostics = {
-      teal = { ["cast-can-hide-nil"] = "error" },
-      lua = { ["truthy-zero-or-empty"] = "warning" },
+      teal = {
+         ["cast-can-hide-nil"] = "error",
+      },
+      lua = {
+         ["truthy-zero-or-empty"] = "warning",
+      },
       luajit = {
          all = "hint",
          ["hot-print"] = "off",
@@ -77,51 +75,17 @@ return {
 }
 ```
 
-Use the name after the slash in a diagnostic ID as the key in its pack
-table. `all` sets a default for that pack. An explicit rule setting takes
-precedence. `true` uses a rule's default severity. `false` and `"off"`
-disable it. Other levels are `"error"`, `"warning"`, `"info"`, and `"hint"`.
-An `"error"` finding makes `tl check` exit with status 1.
+Each entry sets a rule's level:
 
-API callers can pass qualified IDs such as `diagnostics = { ["teal/cast-can-hide-nil"] = "error" }`
-and an analysis target to `teal.compiler`.
-`Input:check()` returns findings in `CheckError.diagnostics`, with `code`,
-`severity`, `msg`, `filename`, `y`, `x`, and an exclusive `end_y` and `end_x`
-when available. `teal.diagnostic_catalog(opts)` returns the catalog as data.
-The optional suite skips declaration files and files with syntax errors.
+* `true` - enable the rule with its default level.
+* `false` or `"off"` - disable the rule.
+* `"error"`, `"warning"`, `"info"`, or `"hint"` - enable the rule at that level.
+* `all` - set a default for the whole pack (individual rules override it).
 
-Rule messages use ASD-STE100 style. A short sentence gives the cause or
-effect. If the rule can suggest a change, a separate sentence gives one
-action. Code terms such as `ctype` and `side exit` keep their LuaJIT meanings.
-[ASD-STE100 Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
-
-#### LuaJIT traces and hot loops
-
-* `luajit/loop-closure`, `luajit-ffi/vla-initializer-in-loop`, and
-  `luajit-ffi/aggregate-by-value-call` point to recorder limitations in
-  upstream LuaJIT 2.1. Hoist a closure that can take iteration state as
-  arguments, separate C buffer allocation from initialization, or use a
-  pointer-based C API for an aggregate. The aggregate rule checks simple
-  prototypes in literal `ffi.cdef` declarations earlier in the same file.
-  [Bytecode recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_record.c) · [FFI recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_crecord.c)
-* `luajit/string-find-pattern` and `luajit/unrecorded-library-call` identify
-  interpreter work. LuaJIT can stitch a trace across some calls. Use literal
-  search with `string.find(..., 1, true)` when a pattern is unnecessary, or
-  move invariant work outside the loop. [Fast-function recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_ffrecord.c)
-* `luajit/unpack-bounds`, `luajit/loop-type-dispatch`, and
-  `luajit-ffi/ctype-choice-in-loop` point to guards that can exit a trace as
-  inputs change. Keep result counts, value types, and C types stable within a
-  batch. For C functions, cache the library namespace and use its named
-  member. `luajit-ffi/dynamic-symbol-call` flags lookups that can change the
-  recorded symbol. [LuaJIT runtime options](https://luajit.org/running.html) · [FFI namespaces](https://luajit.org/ext_ffi_semantics.html#clib)
-* `luajit-ffi/callback-call-in-loop` identifies calls that pass an explicitly
-  cast Lua callback to C. If C invokes it synchronously, keep that call out
-  of compiled Lua or use a batched or pull-style interface. A native function
-  that merely saves a callback has different runtime behavior. [FFI callbacks](https://luajit.org/ext_ffi_semantics.html#callback)
-
-These are source-based findings. Whether a path runs hot, how often a guard
-fails, and whether LuaJIT compiles a side trace depend on the actual workload
-and runtime build. [LuaJIT runtime options](https://luajit.org/running.html)
+Diagnostics at the `"error"` level make `tl check` fail with a non-zero exit
+code. Enabling any `luajit` or `luajit-ffi` rule automatically checks your code
+for LuaJIT even if `gen_target` is `"5.1"`; you can also set `diagnostic_target`
+explicitly.
 
 ### Generated code
 

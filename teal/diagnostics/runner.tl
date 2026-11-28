@@ -52,6 +52,11 @@ local function call_origin(state: State, n: Node): string
       if path == "ffi.cast" then
          local value = model.unwrap(args[2])
          if value and value.kind == "function" then return "ffi.callback()" end
+         local decl = model.unwrap(args[1])
+         if decl and decl.kind == "string" and decl.conststr and
+            decl.conststr:find("*", 1, true) and not decl.conststr:match("%(%s*%*%s*%)") then
+            return "ffi.pointer()"
+         end
       end
    end
 end
