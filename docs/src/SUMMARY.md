@@ -42,10 +42,25 @@
 - [LuaJIT syntax extensions](./luajit_extensions.md)
 - [Type definitions for third party libraries](./declaration_files.md)
 - [The Teal Standard Library and Lua compatibility](./teal_standard_library_and_lua_compatibility.md)
-- [Test suites with auxlib.testing](./auxlib_testing.md)
 - [Compiler options](./compiler_options.md)
-- [Compiler performance](./compiler_performance.md)
 - [Reader, parser, and macro performance](./frontend_performance.md)
+
+## Auxlib
+
+- [Auxlib](./auxlib/index.md)
+  - [auxlib.argparse](./auxlib/argparse.md)
+  - [auxlib.async](./auxlib/async.md)
+    - [auxlib.async.frame](./auxlib/async_frame.md)
+    - [auxlib.async.luv](./auxlib/async_luv.md)
+  - [auxlib.database](./auxlib/database.md)
+    - [auxlib.database.sqlite](./auxlib/database_sqlite.md)
+  - [auxlib.ffi](./auxlib/ffi.md)
+  - [auxlib.format](./auxlib/format.md)
+  - [auxlib.math](./auxlib/math.md)
+  - [auxlib.Object](./auxlib/object.md)
+  - [auxlib.struct](./auxlib/struct.md)
+  - [auxlib.tables](./auxlib/tables.md)
+  - [auxlib.testing](./auxlib/testing.md)
 
 ## The Teal project
 

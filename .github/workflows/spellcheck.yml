@@ -21,4 +21,4 @@ jobs:
     - name: Check spelling
       run: |
         cd docs
-        npx --yes cspell --no-progress --show-suggestions --show-context src/*.md
+        npx --yes cspell --no-progress --show-suggestions --show-context 'src/**/*.md'

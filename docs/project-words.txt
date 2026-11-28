@@ -83,3 +83,15 @@ TYPEARG
 FORIN
 FORNUM
 macroexpbody
+auxlib
+defmode
+lerp
+libuv
+lsqlite
+metavar
+nowait
+ptrdiff
+schar
+uchar
+ulonglong
+Xmake

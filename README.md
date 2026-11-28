@@ -71,43 +71,9 @@ the rule adds the compiled modules from the target and its dependencies to
 `LUA_PATH`. The optional `auxlib.async.luv` and `auxlib.database.sqlite`
 adapters require `luv` and `lsqlite3` respectively when loaded.
 
-### Command-line arguments with `auxlib.argparse`
-
-Decorate a record with `parser!` to generate `parse`, `help`, and `usage`
-methods. The schema defines the command line, and the record fields give the
-parsed values their Teal types. Match field names to option targets and field
-types to the converters or defaults used in the schema.
-
-```teal
-local argparse = require("auxlib.argparse")
-local record Options<argparse.parser!({
-   name = "copy",
-   arguments = {{ name = "path" }},
-   options = {{ name = "-n --copies", default = "1", convert = argparse.integer }},
-})>
-   path: string
-   copies: integer
-end
-
-local options, message, status = Options.parse(arg)
-```
-
-On success, `parse` returns the options and status `0`. Help returns no options,
-help text, and status `0`. Invalid arguments return no options, an error message,
-and status `2`. The schema also supports flags, repeated values, choices, and
-nested subcommands. Use `argparse.new(schema)` to build a parser without a record,
-or a schema's `configure` callback to use Lua argparse features such as mutually
-exclusive options and custom actions. See [the CI job report](example/showcase.tl)
-for a complete script.
-
-### Test suites with `auxlib.testing`
-
-Create a suite with `testing.suite(name)` and add tests with `suite:test` or
-the `tests!` macro. The runner executes every selected case and reports
-failures with source locations, expected and actual values, and any context
-the tests attach. It returns a structured summary and supports Unicode,
-plain text, and TAP output. See the [testing guide](docs/src/auxlib_testing.md)
-for examples, hooks, and assertion helpers.
+The [Auxlib documentation](docs/src/auxlib/index.md) lists the modules with
+examples and API details. The [CI job report](example/showcase.tl) shows
+`auxlib.argparse` in a complete script.
 
 ## Running
 
@@ -194,8 +160,6 @@ You can read the [rendered documentation](https://teal-language.org/book/) onlin
 it can also be generated locally from the files in the [docs/](docs/) folder
 of this repository.
 
-See [compiler performance](docs/src/compiler_performance.md) for measurements
-and steps to profile the compiler.
 See [reader, parser, and macro performance](docs/src/frontend_performance.md)
 for the frontend changes, compatibility checks, and stage benchmarks.
 

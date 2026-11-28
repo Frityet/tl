@@ -47,10 +47,7 @@ are separate experiments with different live heaps and are not additive.
 The cache-exceeding and cold cases show improvements that do not depend on
 reusing all compiled macros.
 
-[Raw samples and metadata](../data/frontend-2026-11-26.json) include matching
-result checksums, runtime source/bundle SHA-256 hashes, and the final retest after
-sparse-child compatibility corrections. Absolute times vary by machine and
-workload; these measurements are not a claim of a universal fastest parser.
+Absolute times vary by machine and workload.
 
 ## Validation
 

@@ -216,7 +216,7 @@ function declaration as the first argument and `"read"` as the second.
 Declare the macro parameter as `Statement` to accept the declaration block.
 The `async!` macro from `auxlib.async` uses `Statement | Expression` to accept
 a local function declaration or a function literal. The resulting function
-starts a task when called.
+starts a task when called. See [async tasks](auxlib/async.md).
 
 ```teal
 local tasks = require("auxlib.async")
@@ -240,7 +240,7 @@ assert(A.__name == "A" and A.__index == A)
 
 `object!` implements `Object` and supplies the `where self.__name == "A"`
 predicate using the declared name. Use a plain `record is Object` when you
-want to write the predicate yourself.
+want to write the predicate yourself. See [tagged records](auxlib/object.md).
 
 Inside a macro quote, `$name` splices the macro argument named `name`:
 
