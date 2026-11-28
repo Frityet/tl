@@ -20,14 +20,14 @@ local record runner
 end
 
 local runtime_globals: {string: boolean} = {
-   bit = true, jit = true, newproxy = true,
+   bit = true, jit = true, newproxy = true, gcinfo = true,
 }
 local legacy_globals: {string: boolean} = { setfenv = true, getfenv = true, loadstring = true, unpack = true }
 
 local required_modules: {string: boolean} = {
    ffi = true, bit = true, jit = true, ["jit.opt"] = true,
    coroutine = true, debug = true, io = true, math = true, os = true,
-   package = true, string = true, table = true, utf8 = true,
+   package = true, string = true, table = true, ["table.new"] = true, utf8 = true,
 }
 
 local function member_name(node: Node): string
@@ -40,11 +40,19 @@ local function member_name(node: Node): string
    end
 end
 
-local function required_module(state: State, n: Node): string
+local function call_origin(state: State, n: Node): string
    local args = n.e2
    local name = #args == 1 and model.unwrap(args[1])
    if name and name.kind == "string" and required_modules[name.conststr] and state:path(n.e1) == "require" then
       return name.conststr
+   end
+   if state.ffi_origins and args[1] then
+      local path = state:path(n.e1)
+      if path == "ffi.load" then return "ffi.load()" end
+      if path == "ffi.cast" then
+         local value = model.unwrap(args[2])
+         if value and value.kind == "function" then return "ffi.callback()" end
+      end
    end
 end
 
@@ -54,11 +62,14 @@ function State:path(node: Node): string
    local path = self.paths[node]
    if not path and node.op then
       if node.op.op == "@funcall" then
-         path = required_module(self, node)
+         path = call_origin(self, node)
       else
          local field = member_name(node)
          if field then
             local owner = self:path(node.e1)
+            if owner == "ffi.load()" and model.call_args(node.e1) then
+               owner = "ffi.temporary()"
+            end
             path = owner and (owner .. "." .. field)
          end
       end
@@ -179,7 +190,7 @@ end
 
 local function run_rules(state: State, rules: {model.EnabledRule}, n: Node, t: Type, children: {Type})
    for _, rule in ipairs(rules) do
-      if not (state.is_lua and rule.teal_only) then
+      if (not rule.in_loop or state.loop_depth > 0) and not (state.is_lua and rule.teal_only) then
          state.current_rule = rule
          rule.check(state, n, t, children)
       end
@@ -189,6 +200,8 @@ end
 local function patch_rule_hook(callbacks: Callbacks<Context, Node, Type>, kind: NodeKind, plan: model.Plan, state: State)
    local by_kind = plan.by_kind[kind]
    local by_call = next(plan.by_call) and plan.by_call
+   local by_hot_call = next(plan.by_hot_call) and plan.by_hot_call
+   local c_symbols, hot_c_symbols = plan.c_symbols, plan.hot_c_symbols
    local after = callbacks.after
    callbacks.after = function(c: Context, n: Node, children: {Type}): Type
       local t = after and after(c, n, children)
@@ -198,9 +211,23 @@ local function patch_rule_hook(callbacks: Callbacks<Context, Node, Type>, kind: 
          local op = n.op.op
          local operators = plan.by_operator[op]
          if operators then run_rules(state, operators, n, t, children) end
-         if by_call and op == "@funcall" then
-            local calls = by_call[state:path(n.e1)]
-            if calls then run_rules(state, calls, n, t, children) end
+         if op == "@funcall" then
+            local hot = state.loop_depth > 0
+            if by_call or c_symbols or (hot and (by_hot_call or hot_c_symbols)) then
+               local path = state:path(n.e1)
+               local calls = by_call and by_call[path]
+               local hot_calls = hot and by_hot_call and by_hot_call[path]
+               local symbol = (c_symbols or (hot and hot_c_symbols)) and model.ffi_symbol(path)
+               if calls or hot_calls or symbol then
+                  state.called_path = path
+               end
+               if calls then run_rules(state, calls, n, t, children) end
+               if hot_calls then run_rules(state, hot_calls, n, t, children) end
+               if symbol then
+                  if c_symbols then run_rules(state, c_symbols, n, t, children) end
+                  if hot and hot_c_symbols then run_rules(state, hot_c_symbols, n, t, children) end
+               end
+            end
          end
       end
       return t
@@ -272,11 +299,13 @@ function runner.attach(ctx: Context, visitor: Visitor<Context, NodeKind, Node, T
       results = {},
       paths = {},
       modified_paths = {},
+      ffi_origins = plan.ffi_origins,
    }, state_mt)
 
    local cbs = util.shallow_copy_table(visitor.cbs)
    local hooks: {NodeKind: Callbacks<Context, Node, Type>} = {}
-   local uses_operators = next(plan.by_operator) ~= nil or next(plan.by_call) ~= nil
+   local uses_operators = next(plan.by_operator) ~= nil or next(plan.by_call) ~= nil or next(plan.by_hot_call) ~= nil or
+                          plan.c_symbols ~= nil or plan.hot_c_symbols ~= nil
    for kind, callbacks in pairs(cbs) do
       local has_rules = plan.by_kind[kind] ~= nil or (kind == "op" and uses_operators)
       local has_binding = plan.bindings and (kind == "variable" or kind == "local_declaration" or kind == "assignment")

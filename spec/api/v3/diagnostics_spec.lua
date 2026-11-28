@@ -15,6 +15,14 @@ local function codes(result)
    return found
 end
 
+local function counts(result)
+   local found = {}
+   for _, diagnostic in ipairs(result.diagnostics) do
+      found[diagnostic.code] = (found[diagnostic.code] or 0) + 1
+   end
+   return found
+end
+
 describe("diagnostics", function()
    it("leaves the default compiler result and generated code intact", function()
       local source = "local unused = 10\nif 0 then print('example') end"
@@ -128,6 +136,116 @@ end
       local result = check(source, {diagnostics = {["luajit-ffi/cdef-preprocessor"] = true}, diagnostic_target = "luajit"}, "ffi-use.lua")
       assert.same({"luajit-ffi/cdef-preprocessor"}, codes(result))
       assert.equals(6, result.diagnostics[1].y)
+   end)
+
+   it("recognizes recorder-sensitive call shapes and loop closures", function()
+      local source = [[
+local search, unpack_values = string.find, unpack
+local function scan(text, values, limit, choose)
+   search(text, "%d")
+   for i = 1, limit do
+      search(text, "%d")
+      search(text, "%d", 1, true)
+      search(text, "literal")
+      print(select(i, 11, 22))
+      print(select(1, 11, 22))
+      print(unpack_values(values, 1, i))
+      print(unpack_values(values, 1, 2))
+      print(getfenv(), getfenv(0))
+      local function item()
+         search(text, "%d")
+         return i
+      end
+      local value
+      if choose then value = 1 else value = "one" end
+      print(value, item())
+   end
+end]]
+      local rules = {
+         ["luajit/loop-closure"] = true,
+         ["luajit/loop-branch-value-type"] = true,
+         ["luajit/string-find-pattern"] = true,
+         ["luajit/select-dynamic-index"] = true,
+         ["luajit/unpack-bounds"] = true,
+         ["luajit/getfenv-recorder"] = true,
+      }
+      local result = check(source, {diagnostic_target = "luajit", diagnostics = rules}, "trace.lua")
+      for code in pairs(rules) do rules[code] = 1 end
+      assert.same(rules, counts(result))
+   end)
+
+   it("detects FFI constructor and ctype guard limits without executing source", function()
+      local source = [[
+local ffi = require("ffi")
+error("the fixture must only be checked")
+for i = 1, 64 do
+   local _ = ffi.new("int[?]", i, 1)
+   local _ = ffi.new("int[?]", i)
+   local _ = ffi.new("int[3]", {1, 2, 3})
+   local _ = ffi.new("char[129]", 1)
+   local _ = ffi.new("char[129]")
+   local _ = ffi.sizeof("int[?]", i)
+   local _ = ffi.sizeof("int[2]")
+   local _ = ffi.new(i % 2 == 0 and "int" or "double", i)
+   print(tonumber(ffi.cast("uint64_t", i)), ffi.cast("uint64_t", i) + 1)
+end]]
+      local rules = {
+         ["luajit-ffi/vla-initializer-in-loop"] = true,
+         ["luajit-ffi/array-table-initializer-in-loop"] = true,
+         ["luajit-ffi/large-byte-array-initializer-in-loop"] = true,
+         ["luajit-ffi/sizeof-variable-length-in-loop"] = true,
+         ["luajit-ffi/ctype-choice-in-loop"] = true,
+         ["luajit-ffi/int64-tonumber"] = true,
+         ["luajit-ffi/boxed-scalar-arithmetic"] = true,
+      }
+      local result = check(source, {diagnostic_target = "luajit", diagnostics = rules}, "ffi-trace.lua")
+      for code in pairs(rules) do rules[code] = 1 end
+      assert.same(rules, counts(result))
+   end)
+
+   it("uses loaded-library aliases and visible C prototypes for specific findings", function()
+      local source = [=[
+local ffi = require("ffi")
+local lib = ffi.load("fixture")
+ffi.cdef[[
+   struct Pair { int value; };
+   struct Pair result(int val);
+   void consume(struct Pair val);
+   void scalar(struct Pair *val);
+   void visit(void (*callback)(int));
+]]
+local cached = lib.scalar
+local temporary = ffi.load("fixture").scalar
+local _ = ffi.load("fixture").constant
+local callback = ffi.cast("void (*)(int)", function(_) end)
+for i = 1, 64 do
+   cached(nil)
+   temporary(nil)
+   lib[i == 1 and "scalar" or "consume"](nil)
+   lib.visit(callback)
+   lib.visit(function(_) end)
+   lib.consume(lib.result(i))
+   lib.scalar(nil)
+   local lib = {visit = function(_) end}
+   lib.visit(function(_) end)
+end]=]
+      local result = check(source, {diagnostic_target = "luajit", diagnostics = {
+         ["luajit/loop-indexed-dispatch"] = true,
+         ["luajit-ffi/cached-symbol-call"] = true,
+         ["luajit-ffi/temporary-library-symbol"] = true,
+         ["luajit-ffi/dynamic-symbol-call"] = true,
+         ["luajit-ffi/aggregate-by-value-call"] = true,
+         ["luajit-ffi/callback-call-in-loop"] = true,
+         ["luajit-ffi/implicit-callback"] = true,
+      }}, "ffi-namespaces.lua")
+      assert.same({
+         ["luajit-ffi/cached-symbol-call"] = 1,
+         ["luajit-ffi/temporary-library-symbol"] = 1,
+         ["luajit-ffi/dynamic-symbol-call"] = 1,
+         ["luajit-ffi/aggregate-by-value-call"] = 2,
+         ["luajit-ffi/callback-call-in-loop"] = 1,
+         ["luajit-ffi/implicit-callback"] = 1,
+      }, counts(result))
    end)
 
    it("skips incomplete sources and keeps diagnostics available on recall", function()

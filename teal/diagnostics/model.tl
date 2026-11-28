@@ -34,7 +34,10 @@ local record model
       kinds: {ast.NodeKind}
       operators: {string}
       calls: {string}
+      c_symbols: boolean
       bindings: boolean
+      in_loop: boolean
+      ffi_origins: boolean
       check: Check
    end
 
@@ -52,13 +55,18 @@ local record model
       severity: Severity
       check: Check
       teal_only: boolean
+      in_loop: boolean
    end
 
    record Plan
       by_kind: {ast.NodeKind: {EnabledRule}}
       by_operator: {string: {EnabledRule}}
       by_call: {string: {EnabledRule}}
+      by_hot_call: {string: {EnabledRule}}
+      c_symbols: {EnabledRule}
+      hot_c_symbols: {EnabledRule}
       bindings: boolean
+      ffi_origins: boolean
       teal_only: boolean
       track_loops: boolean
    end
@@ -72,12 +80,15 @@ local record model
 
       emit: function(self, Node, string)
       path: function(self, Node): string
+      called_path: string
+      ffi_aggregate_prototypes: {string: string}
 
       current_rule: EnabledRule
       results: {errors.Error}
       paths: {Node: string}
       modified_paths: {string: boolean}
       filename: string
+      ffi_origins: boolean
    end
 end
 
@@ -107,6 +118,27 @@ function model.call_args(n: Node): Node
    if n and n.op and n.op.op == "@funcall" then
       return n.e2
    end
+end
+
+function model.ffi_namespace(path: string): boolean
+   return path == "ffi.C" or path == "ffi.load()"
+end
+
+function model.ffi_temporary_symbol(path: string): boolean
+   return path ~= nil and path:sub(1, 16) == "ffi.temporary()."
+end
+
+function model.ffi_symbol(path: string): boolean
+   if not path then return false end
+   local prefix: string
+   if path:sub(1, 6) == "ffi.C." then
+      prefix = "ffi.C."
+   elseif path:sub(1, 11) == "ffi.load()." then
+      prefix = "ffi.load()."
+   elseif model.ffi_temporary_symbol(path) then
+      prefix = "ffi.temporary()."
+   end
+   return prefix ~= nil and #path > #prefix and not path:find(".", #prefix + 1, true)
 end
 
 return model

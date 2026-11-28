@@ -11519,6 +11519,124 @@ return tldebug
 
 end
 
+-- module teal.diagnostics.ffi_namespaces from teal/diagnostics/ffi_namespaces.lua
+package.preload["teal.diagnostics.ffi_namespaces"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
+local model = require("teal.diagnostics.model")
+
+
+
+
+
+local function aggregate_type(declaration, parameter)
+   declaration = declaration:match("^%s*(.-)%s*$")
+   declaration = declaration:gsub("^extern%s+", ""):gsub("^const%s+", "")
+   local category, rest = declaration:match("^(%a+)%s+(.+)$")
+   if category ~= "struct" and category ~= "union" then return false end
+   return rest:match("^[_%a][_%w]*$") ~= nil or
+   (parameter and rest:match("^[_%a][_%w]*%s+[_%a][_%w]*$") ~= nil)
+end
+
+local function remember_prototypes(s, argument)
+   local decl = model.unwrap(argument)
+   if not decl or decl.kind ~= "string" or #decl.conststr > 64 * 1024 then return end
+   local text = decl.conststr:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
+   for statement in text:gmatch("[^;]+") do
+      local result, name, parameters = statement:match("^%s*([_%w%s]+)%s+([_%a][_%w]*)%s*%(([^()]*)%)%s*$")
+      if name and not result:match("^typedef%s") then
+         local aggregate
+         if aggregate_type(result, false) then
+            aggregate = "returns a C aggregate by value"
+         else
+            for parameter in parameters:gmatch("[^,]+") do
+               if aggregate_type(parameter, true) then
+                  aggregate = "takes a C aggregate by value"
+                  break
+               end
+            end
+         end
+         if aggregate then
+            s.ffi_aggregate_prototypes = s.ffi_aggregate_prototypes or {}
+            s.ffi_aggregate_prototypes[name] = aggregate
+         end
+      end
+   end
+end
+
+
+
+
+local rules = {
+   {
+      id = "luajit-ffi/cached-symbol-call", severity = "hint",
+      description = "Find calls through a cached C function object inside a loop.",
+      kinds = { "op" }, c_symbols = true, in_loop = true,
+      check = function(s, n, _t, _children)
+         local callee = model.unwrap(n.e1)
+         if callee.kind == "variable" and not model.ffi_temporary_symbol(s.called_path) then
+            s:emit(callee, "Keep the C library namespace in a local and call its named member. LuaJIT can specialize the namespace and literal symbol together, folding the function lookup out of the trace.")
+         end
+      end,
+   },
+   {
+      id = "luajit-ffi/dynamic-symbol-call", severity = "hint",
+      description = "Find runtime C symbol selection inside a loop.",
+      kinds = { "op" }, operators = { "@funcall" }, bindings = true, ffi_origins = true, in_loop = true,
+      check = function(s, n, _t, _children)
+         local callee = model.unwrap(n.e1)
+         if not callee.op or callee.op.op ~= "@index" then return end
+         local key = model.unwrap(callee.e2)
+         if key.kind ~= "string" and model.ffi_namespace(s:path(callee.e1)) then
+            s:emit(key, "LuaJIT specializes C namespace lookup to the observed symbol string. A different symbol can exit that trace. Dispatch before the loop or batch the work by symbol and use a literal member in each loop.")
+         end
+      end,
+   },
+   {
+      id = "luajit-ffi/temporary-library-symbol", severity = "warning",
+      description = "Find calls through function aliases taken from a temporary library namespace.",
+      kinds = { "op" }, c_symbols = true,
+      check = function(s, n, _t, _children)
+         local callee = model.unwrap(n.e1)
+         if callee.kind == "variable" and model.ffi_temporary_symbol(s.called_path) then
+            s:emit(callee, "This function alias was taken from a temporary namespace. Keep the result of ffi.load in a local for as long as the library is in use, and call its named member.")
+         end
+      end,
+   },
+   {
+      id = "luajit-ffi/aggregate-by-value-call", severity = "hint",
+      description = "Find C calls whose visible prototypes pass a struct or union by value.",
+      kinds = { "op" }, calls = { "ffi.cdef" }, c_symbols = true,
+      check = function(s, n, _t, _children)
+         if s.called_path == "ffi.cdef" then
+            remember_prototypes(s, n.e2[1])
+         elseif s.ffi_aggregate_prototypes then
+            local name = s.called_path:match("([_%a][_%w]*)$")
+            local aggregate = name and s.ffi_aggregate_prototypes[name]
+            if aggregate then
+               s:emit(n, "This prototype " .. aggregate .. ". LuaJIT's FFI recorder cannot compile that call. For a hot path, move the call out of the loop or use a C wrapper with pointer or scalar parameters and a scalar result.")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit-ffi/callback-call-in-loop", severity = "warning",
+      description = "Find loop calls that pass a known Lua callback to C.",
+      kinds = { "op" }, c_symbols = true, in_loop = true,
+      check = function(s, n, _t, _children)
+         for _, argument in ipairs(n.e2) do
+            if s:path(argument) == "ffi.callback()" then
+               s:emit(argument, "If C invokes this callback synchronously, the compiled call cannot reenter Lua. Prefer a batched or pull-style API, or put the call in a small Lua wrapper and use jit.off(wrapper) during setup.")
+               return
+            end
+         end
+      end,
+   },
+}
+
+return rules
+
+end
+
 -- module teal.diagnostics.lua from teal/diagnostics/lua.lua
 package.preload["teal.diagnostics.lua"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
@@ -11802,7 +11920,7 @@ end
 
 -- module teal.diagnostics.luajit from teal/diagnostics/luajit.lua
 package.preload["teal.diagnostics.luajit"] = function(...)
-
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local string = _tl_compat and _tl_compat.string or string
 
 
 local model = require("teal.diagnostics.model")
@@ -11811,14 +11929,24 @@ local model = require("teal.diagnostics.model")
 
 
 
+local function uses_pattern(pattern, plain)
+   pattern, plain = model.unwrap(pattern), model.unwrap(plain)
+   if not pattern or pattern.kind ~= "string" then return false end
+   if plain and (plain.kind == "string" or plain.kind == "number" or plain.kind == "integer" or
+      plain.kind == "literal_table" or plain.kind == "function" or (plain.kind == "boolean" and plain.tk == "true")) then
+      return false
+   end
+   return pattern.conststr:find("[%^%$%*%+%?%.%(%[%%%-]") ~= nil
+end
+
+local pattern_message = "The recorder handles literal string.find searches. A Lua pattern stays on the interpreter path. Pass true for plain mode if you want literal matching, or move invariant matching outside the loop."
+
 local function hot_call(id, name, description, message)
    return {
-      id = id, severity = "hint", description = description,
+      id = id, severity = "hint", description = description, in_loop = true,
       kinds = { "op" }, bindings = true, calls = { name },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            s:emit(n, message)
-         end
+         s:emit(n, message)
       end,
    }
 end
@@ -11826,7 +11954,7 @@ end
 local rules = {
    hot_call("luajit/hot-string-match", "string.match",
    "Find pattern matching inside loops that may cross a trace boundary.",
-   "string.match is not recorded by LuaJIT's fast-function recorder; the trace can stitch across the call. If only literal presence is needed, try string.find(s, needle, 1, true), then check traces and benchmark"),
+   "The fast-function recorder can stitch around string.match. If you only need literal presence, use string.find(s, needle, 1, true) and measure the effect."),
    hot_call("luajit/hot-string-gmatch", "string.gmatch",
    "Find repeated pattern iterator creation inside loops.",
    "string.gmatch creates a pattern iterator. Consider moving creation out of the loop when iteration semantics permit"),
@@ -11866,8 +11994,58 @@ local rules = {
    hot_call("luajit/hot-coroutine-wrap", "coroutine.wrap",
    "Find repeated wrapped coroutine creation inside loops.",
    "coroutine.wrap creates a coroutine and wrapper. Consider reusing workers when its lifecycle permits"),
+   hot_call("luajit/hot-table-new", "table.new",
+   "Find repeated allocation of presized tables in loops.",
+   "table.new still allocates a table each iteration. If GC profiling shows pressure, reuse a presized table when its lifetime and aliasing permit."),
    {
-      id = "luajit/unrecorded-library-call", severity = "hint",
+      id = "luajit/string-find-pattern", severity = "hint", in_loop = true,
+      description = "Find literal patterns that the LuaJIT string.find recorder cannot handle.",
+      kinds = { "op" }, bindings = true, calls = { "string.find" },
+      check = function(s, n, _t, _children)
+         if uses_pattern(n.e2[2], n.e2[4]) then
+            s:emit(n, pattern_message)
+         end
+      end,
+   },
+   {
+      id = "luajit/select-dynamic-index", severity = "hint", in_loop = true,
+      description = "Find dynamic select indices that may prevent recording.",
+      kinds = { "op" }, bindings = true, calls = { "select" },
+      check = function(s, n, _t, _children)
+         local index = model.unwrap(n.e2[1])
+         if index and not model.number(index) and index.kind ~= "string" then
+            s:emit(n, "The ordinary select recorder requires a constant numeric index. LuaJIT has a separate guarded path for single-result select(index, ...). If you only need one result, consider packing the values once before the loop and indexing the pack.")
+         end
+      end,
+   },
+   {
+      id = "luajit/unpack-bounds", severity = "hint", in_loop = true,
+      description = "Find unpack calls whose result count can vary or grow large.",
+      kinds = { "op" }, bindings = true, calls = { "unpack", "table.unpack" },
+      check = function(s, n, _t, _children)
+         local args = n.e2
+         local start = model.unwrap(args[2])
+         local first = (not start or start.kind == "nil") and 1 or model.number(start)
+         local last = model.number(args[3])
+         if not last or not first then
+            s:emit(n, "LuaJIT specializes the result count and guards variable bounds, including the default table length. Changing the bounds can exit the trace. Keep the range fixed or process the table directly.")
+         elseif first and last - first >= 16 then
+            s:emit(n, "LuaJIT records each unpacked element separately. A large fixed range can grow the trace and hit its slot limit. Consider processing the table directly.")
+         end
+      end,
+   },
+   {
+      id = "luajit/getfenv-recorder", severity = "hint", in_loop = true,
+      description = "Find getfenv forms unsupported by the LuaJIT recorder.",
+      kinds = { "op" }, bindings = true, calls = { "getfenv" },
+      check = function(s, n, _t, _children)
+         if #n.e2 == 0 or model.number(n.e2[1]) ~= 0 then
+            s:emit(n, "LuaJIT's getfenv recorder supports only the constant getfenv(0) form. Cache an invariant environment outside the loop if it cannot change")
+         end
+      end,
+   },
+   {
+      id = "luajit/unrecorded-library-call", severity = "hint", in_loop = true,
       description = "Find library calls that LuaJIT does not record as fast functions.",
       kinds = { "op" }, bindings = true,
       calls = { "table.sort", "table.maxn", "coroutine.status", "coroutine.running", "coroutine.resume", "coroutine.yield",
@@ -11875,81 +12053,69 @@ local rules = {
       "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
       "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo", },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            s:emit(n, "This LuaJIT library call has no fast-function recorder. The current trace may stitch across it or return to the interpreter; move invariant inspection or setup out of the loop, and use -jv to check the actual path")
-         end
+         s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move invariant inspection or setup outside the loop and check the path with a profile.")
       end,
    },
    {
-      id = "luajit/table-insert-position", severity = "hint",
+      id = "luajit/table-insert-position", severity = "hint", in_loop = true,
       description = "Find positioned inserts that the LuaJIT table.insert recorder cannot handle.",
       kinds = { "op" }, bindings = true, calls = { "table.insert" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 and #n.e2 == 3 then
-            s:emit(n, "LuaJIT's table.insert recorder handles the two-argument append, but not a positioned insert. If the operation is an append, use table.insert(t, value) or t[#t + 1] = value; preserve insertion semantics otherwise")
+         if #n.e2 == 3 then
+            s:emit(n, "LuaJIT records the two-argument append. A positioned insert takes the interpreter path. If you are appending, use table.insert(t, value).")
          end
       end,
    },
    {
-      id = "luajit/tonumber-base", severity = "hint",
+      id = "luajit/tonumber-base", severity = "hint", in_loop = true,
       description = "Find explicit tonumber bases unsupported by the LuaJIT recorder.",
       kinds = { "op" }, bindings = true, calls = { "tonumber" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 and #n.e2 >= 2 then
-            local base = model.number(n.e2[2])
-            if base and base ~= 10 then
-               s:emit(n, "LuaJIT does not record tonumber with this base. If input is invariant, convert it before the loop; otherwise profile the interpreter or stitched call")
-            end
+         local base = model.unwrap(n.e2[2])
+         if base and base.kind ~= "nil" and model.number(base) ~= 10 then
+            s:emit(n, "LuaJIT's tonumber recorder accepts an omitted base or constant base 10. Hoist invariant conversion or group inputs by conversion path before the loop.")
          end
       end,
    },
    {
-      id = "luajit/jit-off-in-loop", severity = "warning",
+      id = "luajit/jit-off-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated JIT disabling in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.off" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            s:emit(n, "jit.off inside a loop repeatedly changes JIT state. Configure it outside the loop when possible.")
-         end
+         s:emit(n, "jit.off inside a loop repeatedly changes JIT state. Configure it outside the loop when possible.")
       end,
    },
    {
-      id = "luajit/jit-flush-in-loop", severity = "warning",
+      id = "luajit/jit-flush-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated trace flushing in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.flush" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            s:emit(n, "jit.flush discards compiled traces. Repeated flushing can prevent useful compilation.")
-         end
+         s:emit(n, "jit.flush discards compiled traces. Repeated flushing can prevent useful compilation.")
       end,
    },
    {
-      id = "luajit/table-insert-front", severity = "hint",
+      id = "luajit/table-insert-front", severity = "hint", in_loop = true,
       description = "Find insertions at the front of a table inside loops.", kinds = { "op" }, bindings = true, calls = { "table.insert" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            local args = n.e2
-            if #args == 3 and model.number(args[2]) == 1 then
-               s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, consider appending and reversing or using a deque.")
-            end
+         local args = n.e2
+         if #args == 3 and model.number(args[2]) == 1 then
+            s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, consider appending and reversing or using a deque.")
          end
       end,
    },
    {
-      id = "luajit/table-remove-front", severity = "hint",
+      id = "luajit/table-remove-front", severity = "hint", in_loop = true,
       description = "Find removals from the front of a table inside loops.", kinds = { "op" }, bindings = true, calls = { "table.remove" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            local args = n.e2
-            if #args == 2 and model.number(args[2]) == 1 then
-               s:emit(n, "Removing index 1 shifts following array elements. For a queue, consider tracking a head index.")
-            end
+         local args = n.e2
+         if #args == 2 and model.number(args[2]) == 1 then
+            s:emit(n, "Removing index 1 shifts following array elements. For a queue, consider tracking a head index.")
          end
       end,
    },
    {
-      id = "luajit/string-accumulation-in-loop", severity = "hint",
+      id = "luajit/string-accumulation-in-loop", severity = "hint", in_loop = true,
       description = "Find string accumulators that copy the growing prefix on each iteration.", kinds = { "assignment" },
       check = function(s, n, _t, _children)
-         if s.loop_depth == 0 or #n.vars ~= 1 or #n.exps ~= 1 then return end
+         if #n.vars ~= 1 or #n.exps ~= 1 then return end
          local dst, value = n.vars[1], model.unwrap(n.exps[1])
          if dst.kind ~= "variable" or not value.op or value.op.op ~= ".." or value.op.meta_on_operand then return end
          local left = model.unwrap(value.e1)
@@ -11959,15 +12125,16 @@ local rules = {
       end,
    },
    {
-      id = "luajit/hot-string-pattern-method", severity = "hint",
+      id = "luajit/hot-string-pattern-method", severity = "hint", in_loop = true,
       description = "Find repeated pattern operations written as string method calls.", kinds = { "op" }, operators = { "@funcall" },
       check = function(s, n, _t, _children)
-         if s.loop_depth == 0 then return end
          local callee = n.e1
          if callee.op and callee.op.op == ":" and callee.receiver and
             (callee.receiver.typename == "string" or callee.receiver.typename == "enum") then
             local member = callee.e2.tk
-            if member == "match" or member == "gmatch" or member == "gsub" then
+            if member == "find" and uses_pattern(n.e2[1], n.e2[3]) then
+               s:emit(callee.e2, pattern_message)
+            elseif member == "match" or member == "gmatch" or member == "gsub" then
                s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it and hoist invariant work where possible.")
             end
          end
@@ -12025,6 +12192,12 @@ local routes = {
    ["metatype-in-loop"] = { "ffi.metatype" },
    ["new-cdecl-in-loop"] = { "ffi.new" },
    ["vla-initializer-in-loop"] = { "ffi.new" },
+   ["array-table-initializer-in-loop"] = { "ffi.new" },
+   ["large-byte-array-initializer-in-loop"] = { "ffi.new" },
+   ["callback-cast-in-loop"] = { "ffi.cast" },
+   ["ctype-choice-in-loop"] = { "ffi.new", "ffi.cast", "ffi.istype", "ffi.sizeof", "ffi.alignof", "ffi.offsetof" },
+   ["sizeof-variable-length-in-loop"] = { "ffi.sizeof" },
+   ["int64-tonumber"] = { "tonumber" },
    ["string-in-loop"] = { "ffi.string" },
    ["gc-in-loop"] = { "ffi.gc" },
    ["typeof-in-loop"] = { "ffi.typeof" },
@@ -12042,6 +12215,16 @@ local routes = {
    ["printf-integer-vararg"] = { "ffi.C.printf", "ffi.C.fprintf", "ffi.C.sprintf", "ffi.C.snprintf" },
 }
 local rules = {}
+local loop_rules = {
+   ["cdef-in-loop"] = true, ["load-in-loop"] = true,
+   ["metatype-in-loop"] = true, ["new-cdecl-in-loop"] = true,
+   ["typeof-in-loop"] = true, ["vla-initializer-in-loop"] = true,
+   ["array-table-initializer-in-loop"] = true,
+   ["large-byte-array-initializer-in-loop"] = true,
+   ["callback-cast-in-loop"] = true, ["string-in-loop"] = true,
+   ["gc-in-loop"] = true, ["ctype-choice-in-loop"] = true,
+   ["sizeof-variable-length-in-loop"] = true,
+}
 local function add(id, severity, description,
    fn)
    local r = {
@@ -12051,32 +12234,50 @@ local function add(id, severity, description,
       kinds = { "op" },
       calls = routes[id],
       bindings = true,
+      in_loop = loop_rules[id],
+      c_symbols = id == "implicit-callback",
       check = function(s, n, _t, _children)
          fn(s, n, n.e2)
       end,
    }
-   if not r.calls then r.operators = { "@funcall" } end
    table.insert(rules, r)
 end
 
-local function in_loop(s, n, name, advice)
-   if s.loop_depth > 0 then
-      s:emit(n, "ffi." .. name .. " runs in a loop. " .. advice)
-   end
-end
-
 add("cdef-in-loop", "warning", "Avoid parsing C declarations repeatedly in loops.", function(s, n, _a)
-   in_loop(s, n, "cdef", "Move fixed declarations outside the loop.")
+   s:emit(n, "ffi.cdef parses declarations in the interpreter. Move fixed declarations into setup before the loop.")
 end)
 add("load-in-loop", "warning", "Avoid repeatedly loading C libraries in loops.", function(s, n, _a)
-   in_loop(s, n, "load", "Load the library once and reuse its namespace; access functions through that namespace instead of caching individual function cdata.")
+   s:emit(n, "ffi.load creates a namespace in the interpreter. Load the library once and call named members on the cached namespace.")
 end)
 add("metatype-in-loop", "warning", "Avoid creating C metatypes repeatedly in loops.", function(s, n, _a)
-   in_loop(s, n, "metatype", "Create the metatype once and reuse it.")
+   s:emit(n, "ffi.metatype installs the type's metatable in the interpreter. Create the metatype once during setup and reuse its constructor.")
 end)
 add("new-cdecl-in-loop", "hint", "Cache C types used repeatedly in loops.", function(s, n, a)
-   if s.loop_depth > 0 and literal(a[1]) then
-      s:emit(n, "ffi.new parses this C declaration in a loop. Cache ffi.typeof(...) and call the resulting ctype; stable ctypes also avoid type guards changing across iterations")
+   if literal(a[1]) then
+      s:emit(n, "The interpreter parses this C declaration and the recorder specializes to the string. Call ffi.typeof once before the loop and reuse the ctype constructor.")
+   end
+end)
+local function literal_choices(n)
+   n = model.unwrap(n)
+   if not n then return nil, nil end
+   if n.kind == "conditional" then return literal(n.e2), literal(n.e3) end
+   if n.op and n.op.op == "or" then
+      local left = model.unwrap(n.e1)
+      if left and left.op and left.op.op == "and" then
+         return literal(left.e2), literal(n.e2)
+      end
+   end
+end
+add("ctype-choice-in-loop", "hint", "Find a loop call that selects between distinct C declaration strings.", function(s, _n, a)
+   local first, second = literal_choices(a[1])
+   if first and second and first ~= second then
+      s:emit(a[1], "LuaJIT guards the C declaration string it observed. A different choice can exit the trace, even if the two strings name equivalent types. Choose a stable ctype before the loop or batch the work by type.")
+   end
+end)
+add("sizeof-variable-length-in-loop", "warning", "Find sizeof calls on literal variable-length array types inside loops.", function(s, n, a)
+   local decl = literal(a[1])
+   if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") then
+      s:emit(n, "LuaJIT's ffi.sizeof recorder rejects variable-length types. For a plain array, hoist the element size and multiply by the element count. Hoist the full size calculation for an invariant length.")
    end
 end)
 
@@ -12084,23 +12285,51 @@ end)
 
 add("vla-initializer-in-loop", "warning", "Avoid initialized variable-length FFI arrays in hot loops.", function(s, n, a)
    local decl = literal(a[1])
-   if s.loop_depth > 0 and decl and decl:match("%[%s*%?%s*%]") and a[3] then
+   if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") and a[3] then
       s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only and fill it separately, or reuse a typed buffer outside the loop")
    end
 end)
-add("string-in-loop", "hint", "Avoid unnecessary C-to-Lua string copies in hot loops.", function(s, n, _a)
-   if s.loop_depth > 0 then
-      s:emit(n, "ffi.string copies bytes into a Lua string. If possible, process the buffer directly or convert once outside the loop; keep its owner alive while using it")
+add("array-table-initializer-in-loop", "warning", "Avoid table initialization of fixed C arrays in hot loops.", function(s, n, a)
+   local decl, init = literal(a[1]), model.unwrap(a[2])
+   if decl and not decl:find("(", 1, true) and decl:match("%[%s*%d+%s*%]%s*$") and #a == 2 and init and init.kind == "literal_table" then
+      s:emit(n, "LuaJIT's FFI recorder cannot convert this table initializer to C array elements. Initialize a reusable typed buffer outside the loop, or assign its elements separately")
    end
+end)
+add("large-byte-array-initializer-in-loop", "warning", "Avoid initialized large byte arrays in hot loops.", function(s, n, a)
+   local decl = literal(a[1])
+   if not decl or not a[2] then return end
+   local size = decl:match("^%s*char%s*%[%s*(%d+)%s*%]%s*$") or
+   decl:match("^%s*unsigned%s+char%s*%[%s*(%d+)%s*%]%s*$") or
+   decl:match("^%s*signed%s+char%s*%[%s*(%d+)%s*%]%s*$")
+   if size and tonumber(size) > 128 then
+      s:emit(n, "LuaJIT's FFI recorder cannot initialize this array larger than 128 bytes. Allocate it without an initializer and fill it separately, or reuse a buffer outside the loop")
+   end
+end)
+add("callback-cast-in-loop", "hint", "Avoid creating FFI callbacks repeatedly in loops.", function(s, n, a)
+   local decl, value = literal(a[1]), model.unwrap(a[2])
+   if decl and decl:match("%(%s*%*%s*%)") and value and value.kind == "function" then
+      s:emit(n, "This creates a C callback in each iteration. Reuse an explicit callback when its lifetime permits, and free it only after C stops using it; batch calls to reduce C-to-Lua crossings")
+   end
+end)
+add("int64-tonumber", "warning", "Identify potentially lossy conversion of 64-bit cdata to Lua numbers.", function(s, n, a)
+   local value = model.unwrap(a[1])
+   local p = call_path(s, value)
+   if p ~= "ffi.new" and p ~= "ffi.cast" then return end
+   local args = call(value)
+   local decl = args and literal(args[1])
+   if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$") or decl:match("^%s*unsigned%s+long%s+long%s*$") or decl:match("^%s*long%s+long%s*$")) then
+      s:emit(n, "tonumber can lose precision for 64-bit integers outside the exactly representable Lua-number range. Keep cdata for integer arithmetic or use a lossless string representation")
+   end
+end)
+add("string-in-loop", "hint", "Avoid unnecessary C-to-Lua string copies in hot loops.", function(s, n, _a)
+   s:emit(n, "ffi.string copies bytes into a Lua string. Keep the owner alive and process the buffer directly, or convert it once outside the loop when possible.")
 end)
 add("gc-in-loop", "hint", "Avoid repeatedly attaching FFI finalizers in hot loops.", function(s, n, _a)
-   if s.loop_depth > 0 then
-      s:emit(n, "ffi.gc attaches or changes a finalizer. Consider reusing an owned buffer outside the loop and release it only after its last use")
-   end
+   s:emit(n, "ffi.gc attaches or changes a finalizer. Consider allocating the owned buffer outside the loop and releasing it after its last use.")
 end)
-add("typeof-in-loop", "hint", "Avoid repeatedly parsing fixed C type declarations.", function(s, n, a)
-   if s.loop_depth > 0 and literal(a[1]) and #a == 1 then
-      s:emit(n, "ffi.typeof parses this fixed declaration in a loop. Cache the ctype outside the loop")
+add("typeof-in-loop", "hint", "Find string-based ffi.typeof calls that the recorder cannot handle.", function(s, n, a)
+   if literal(a[1]) then
+      s:emit(n, "LuaJIT's ffi.typeof recorder accepts cdata inputs. A declaration string stays on the interpreter path. Build the ctype before the loop and reuse it.")
    end
 end)
 add("anonymous-aggregate", "warning", "Avoid creating distinct anonymous C types on each allocation.", function(s, n, a)
@@ -12182,14 +12411,11 @@ add("temporary-array-initializer", "hint", "Check temporary C array ownership wh
       end
    end
 end)
-add("implicit-callback", "warning", "Avoid permanent implicit Lua-to-C callback conversions.", function(s, n, a)
-   local p = path(s, n.e1)
-   if p and p:match("^ffi%.C%.") then
-      for _, argument in ipairs(a) do
-         local value = model.unwrap(argument)
-         if value and value.kind == "function" then
-            s:emit(value, "an implicit FFI callback is permanent. Explicitly ffi.cast the callback and free it once C no longer uses it; for hot paths, batch work to reduce C-to-Lua crossings")
-         end
+add("implicit-callback", "warning", "Avoid permanent implicit Lua-to-C callback conversions.", function(s, _n, a)
+   for _, argument in ipairs(a) do
+      local value = model.unwrap(argument)
+      if value and value.kind == "function" then
+         s:emit(value, "An implicit FFI callback is permanent. Cast it explicitly and free it after C releases it. For hot paths, batch work to reduce C-to-Lua crossings.")
       end
    end
 end)
@@ -12236,12 +12462,35 @@ add("printf-integer-vararg", "warning", "Pass explicitly typed integers to print
       end
    end
 end)
+local function warn_boxed_operand(s, operand)
+   local p = call_path(s, operand)
+   if p == "ffi.new" or p == "ffi.cast" then
+      local args = call(operand)
+      local decl = args and literal(args[1])
+      if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$")) then
+         s:emit(operand, "This arithmetic explicitly constructs 64-bit cdata in a loop. Use Lua numbers when their range and precision suffice. For 64-bit arithmetic, retain a consistent cdata type and profile whether the recorder eliminates boxing.")
+      end
+   end
+end
+
+local boxed_scalar_rule = {
+   id = "luajit-ffi/boxed-scalar-arithmetic", severity = "hint", in_loop = true,
+   description = "Find explicit scalar cdata construction in hot arithmetic.",
+   kinds = { "op" }, operators = { "+", "-", "*", "/", "%", "^" }, bindings = true,
+   check = function(s, n, _t, _children)
+      warn_boxed_operand(s, n.e1)
+      if n.e2 then warn_boxed_operand(s, n.e2) end
+   end,
+}
+table.insert(rules, boxed_scalar_rule)
 return rules
 
 end
 
 -- module teal.diagnostics.luajit_loops from teal/diagnostics/luajit_loops.lua
 package.preload["teal.diagnostics.luajit_loops"] = function(...)
+
+
 
 
 
@@ -12272,32 +12521,63 @@ local function parity_test(n)
    return model.number(a) == 0 and b and b.op and b.op.op == "%" and model.number(b.e2) == 2 or false
 end
 
+local function literal_type(n)
+   n = model.unwrap(n)
+   if not n then return nil end
+   if n.kind == "number" or n.kind == "integer" then return "number" end
+   if n.kind == "string" or n.kind == "boolean" or n.kind == "nil" then return n.kind end
+end
+
 local rules = {
    {
-      id = "luajit/loop-type-dispatch", severity = "hint",
+      id = "luajit/loop-closure", severity = "hint", in_loop = true,
+      description = "Find function definitions created inside loops.",
+      kinds = { "function", "local_function", "global_function" },
+      check = function(s, n, _t, _children)
+         s:emit(n, "Upstream LuaJIT 2.1 aborts recording at FNEW when it creates this closure. Captures may also emit UCLO. Hoist the function and pass changing values as parameters when closure identity and capture semantics permit.")
+      end,
+   },
+   {
+      id = "luajit/loop-branch-value-type", severity = "hint", in_loop = true,
+      description = "Find branches assigning different literal types to the same variable inside a loop.",
+      kinds = { "if" },
+      check = function(s, n, _t, _children)
+         if #n.if_blocks ~= 2 then return end
+         local first, second = n.if_blocks[1], n.if_blocks[2]
+         if second.exp or not first.body or not second.body or #first.body ~= 1 or #second.body ~= 1 then return end
+         local a, b = first.body[1], second.body[1]
+         if a.kind ~= "assignment" or b.kind ~= "assignment" or #a.vars ~= 1 or #b.vars ~= 1 or #a.exps ~= 1 or #b.exps ~= 1 then return end
+         local av, bv = model.unwrap(a.vars[1]), model.unwrap(b.vars[1])
+         local at, bt = literal_type(a.exps[1]), literal_type(b.exps[1])
+         if av and bv and av.kind == "variable" and bv.kind == "variable" and av.tk == bv.tk and at and bt and at ~= bt then
+            s:emit(n, "These branches assign different value types to the same variable. If both paths occur in a hot loop and the value is used across iterations, type-specialized traces may exit or need separate traces. Consider keeping its representation stable, and check -jv before changing the code.")
+         end
+      end,
+   },
+   {
+      id = "luajit/loop-type-dispatch", severity = "hint", in_loop = true,
       description = "Find runtime type dispatch inside loops.", kinds = { "if_block" }, bindings = true,
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 and type_test(s, n.exp) then
-            s:emit(n.exp, "A type-dependent branch in a hot loop can take different guarded paths as values change. Profile exits with LuaJIT -jv; if this branch is costly, group values by type or move dispatch outside the loop.")
+         if type_test(s, n.exp) then
+            s:emit(n.exp, "Changing value types can take a different guarded path. If profiling shows frequent exits, group values by type or choose the operation before the loop.")
          end
       end,
    },
    {
-      id = "luajit/loop-alternating-branch", severity = "hint",
+      id = "luajit/loop-alternating-branch", severity = "hint", in_loop = true,
       description = "Find parity branches that may alternate on successive iterations.", kinds = { "if_block" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 and parity_test(n.exp) then
-            s:emit(n.exp, "This parity branch may alternate between paths in the loop. LuaJIT records guarded paths and may compile side traces; inspect -jv before considering processing pairs of items together.")
+         if parity_test(n.exp) then
+            s:emit(n.exp, "This parity branch may alternate between guarded paths. LuaJIT can compile a side trace. If exits are frequent, consider handling one pair of items per iteration.")
          end
       end,
    },
    {
-      id = "luajit/loop-indexed-dispatch", severity = "hint",
-      description = "Find dynamically indexed function calls inside loops.", kinds = { "op" }, operators = { "@funcall" },
+      id = "luajit/loop-indexed-dispatch", severity = "hint", in_loop = true,
+      description = "Find dynamically indexed function calls inside loops.", kinds = { "op" }, operators = { "@funcall" }, bindings = true, ffi_origins = true,
       check = function(s, n, _t, _children)
-         if s.loop_depth == 0 then return end
          local callee = model.unwrap(n.e1)
-         if callee and callee.op and callee.op.op == "@index" then
+         if callee and callee.op and callee.op.op == "@index" and not model.ffi_namespace(s:path(callee.e1)) then
             local key = model.unwrap(callee.e2)
             if key and key.kind ~= "string" and key.kind ~= "number" and key.kind ~= "integer" then
                s:emit(callee, "The indexed call target may vary between iterations, causing function guards to fail. If profiling shows frequent exits, group work by target or select a stable function outside the loop.")
@@ -12306,10 +12586,10 @@ local rules = {
       end,
    },
    {
-      id = "luajit/loop-array-hole", severity = "hint",
+      id = "luajit/loop-array-hole", severity = "hint", in_loop = true,
       description = "Find explicit deletion of indexed entries in loops.", kinds = { "assignment" },
       check = function(s, n, _t, _children)
-         if s.loop_depth == 0 or #n.vars ~= 1 or #n.exps ~= 1 then return end
+         if #n.vars ~= 1 or #n.exps ~= 1 then return end
          local dst, value = model.unwrap(n.vars[1]), model.unwrap(n.exps[1])
          if dst and dst.op and dst.op.op == "@index" and value and value.kind == "nil" then
             s:emit(dst, "Deleting an indexed entry can create holes if this table is used as a sequence. If profiling shows unstable lookups or iteration, consider a dense array with a separate count or a swap-remove scheme when order permits.")
@@ -12317,12 +12597,10 @@ local rules = {
       end,
    },
    {
-      id = "luajit/loop-table-allocation", severity = "hint",
+      id = "luajit/loop-table-allocation", severity = "hint", in_loop = true,
       description = "Find table constructors inside loops.", kinds = { "literal_table" },
       check = function(s, n, _t, _children)
-         if s.loop_depth > 0 then
-            s:emit(n, "This table is constructed on each iteration. LuaJIT may eliminate some allocations; if GC profiling shows pressure, reuse storage when its lifetime and aliasing permit.")
-         end
+         s:emit(n, "This table is constructed on each iteration. LuaJIT may eliminate the allocation. If a profile shows GC pressure, reuse storage where its lifetime and aliasing permit.")
       end,
    },
 }
@@ -12333,13 +12611,24 @@ end
 
 -- module teal.diagnostics.model from teal/diagnostics/model.lua
 package.preload["teal.diagnostics.model"] = function(...)
-
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local string = _tl_compat and _tl_compat.string or string
 
 
 
 
 
 local model = { Rule = {}, RuleInfo = {}, EnabledRule = {}, Plan = {}, State = {} }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -12444,6 +12733,27 @@ function model.call_args(n)
    end
 end
 
+function model.ffi_namespace(path)
+   return path == "ffi.C" or path == "ffi.load()"
+end
+
+function model.ffi_temporary_symbol(path)
+   return path ~= nil and path:sub(1, 16) == "ffi.temporary()."
+end
+
+function model.ffi_symbol(path)
+   if not path then return false end
+   local prefix
+   if path:sub(1, 6) == "ffi.C." then
+      prefix = "ffi.C."
+   elseif path:sub(1, 11) == "ffi.load()." then
+      prefix = "ffi.load()."
+   elseif model.ffi_temporary_symbol(path) then
+      prefix = "ffi.temporary()."
+   end
+   return prefix ~= nil and #path > #prefix and not path:find(".", #prefix + 1, true)
+end
+
 return model
 
 end
@@ -12469,18 +12779,26 @@ local registry = {}
 
 local packs = { "teal", "lua", "luajit", "luajit-ffi" }
 
+local function combine(a, b)
+   local result = {}
+   for _, rule in ipairs(a) do result[#result + 1] = rule end
+   for _, rule in ipairs(b) do result[#result + 1] = rule end
+   return result
+end
+
 local loaders = {
    ["teal"] = function() return require("teal.diagnostics.teal") end,
    ["lua"] = function() return require("teal.diagnostics.lua") end,
    ["luajit"] = function()
       local trace_calls = require("teal.diagnostics.luajit")
       local loop_rules = require("teal.diagnostics.luajit_loops")
-      local combined = {}
-      for _, rule in ipairs(trace_calls) do combined[#combined + 1] = rule end
-      for _, rule in ipairs(loop_rules) do combined[#combined + 1] = rule end
-      return combined
+      return combine(trace_calls, loop_rules)
    end,
-   ["luajit-ffi"] = function() return require("teal.diagnostics.luajit_ffi") end,
+   ["luajit-ffi"] = function()
+      local ffi = require("teal.diagnostics.luajit_ffi")
+      local namespaces = require("teal.diagnostics.ffi_namespaces")
+      return combine(ffi, namespaces)
+   end,
 }
 
 local levels = {
@@ -12607,16 +12925,30 @@ function registry.plan(options, target)
             local rule = entry.rule
             local level = configured_level(options, pack, rule)
             if level ~= "off" then
-               plan = plan or { by_kind = {}, by_operator = {}, by_call = {}, teal_only = true }
+               plan = plan or { by_kind = {}, by_operator = {}, by_call = {}, by_hot_call = {}, teal_only = true }
                local enabled = {
-                  id = rule.id, severity = level, check = rule.check, teal_only = pack == "teal",
+                  id = rule.id, severity = level, check = rule.check,
+                  teal_only = pack == "teal", in_loop = rule.in_loop,
                }
-               plan.bindings = plan.bindings or rule.bindings or rule.calls ~= nil
+               plan.bindings = plan.bindings or rule.bindings or rule.calls ~= nil or rule.c_symbols
+               plan.ffi_origins = plan.ffi_origins or rule.ffi_origins or rule.c_symbols
                plan.teal_only = plan.teal_only and enabled.teal_only
-               plan.track_loops = plan.track_loops or pack == "luajit" or pack == "luajit-ffi"
+               plan.track_loops = plan.track_loops or rule.in_loop
                for _, kind in ipairs(rule.kinds) do
-                  if kind == "op" and rule.calls then
-                     for _, call in ipairs(rule.calls) do register(plan.by_call, call, enabled) end
+                  if kind == "op" and (rule.calls or rule.c_symbols) then
+                     if rule.calls then
+                        local routes = rule.in_loop and plan.by_hot_call or plan.by_call
+                        for _, call in ipairs(rule.calls) do register(routes, call, enabled) end
+                     end
+                     if rule.c_symbols then
+                        if rule.in_loop then
+                           plan.hot_c_symbols = plan.hot_c_symbols or {}
+                           plan.hot_c_symbols[#plan.hot_c_symbols + 1] = enabled
+                        else
+                           plan.c_symbols = plan.c_symbols or {}
+                           plan.c_symbols[#plan.c_symbols + 1] = enabled
+                        end
+                     end
                   elseif kind == "op" and rule.operators then
                      for _, op in ipairs(rule.operators) do register(plan.by_operator, op, enabled) end
                   else
@@ -12658,14 +12990,14 @@ local runner = {}
 
 
 local runtime_globals = {
-   bit = true, jit = true, newproxy = true,
+   bit = true, jit = true, newproxy = true, gcinfo = true,
 }
 local legacy_globals = { setfenv = true, getfenv = true, loadstring = true, unpack = true }
 
 local required_modules = {
    ffi = true, bit = true, jit = true, ["jit.opt"] = true,
    coroutine = true, debug = true, io = true, math = true, os = true,
-   package = true, string = true, table = true, utf8 = true,
+   package = true, string = true, table = true, ["table.new"] = true, utf8 = true,
 }
 
 local function member_name(node)
@@ -12678,11 +13010,19 @@ local function member_name(node)
    end
 end
 
-local function required_module(state, n)
+local function call_origin(state, n)
    local args = n.e2
    local name = #args == 1 and model.unwrap(args[1])
    if name and name.kind == "string" and required_modules[name.conststr] and state:path(n.e1) == "require" then
       return name.conststr
+   end
+   if state.ffi_origins and args[1] then
+      local path = state:path(n.e1)
+      if path == "ffi.load" then return "ffi.load()" end
+      if path == "ffi.cast" then
+         local value = model.unwrap(args[2])
+         if value and value.kind == "function" then return "ffi.callback()" end
+      end
    end
 end
 
@@ -12692,11 +13032,14 @@ function State:path(node)
    local path = self.paths[node]
    if not path and node.op then
       if node.op.op == "@funcall" then
-         path = required_module(self, node)
+         path = call_origin(self, node)
       else
          local field = member_name(node)
          if field then
             local owner = self:path(node.e1)
+            if owner == "ffi.load()" and model.call_args(node.e1) then
+               owner = "ffi.temporary()"
+            end
             path = owner and (owner .. "." .. field)
          end
       end
@@ -12817,7 +13160,7 @@ end
 
 local function run_rules(state, rules, n, t, children)
    for _, rule in ipairs(rules) do
-      if not (state.is_lua and rule.teal_only) then
+      if (not rule.in_loop or state.loop_depth > 0) and not (state.is_lua and rule.teal_only) then
          state.current_rule = rule
          rule.check(state, n, t, children)
       end
@@ -12827,6 +13170,8 @@ end
 local function patch_rule_hook(callbacks, kind, plan, state)
    local by_kind = plan.by_kind[kind]
    local by_call = next(plan.by_call) and plan.by_call
+   local by_hot_call = next(plan.by_hot_call) and plan.by_hot_call
+   local c_symbols, hot_c_symbols = plan.c_symbols, plan.hot_c_symbols
    local after = callbacks.after
    callbacks.after = function(c, n, children)
       local t = after and after(c, n, children)
@@ -12836,9 +13181,23 @@ local function patch_rule_hook(callbacks, kind, plan, state)
          local op = n.op.op
          local operators = plan.by_operator[op]
          if operators then run_rules(state, operators, n, t, children) end
-         if by_call and op == "@funcall" then
-            local calls = by_call[state:path(n.e1)]
-            if calls then run_rules(state, calls, n, t, children) end
+         if op == "@funcall" then
+            local hot = state.loop_depth > 0
+            if by_call or c_symbols or (hot and (by_hot_call or hot_c_symbols)) then
+               local path = state:path(n.e1)
+               local calls = by_call and by_call[path]
+               local hot_calls = hot and by_hot_call and by_hot_call[path]
+               local symbol = (c_symbols or (hot and hot_c_symbols)) and model.ffi_symbol(path)
+               if calls or hot_calls or symbol then
+                  state.called_path = path
+               end
+               if calls then run_rules(state, calls, n, t, children) end
+               if hot_calls then run_rules(state, hot_calls, n, t, children) end
+               if symbol then
+                  if c_symbols then run_rules(state, c_symbols, n, t, children) end
+                  if hot and hot_c_symbols then run_rules(state, hot_c_symbols, n, t, children) end
+               end
+            end
          end
       end
       return t
@@ -12910,11 +13269,13 @@ function runner.attach(ctx, visitor)
       results = {},
       paths = {},
       modified_paths = {},
+      ffi_origins = plan.ffi_origins,
    }, state_mt)
 
    local cbs = util.shallow_copy_table(visitor.cbs)
    local hooks = {}
-   local uses_operators = next(plan.by_operator) ~= nil or next(plan.by_call) ~= nil
+   local uses_operators = next(plan.by_operator) ~= nil or next(plan.by_call) ~= nil or next(plan.by_hot_call) ~= nil or
+   plan.c_symbols ~= nil or plan.hot_c_symbols ~= nil
    for kind, callbacks in pairs(cbs) do
       local has_rules = plan.by_kind[kind] ~= nil or (kind == "op" and uses_operators)
       local has_binding = plan.bindings and (kind == "variable" or kind == "local_declaration" or kind == "assignment")

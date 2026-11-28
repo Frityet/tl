@@ -55,8 +55,8 @@ severity. Standard type errors and warnings use their usual settings.
 The Lua pack checks `.lua` and `.tl` files. The Teal pack checks Teal source.
 Enabling a LuaJIT or FFI rule in project config selects the LuaJIT diagnosis
 target by default, even if `gen_target` is `"5.1"`. Use `diagnostic_target` to
-set it explicitly. The checker and the editor analyze source in-process. They
-do not execute it or launch LuaJIT for diagnostics.
+set it explicitly. The optional rules analyze the checked AST in-process, so
+editor diagnostics require no separate LuaJIT process or program execution.
 
 ```lua
 -- tlconfig.lua
@@ -87,7 +87,33 @@ and an analysis target to `teal.compiler`.
 when available. `teal.diagnostic_catalog(opts)` returns the catalog as data.
 The optional suite skips declaration files and files with syntax errors.
 
-The LuaJIT rule guidance follows the [JIT library reference](https://luajit.org/ext_jit.html) and the [FFI semantics reference](https://luajit.org/ext_ffi_semantics.html).
+### LuaJIT traces and hot loops
+
+* `luajit/loop-closure`, `luajit-ffi/vla-initializer-in-loop`, and
+  `luajit-ffi/aggregate-by-value-call` point to recorder limitations in
+  upstream LuaJIT 2.1. Hoist a closure that can take iteration state as
+  arguments, separate C buffer allocation from initialization, or use a
+  pointer-based C API for an aggregate. The aggregate rule checks simple
+  prototypes in literal `ffi.cdef` declarations earlier in the same file.
+  [Bytecode recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_record.c) · [FFI recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_crecord.c)
+* `luajit/string-find-pattern` and `luajit/unrecorded-library-call` identify
+  interpreter work. LuaJIT can stitch a trace across some calls. Use literal
+  search with `string.find(..., 1, true)` when a pattern is unnecessary, or
+  move invariant work outside the loop. [Fast-function recorder](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_ffrecord.c)
+* `luajit/unpack-bounds`, `luajit/loop-type-dispatch`, and
+  `luajit-ffi/ctype-choice-in-loop` point to guards that can exit a trace as
+  inputs change. Keep result counts, value types, and C types stable within a
+  batch. For C functions, cache the library namespace and use its named
+  member. `luajit-ffi/dynamic-symbol-call` flags lookups that can change the
+  recorded symbol. [LuaJIT runtime options](https://luajit.org/running.html) · [FFI namespaces](https://luajit.org/ext_ffi_semantics.html#clib)
+* `luajit-ffi/callback-call-in-loop` identifies calls that pass an explicitly
+  cast Lua callback to C. If C invokes it synchronously, keep that call out
+  of compiled Lua or use a batched or pull-style interface. A native function
+  that merely saves a callback has different runtime behavior. [FFI callbacks](https://luajit.org/ext_ffi_semantics.html#callback)
+
+These are source-based findings. Whether a path runs hot, how often a guard
+fails, and whether LuaJIT compiles a side trace depend on the actual workload
+and runtime build. [LuaJIT runtime options](https://luajit.org/running.html)
 
 ### Generated code
 

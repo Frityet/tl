@@ -15,6 +15,10 @@ local record ffi
    metatype: function(TypeSpec, {string:any}): CType
    copy: function(any, any, ? integer)
    fill: function(any, integer, ? integer)
+   gc: function<T>(T, function(T) | CData | nil): T
+   sizeof: function(TypeSpec, ? integer): integer | nil
+   alignof: function(TypeSpec): integer
+   offsetof: function(TypeSpec, string): integer | nil, integer | nil, integer | nil
    abi: function(string): boolean
    istype: function(any, any): boolean
    C: CNamespace

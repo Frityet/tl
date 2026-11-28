@@ -55,11 +55,20 @@ if 0 then print(f(1)) end]],
 
    it("maps stable rule codes, severities and UTF-16 ranges into LSP diagnostics", function()
       local dir = util.write_tmp_dir(finally, {
-         ["tlconfig.lua"] = 'return {lua = {["truthy-zero-or-empty"] = "hint"}, lsp = {diagnostics_debounce_ms = 0}}',
+         ["tlconfig.lua"] = [[return {
+            lua = { ["truthy-zero-or-empty"] = "hint" },
+            luajit = { ["loop-closure"] = "warning" },
+            lsp = { diagnostics_debounce_ms = 0 },
+         }]],
       })
       util.do_in(dir, function()
          local prefix = 'print("🚀") if '
-         local document = lsp.document(finally, prefix .. '0 then end')
+         local document = lsp.document(finally, prefix .. [[0 then end
+for i = 1, 64 do
+   local function item(): integer return i end
+   print(item())
+end
+error("the fixture must only be checked")]])
          local responses, notifications = lsp.exchange(finally, {
             {jsonrpc = "2.0", id = 1, method = "initialize", params = {}},
             {jsonrpc = "2.0", method = "textDocument/didOpen", params = {textDocument = document}},
@@ -68,11 +77,13 @@ if 0 then print(f(1)) end]],
             {jsonrpc = "2.0", method = "exit", params = {}},
          })
          local findings = responses[2].items
-         assert.equals(1, #findings)
+         assert.equals(2, #findings)
          local finding = findings[1]
          assert.equals("lua/truthy-zero-or-empty", finding.code)
          assert.equals(4, finding.severity)
          assert.same({start = {line = 0, character = #prefix - 2}, ["end"] = {line = 0, character = #prefix - 1}}, finding.range)
+         assert.equals("luajit/loop-closure", findings[2].code)
+         assert.equals(2, findings[2].severity)
          local published
          for _, notification in ipairs(notifications) do
             if notification.method == "textDocument/publishDiagnostics" then
