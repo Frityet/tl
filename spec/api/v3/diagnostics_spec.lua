@@ -138,6 +138,26 @@ end
       assert.equals(6, result.diagnostics[1].y)
    end)
 
+   it("ignores C keywords in comments and strings and handles unfinished C comments", function()
+      local source = [=[
+local ffi = require("ffi")
+ffi.cdef[[
+/* volatile long double
+#include <ignored.h>
+*/
+extern int example(void) __asm__("volatile long double // ignored");
+extern volatile long double value;
+]]
+]=]
+      source = source .. "ffi.cdef[[/* " .. string.rep("/* ", 10000) .. "volatile long double]]\n"
+      local result = check(source, {diagnostic_target = "luajit", diagnostics = {
+         ["luajit-ffi/cdef-preprocessor"] = true,
+         ["luajit-ffi/cdef-volatile"] = true,
+         ["luajit-ffi/cdef-long-double"] = true,
+      }}, "ffi-comments.lua")
+      assert.same({["luajit-ffi/cdef-volatile"] = 1, ["luajit-ffi/cdef-long-double"] = 1}, counts(result))
+   end)
+
    it("recognizes recorder-sensitive call shapes and loop closures", function()
       local source = [[
 local search, unpack_values = string.find, unpack

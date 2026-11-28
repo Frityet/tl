@@ -68,24 +68,24 @@ local function op(id, severity, description, operators, check)
 end
 
 local rules = {
-   op("cast-to-any", "info", "Find casts that explicitly discard type information.", { "as" },
+   op("cast-to-any", "info", "Find casts that remove type information.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
       if original and cast and original.typename ~= "any" and original.typename ~= "invalid" and cast.typename == "any" then
-         s:emit(n.e2, "Casting to any discards static type checks for this value. Keep a specific type if possible.")
+         s:emit(n.e2, "A cast to any removes static type checks for this value. Keep the specific type if possible.")
       end
    end),
-   op("cast-from-any", "warning", "Find assertions of a concrete type on values typed as any.", { "as" },
+   op("cast-from-any", "warning", "Find casts from any to a specific type.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
       if original and cast and original.typename == "any" and cast.typename ~= "any" and cast.typename ~= "invalid" then
-         s:emit(n.e2, "This cast asserts a type without checking the value at runtime. Validate untyped input before using it.")
+         s:emit(n.e2, "This cast sets a type without a runtime check. Check untyped input before use.")
       end
    end),
    op("cast-can-hide-nil", "warning", "Find casts from a nullable value to a non-nil type.", { "as" },
    function(s, n, _t, children)
       if can_be_nil(single(children[1])) and cannot_be_nil(children[3]) then
-         s:emit(n.e2, "This cast can hide nil from the checker. Guard against nil or provide a fallback before casting.")
+         s:emit(n.e2, "This cast can hide a nil value from the checker. Add a nil check before the cast. You can also use a fallback value.")
       end
    end),
    op("redundant-primitive-cast", "hint", "Find variable casts to their existing primitive type.", { "as" },
@@ -95,37 +95,37 @@ local rules = {
          s:emit(n.e2, "The variable already has this primitive type.")
       end
    end),
-   op("redundant-type-test", "hint", "Find primitive type tests implied by the operand's static type.", { "is" },
+   op("redundant-type-test", "hint", "Find primitive type tests that the static type already satisfies.", { "is" },
    function(s, n, _t, children)
       local original, test = single(children[1]), children[3]
       if s.strict_nil and n.e1.kind == "variable" and original and test and primitive[test.typename] and
          (original.typename == test.typename or (original.typename == "integer" and test.typename == "number")) then
-         s:emit(n.e2, "The variable's static type already satisfies this test.")
+         s:emit(n.e2, "The static type of this variable already satisfies this test.")
       end
    end),
    op("nil-coalescing-always-falls-back", "info", "Find nil-coalescing expressions whose left side is always nil.", { "??" },
    function(s, n, _t, children)
       local left = single(children[1])
       if left and left.typename == "nil" then
-         s:emit(n.e1, "The left operand has type nil, so this expression always uses its fallback.")
+         s:emit(n.e1, "The left operand has type nil. This expression always uses its fallback.")
       end
    end),
    op("nil-coalescing-unreachable-fallback", "hint", "Find fallback expressions for values with non-nil types.", { "??" },
    function(s, n, _t, children)
       if s.strict_nil and cannot_be_nil(single(children[1])) then
-         s:emit(n.e2, "The left operand has a non-nil type, so this fallback is unreachable under the declared types.")
+         s:emit(n.e2, "The left operand has a non-nil type. The declared types make this fallback unreachable.")
       end
    end),
    op("optional-chain-always-nil", "warning", "Find optional accesses that always stop at a nil receiver.", { ".", ":", "@index", "@funcall" },
    function(s, n, _t, _children)
       if n.safe_navigation and n.chain_always_nil and not n.e1.chain_always_nil then
-         s:emit(n, "This optional access stops at a nil receiver, so the rest of the chain is skipped.")
+         s:emit(n, "This optional access stops at a nil receiver. It skips the rest of the chain.")
       end
    end),
    op("optional-chain-non-nil-receiver", "hint", "Find optional accesses on non-nil receiver types.", { ".", ":", "@index", "@funcall" },
    function(s, n, _t, children)
       if s.strict_nil and n.safe_navigation and not n.e1.optional_chain and cannot_be_nil(single(children[1])) then
-         s:emit(n, "This receiver has a non-nil type, so optional access is unnecessary under the declared types.")
+         s:emit(n, "This receiver has a non-nil type. The declared types make optional access unnecessary.")
       end
    end),
    op("boolean-default-masks-false", "warning", "Find boolean defaults that replace false with true.", { "or" },
@@ -161,7 +161,7 @@ local rules = {
       description = "Find parameters explicitly annotated as any.", kinds = { "argument" },
       check = function(s, n, _t, _children)
          if n.argtype and n.argtype.typename == "any" then
-            s:emit(n, "This parameter accepts any value. A type parameter or a more specific type can preserve type checks for callers.")
+            s:emit(n, "This parameter accepts any value. A type parameter or a more specific type can keep checks for callers.")
          end
       end,
    },
@@ -173,7 +173,7 @@ local rules = {
          if n.has_return_annotation then
             for i, ret in ipairs(n.rets.tuple) do
                if ret.typename == "any" then
-                  s:emit(n.name or n, "Return value " .. i .. " is annotated as any. Give it a type that callers can check.")
+                  s:emit(n.name or n, "Return value " .. i .. " has type any. Use a more specific type for this value.")
                end
             end
          end
@@ -187,7 +187,7 @@ local rules = {
             for i, var in ipairs(n.vars) do
                local annotation = n.decltuple.tuple[i]
                if annotation and annotation.typename == "any" then
-                  s:emit(var, "This variable is annotated as any, which disables many checks on its uses.")
+                  s:emit(var, "This variable has type any. This type disables many checks on its uses.")
                end
             end
          end

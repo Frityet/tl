@@ -39,7 +39,7 @@ required modules. This lets a project keep its modules under a source directory
 such as `src` without repeating that directory in `include_dir`; any explicit
 `include_dir` entries are preserved.
 
-## Diagnostics
+### Diagnostics
 
 Configure opt-in diagnostics in `tlconfig.lua`. Run `tl check main.tl` to see
 findings. Editors use the same project settings and show the rule ID and
@@ -53,7 +53,7 @@ severity. Standard type errors and warnings use their usual settings.
 | `luajit-ffi` | C declaration and type reuse, buffer lengths, pointer lifetimes, callback types, and C varargs |
 
 The Lua pack checks `.lua` and `.tl` files. The Teal pack checks Teal source.
-Enabling a LuaJIT or FFI rule in project config selects the LuaJIT diagnosis
+Enabling a LuaJIT or FFI rule in project config selects the LuaJIT analysis
 target by default, even if `gen_target` is `"5.1"`. Use `diagnostic_target` to
 set it explicitly. The optional rules analyze the checked AST in-process, so
 editor diagnostics require no separate LuaJIT process or program execution.
@@ -87,7 +87,12 @@ and an analysis target to `teal.compiler`.
 when available. `teal.diagnostic_catalog(opts)` returns the catalog as data.
 The optional suite skips declaration files and files with syntax errors.
 
-### LuaJIT traces and hot loops
+Rule messages use ASD-STE100 style. A short sentence gives the cause or
+effect. If the rule can suggest a change, a separate sentence gives one
+action. Code terms such as `ctype` and `side exit` keep their LuaJIT meanings.
+[ASD-STE100 Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+
+#### LuaJIT traces and hot loops
 
 * `luajit/loop-closure`, `luajit-ffi/vla-initializer-in-loop`, and
   `luajit-ffi/aggregate-by-value-call` point to recorder limitations in

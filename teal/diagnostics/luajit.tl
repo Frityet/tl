@@ -17,7 +17,7 @@ local function uses_pattern(pattern: Node, plain: Node): boolean
    return pattern.conststr:find("[%^%$%*%+%?%.%(%[%%%-]") ~= nil
 end
 
-local pattern_message = "The recorder handles literal string.find searches. A Lua pattern stays on the interpreter path. Pass true for plain mode if you want literal matching, or move invariant matching outside the loop."
+local pattern_message = "The recorder handles literal string.find searches. Lua patterns use the interpreter. Use true for a literal search. If the input stays the same, do the search before the loop."
 
 local function hot_call(id: string, name: string, description: string, message: string): Rule
    return {
@@ -32,49 +32,49 @@ end
 local rules: {Rule} = {
    hot_call("luajit/hot-string-match", "string.match",
       "Find pattern matching inside loops that may cross a trace boundary.",
-      "The fast-function recorder can stitch around string.match. If you only need literal presence, use string.find(s, needle, 1, true) and measure the effect."),
+      "LuaJIT can stitch a trace across string.match. For a literal search, use string.find(s, needle, 1, true). Measure the effect."),
    hot_call("luajit/hot-string-gmatch", "string.gmatch",
       "Find repeated pattern iterator creation inside loops.",
-      "string.gmatch creates a pattern iterator. Consider moving creation out of the loop when iteration semantics permit"),
+      "string.gmatch makes a pattern iterator. Move it before the loop if the iteration behavior stays correct."),
    hot_call("luajit/hot-string-gsub", "string.gsub",
       "Find substitutions inside loops that may be expensive.",
-      "string.gsub in a loop performs pattern substitution and creates a result string. Profile before restructuring"),
+      "string.gsub makes a string with the replacement text. Profile the loop before you change it."),
    hot_call("luajit/hot-string-dump", "string.dump",
       "Find repeated function serialization inside loops.",
-      "string.dump serializes a function and is unlikely to belong in a hot loop. Cache the result if it remains valid"),
+      "string.dump serializes a function. Cache the result if it stays valid."),
    hot_call("luajit/hot-load", "load",
       "Find repeated compilation of source inside loops.",
-      "load compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+      "load compiles a chunk at runtime. Compile it before the loop if the source does not change."),
    hot_call("luajit/hot-loadstring", "loadstring",
       "Find repeated compilation of strings inside loops.",
-      "loadstring compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+      "loadstring compiles a chunk at runtime. Compile it before the loop if the source does not change."),
    hot_call("luajit/hot-loadfile", "loadfile",
       "Find repeated loading and compilation of files inside loops.",
-      "loadfile reads and compiles a chunk. If the file is invariant, load it outside the loop"),
+      "loadfile reads and compiles a chunk. Load it before the loop if the file does not change."),
    hot_call("luajit/hot-dofile", "dofile",
       "Find repeated loading and execution of files inside loops.",
-      "dofile loads and executes a file on each iteration. Check whether that repeated work is needed"),
+      "dofile loads and executes a file on each iteration. Check if each execution is necessary."),
    hot_call("luajit/hot-collectgarbage", "collectgarbage",
       "Find explicit garbage collector operations inside loops.",
-      "collectgarbage in a loop may disrupt normal GC scheduling. Measure the effect before forcing collection or changing GC settings"),
+      "collectgarbage can change GC scheduling. Measure the effect before you change GC settings or force collection."),
    hot_call("luajit/hot-setfenv", "setfenv",
       "Find environment mutation inside loops.",
-      "setfenv changes a function environment and can interrupt a trace. Move invariant setup out of the loop when possible."),
+      "setfenv changes a function environment and can interrupt a trace. Move setup before the loop if it does not change."),
    hot_call("luajit/hot-newproxy", "newproxy",
       "Find repeated proxy allocations inside loops.",
-      "newproxy allocates userdata. Repeated allocations can increase GC pressure in a hot loop"),
+      "newproxy allocates userdata. Repeated allocations can increase GC pressure."),
    hot_call("luajit/hot-print", "print",
       "Find console output inside loops.",
-      "print performs output on every iteration. Buffer or sample logging if profiling shows it dominates the loop"),
+      "print writes output on each iteration. If profiling shows a high cost, buffer the output or write less often."),
    hot_call("luajit/hot-coroutine-create", "coroutine.create",
       "Find repeated coroutine creation inside loops.",
-      "coroutine.create allocates a coroutine. Consider reusing workers when its lifecycle permits"),
+      "coroutine.create allocates a coroutine. Reuse workers if their lifetime permits it."),
    hot_call("luajit/hot-coroutine-wrap", "coroutine.wrap",
       "Find repeated wrapped coroutine creation inside loops.",
-      "coroutine.wrap creates a coroutine and wrapper. Consider reusing workers when its lifecycle permits"),
+      "coroutine.wrap creates a coroutine and a wrapper. Reuse workers if their lifetime permits it."),
    hot_call("luajit/hot-table-new", "table.new",
       "Find repeated allocation of presized tables in loops.",
-      "table.new still allocates a table each iteration. If GC profiling shows pressure, reuse a presized table when its lifetime and aliasing permit."),
+      "table.new still allocates a table each iteration. If GC profiling shows pressure, reuse the table. Make sure its lifetime and aliases permit reuse."),
    {
       id = "luajit/string-find-pattern", severity = "hint", in_loop = true,
       description = "Find literal patterns that the LuaJIT string.find recorder cannot handle.",
@@ -92,7 +92,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local index = model.unwrap(n.e2[1])
          if index and not model.number(index) and index.kind ~= "string" then
-            s:emit(n, "The ordinary select recorder requires a constant numeric index. LuaJIT has a separate guarded path for single-result select(index, ...). If you only need one result, consider packing the values once before the loop and indexing the pack.")
+            s:emit(n, "The ordinary select recorder requires a constant numeric index. LuaJIT has a separate guarded path for single-result select(index, ...). If you need one result, pack the values before the loop. Then index the pack.")
          end
       end,
    },
@@ -106,9 +106,9 @@ local rules: {Rule} = {
          local first = (not start or start.kind == "nil") and 1 or model.number(start)
          local last = model.number(args[3])
          if not last or not first then
-            s:emit(n, "LuaJIT specializes the result count and guards variable bounds, including the default table length. Changing the bounds can exit the trace. Keep the range fixed or process the table directly.")
+            s:emit(n, "LuaJIT specializes the result count. It guards variable bounds, including the default table length. Changed bounds can exit the trace. Keep the range fixed if possible. Or process the table directly.")
          elseif first and last - first >= 16 then
-            s:emit(n, "LuaJIT records each unpacked element separately. A large fixed range can grow the trace and hit its slot limit. Consider processing the table directly.")
+            s:emit(n, "LuaJIT records each unpacked element separately. A large fixed range can grow the trace and hit its slot limit. Process the table directly if possible.")
          end
       end,
    },
@@ -118,7 +118,7 @@ local rules: {Rule} = {
       kinds = {"op"}, bindings = true, calls = {"getfenv"},
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          if #n.e2 == 0 or model.number(n.e2[1]) ~= 0 then
-            s:emit(n, "LuaJIT's getfenv recorder supports only the constant getfenv(0) form. Cache an invariant environment outside the loop if it cannot change")
+            s:emit(n, "LuaJIT's getfenv recorder supports only the constant getfenv(0) form. Cache the environment before the loop if it cannot change.")
          end
       end,
    },
@@ -131,7 +131,7 @@ local rules: {Rule} = {
          "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
          "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo"},
       check = function(s: State, n: Node, _t: Type, _children: {Type})
-         s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move invariant inspection or setup outside the loop and check the path with a profile.")
+         s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move inspection or setup before the loop if it does not change. Check the path with a profile.")
       end,
    },
    {
@@ -140,7 +140,7 @@ local rules: {Rule} = {
       kinds = {"op"}, bindings = true, calls = {"table.insert"},
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          if #n.e2 == 3 then
-            s:emit(n, "LuaJIT records the two-argument append. A positioned insert takes the interpreter path. If you are appending, use table.insert(t, value).")
+            s:emit(n, "LuaJIT records the two-argument append. A positioned insert takes the interpreter path. For an append, use table.insert(t, value).")
          end
       end,
    },
@@ -151,7 +151,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local base = model.unwrap(n.e2[2])
          if base and base.kind ~= "nil" and model.number(base) ~= 10 then
-            s:emit(n, "LuaJIT's tonumber recorder accepts an omitted base or constant base 10. Hoist invariant conversion or group inputs by conversion path before the loop.")
+            s:emit(n, "LuaJIT's tonumber recorder accepts an omitted base or constant base 10. Move conversion before the loop if its inputs do not change. Or group inputs by conversion path.")
          end
       end,
    },
@@ -159,14 +159,14 @@ local rules: {Rule} = {
       id = "luajit/jit-off-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated JIT disabling in a loop.", kinds = {"op"}, bindings = true, calls = {"jit.off"},
       check = function(s: State, n: Node, _t: Type, _children: {Type})
-         s:emit(n, "jit.off inside a loop repeatedly changes JIT state. Configure it outside the loop when possible.")
+         s:emit(n, "jit.off changes JIT state on each iteration. Set the JIT state before the loop if possible.")
       end,
    },
    {
       id = "luajit/jit-flush-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated trace flushing in a loop.", kinds = {"op"}, bindings = true, calls = {"jit.flush"},
       check = function(s: State, n: Node, _t: Type, _children: {Type})
-         s:emit(n, "jit.flush discards compiled traces. Repeated flushing can prevent useful compilation.")
+         s:emit(n, "jit.flush removes compiled traces. Each flush can make LuaJIT compile the same trace again. Move jit.flush before the loop.")
       end,
    },
    {
@@ -175,7 +175,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local args = n.e2
          if #args == 3 and model.number(args[2]) == 1 then
-            s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, consider appending and reversing or using a deque.")
+            s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, append and reverse the elements. Or use a deque.")
          end
       end,
    },
@@ -185,7 +185,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local args = n.e2
          if #args == 2 and model.number(args[2]) == 1 then
-            s:emit(n, "Removing index 1 shifts following array elements. For a queue, consider tracking a head index.")
+            s:emit(n, "Removing index 1 shifts following array elements. For a queue, track a head index.")
          end
       end,
    },
@@ -198,7 +198,7 @@ local rules: {Rule} = {
          if dst.kind ~= "variable" or not value.op or value.op.op ~= ".." or value.op.meta_on_operand then return end
          local left = model.unwrap(value.e1)
          if left.kind == "variable" and left.tk == dst.tk then
-            s:emit(value, "Appending to a growing string repeatedly copies the prefix. Collect fragments and join them once with table.concat.")
+            s:emit(value, "Each append copies the growing string. Collect the fragments. Join them once with table.concat.")
          end
       end,
    },
@@ -213,7 +213,7 @@ local rules: {Rule} = {
             if member == "find" and uses_pattern(n.e2[1], n.e2[3]) then
                s:emit(callee.e2, pattern_message)
             elseif member == "match" or member == "gmatch" or member == "gsub" then
-               s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it and hoist invariant work where possible.")
+               s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it. Move work before the loop if its inputs do not change.")
             end
          end
       end,

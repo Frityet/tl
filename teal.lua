@@ -11278,9 +11278,18 @@ end
 local function remember_prototypes(s, argument)
    local decl = model.unwrap(argument)
    if not decl or decl.kind ~= "string" or #decl.conststr > 64 * 1024 then return end
-   local text = decl.conststr:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
+   local text = model.c_declaration(s, decl)
    for statement in text:gmatch("[^;]+") do
-      local result, name, parameters = statement:match("^%s*([_%w%s]+)%s+([_%a][_%w]*)%s*%(([^()]*)%)%s*$")
+
+
+      local result, name, parameters
+      if #statement <= 512 then
+         local head, args = statement:match("^([^()]*)%(([^()]*)%)%s*$")
+         if head then
+            result, name = head:match("^%s*(.-)%s+([_%a][_%w]*)%s*$")
+            parameters = args
+         end
+      end
       if name and not result:match("^typedef%s") then
          local aggregate
          if aggregate_type(result, false) then
@@ -11312,7 +11321,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local callee = model.unwrap(n.e1)
          if callee.kind == "variable" and not model.ffi_temporary_symbol(s.called_path) then
-            s:emit(callee, "Keep the C library namespace in a local and call its named member. LuaJIT can specialize the namespace and literal symbol together, folding the function lookup out of the trace.")
+            s:emit(callee, "Keep the C library namespace in a local variable. Call the function by name on that namespace. LuaJIT can remove the lookup from the trace.")
          end
       end,
    },
@@ -11325,7 +11334,7 @@ local rules = {
          if not callee.op or callee.op.op ~= "@index" then return end
          local key = model.unwrap(callee.e2)
          if key.kind ~= "string" and model.ffi_namespace(s:path(callee.e1)) then
-            s:emit(key, "LuaJIT specializes C namespace lookup to the observed symbol string. A different symbol can exit that trace. Dispatch before the loop or batch the work by symbol and use a literal member in each loop.")
+            s:emit(key, "LuaJIT makes a guard for the C symbol name. A different name can cause a side exit. Select the symbol before the loop. If names change, use a different loop for each symbol.")
          end
       end,
    },
@@ -11336,7 +11345,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local callee = model.unwrap(n.e1)
          if callee.kind == "variable" and model.ffi_temporary_symbol(s.called_path) then
-            s:emit(callee, "This function alias was taken from a temporary namespace. Keep the result of ffi.load in a local for as long as the library is in use, and call its named member.")
+            s:emit(callee, "This symbol comes from a temporary C library namespace. Put the ffi.load result in a local variable. Keep that variable in scope while you use the symbol.")
          end
       end,
    },
@@ -11351,7 +11360,7 @@ local rules = {
             local name = s.called_path:match("([_%a][_%w]*)$")
             local aggregate = name and s.ffi_aggregate_prototypes[name]
             if aggregate then
-               s:emit(n, "This prototype " .. aggregate .. ". LuaJIT's FFI recorder cannot compile that call. For a hot path, move the call out of the loop or use a C wrapper with pointer or scalar parameters and a scalar result.")
+               s:emit(n, "This prototype " .. aggregate .. ". LuaJIT cannot record this call. For hot paths, use a C wrapper with pointer or scalar types.")
             end
          end
       end,
@@ -11363,7 +11372,7 @@ local rules = {
       check = function(s, n, _t, _children)
          for _, argument in ipairs(n.e2) do
             if s:path(argument) == "ffi.callback()" then
-               s:emit(argument, "If C invokes this callback synchronously, the compiled call cannot reenter Lua. Prefer a batched or pull-style API, or put the call in a small Lua wrapper and use jit.off(wrapper) during setup.")
+               s:emit(argument, "A compiled FFI call cannot run a Lua callback before it returns. Use a pull API for hot paths. If the callback is necessary, put the C call in a Lua wrapper. Use jit.off on the wrapper before the loop.")
                return
             end
          end
@@ -11397,7 +11406,7 @@ local function condition(s, n)
    local e = model.unwrap(n.exp)
    if e and ((e.kind == "number" or e.kind == "integer") and model.number(e) == 0 or
       e.kind == "string" and e.conststr == "") then
-      s:emit(e, "This value is truthy in Lua. Use an explicit comparison if you meant to test for zero or an empty string.")
+      s:emit(e, "This value is truthy in Lua. Use an explicit comparison to test for zero or an empty string.")
    end
 end
 
@@ -11422,7 +11431,7 @@ local rules = {
          if not left or left.kind ~= "op" or left.op.op ~= "and" then return end
          local middle = model.unwrap(left.e2)
          if middle and (middle.kind == "nil" or (middle.kind == "boolean" and middle.tk == "false")) then
-            s:emit(left.e2, "The middle value is falsey, so this and-or expression always selects the fallback.")
+            s:emit(left.e2, "The middle value is falsey. This and-or expression always selects the fallback.")
          end
       end,
    },
@@ -11433,7 +11442,7 @@ local rules = {
       kinds = { "fornum" },
       check = function(s, n, _t, _children)
          if n.step and model.number(n.step) == 0 then
-            s:emit(n.step, "A zero numeric-for step can error or prevent the loop from progressing")
+            s:emit(n.step, "A zero step can cause an error. It can also stop the loop counter from changing. Use a nonzero step.")
          end
       end,
    },
@@ -11446,7 +11455,7 @@ local rules = {
          local first, last = model.number(n.from), model.number(n.to)
          local step = n.step and model.number(n.step) or (not n.step and 1 or nil)
          if first and last and step and ((step > 0 and first > last) or (step < 0 and first < last)) then
-            s:emit(n, "This numeric for loop never runs: its step points away from the limit")
+            s:emit(n, "This numeric for loop never runs. Its step points away from the limit.")
          end
       end,
    },
@@ -11458,7 +11467,7 @@ local rules = {
       check = function(s, n, _t, children)
          local left = children[1] and types.untuple(children[1])
          if is_numeric_type(left) and not n.op.meta_on_operand and model.number(n.e2) == 0 then
-            s:emit(n.e2, "Division or modulo by zero can raise an error or produce a non-finite value depending on the operation and runtime")
+            s:emit(n.e2, "Division or modulo by zero can raise an error or produce a non-finite value. The result depends on the operation and runtime.")
          end
       end,
    },
@@ -11470,7 +11479,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local key = model.unwrap(n.key)
          if n.key_parsed == "long" and key and key.kind == "nil" then
-            s:emit(key, "A table key cannot be nil")
+            s:emit(key, "A table key must have a value other than nil.")
          end
       end,
    },
@@ -11483,7 +11492,7 @@ local rules = {
          for i = 1, #n - 1 do
             local result = children[i]
             if result.typename == "tuple" and #result.tuple > 1 then
-               s:emit(n[i], "Only the first result is used in this position. Use parentheses to make the truncation explicit.")
+               s:emit(n[i], "Lua uses only the first result here. Add parentheses to show that you want one result.")
             end
          end
       end,
@@ -11496,7 +11505,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local test = model.unwrap(n.exp)
          if test and (test.kind == "nil" or (test.kind == "boolean" and test.tk == "false")) then
-            s:emit(n.exp, "This condition is always falsey, so its body is unreachable.")
+            s:emit(n.exp, "This condition is always falsey. Its body is unreachable.")
          end
       end,
    },
@@ -11511,7 +11520,7 @@ local rules = {
          local a = model.number(args[1])
          local b = model.number(args[2])
          if a and a % 1 == 0 and ((#args == 1 and a < 0) or (#args == 2 and b and b % 1 == 0 and a > b)) then
-            s:emit(n, "math.random receives an empty interval")
+            s:emit(n, "The arguments give math.random an empty interval. Use a lower bound that is less than or equal to the upper bound.")
          end
       end,
    },
@@ -11523,7 +11532,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local args = call_is(s, n, "math.random")
          if args and #args == 1 and model.number(args[1]) == 0 then
-            s:emit(args[1], "math.random(0) has different behavior across Lua versions")
+            s:emit(args[1], "Lua versions handle math.random(0) differently. Use explicit bounds for the range you need.")
          end
       end,
    },
@@ -11536,7 +11545,7 @@ local rules = {
          local args = call_is(s, n, "tonumber")
          local base = args and model.number(args[2])
          if base and (base < 2 or base > 36 or base % 1 ~= 0) then
-            s:emit(args[2], "Use an integer base from 2 through 36. Fractional bases are handled differently across Lua versions.")
+            s:emit(args[2], "Use an integer base from 2 through 36. Lua versions handle fractional bases differently.")
          end
       end,
    },
@@ -11563,7 +11572,7 @@ local rules = {
          for _, argument in ipairs(args) do
             local value = model.number(argument)
             if value and (value < 0 or value > 255 or value % 1 ~= 0) then
-               s:emit(argument, "Use integer byte values from 0 through 255. Fractional values are handled differently across Lua versions.")
+               s:emit(argument, "Use integer byte values from 0 through 255. Lua versions handle fractional values differently.")
             end
          end
       end,
@@ -11577,7 +11586,7 @@ local rules = {
          local args = call_is(s, n, "string.rep")
          local count = args and model.number(args[2])
          if count and count < 0 then
-            s:emit(args[2], "A negative repetition count produces an empty string")
+            s:emit(args[2], "A negative repetition count produces an empty string.")
          end
       end,
    },
@@ -11591,7 +11600,7 @@ local rules = {
          local first = args and model.number(args[2])
          local last = args and model.number(args[3])
          if first and last and first > 0 and last > 0 and first % 1 == 0 and last % 1 == 0 and first > last then
-            s:emit(args[2], "These string.sub bounds always produce an empty string")
+            s:emit(args[2], "These string.sub bounds always produce an empty string.")
          end
       end,
    },
@@ -11677,7 +11686,7 @@ local function uses_pattern(pattern, plain)
    return pattern.conststr:find("[%^%$%*%+%?%.%(%[%%%-]") ~= nil
 end
 
-local pattern_message = "The recorder handles literal string.find searches. A Lua pattern stays on the interpreter path. Pass true for plain mode if you want literal matching, or move invariant matching outside the loop."
+local pattern_message = "The recorder handles literal string.find searches. Lua patterns use the interpreter. Use true for a literal search. If the input stays the same, do the search before the loop."
 
 local function hot_call(id, name, description, message)
    return {
@@ -11692,49 +11701,49 @@ end
 local rules = {
    hot_call("luajit/hot-string-match", "string.match",
    "Find pattern matching inside loops that may cross a trace boundary.",
-   "The fast-function recorder can stitch around string.match. If you only need literal presence, use string.find(s, needle, 1, true) and measure the effect."),
+   "LuaJIT can stitch a trace across string.match. For a literal search, use string.find(s, needle, 1, true). Measure the effect."),
    hot_call("luajit/hot-string-gmatch", "string.gmatch",
    "Find repeated pattern iterator creation inside loops.",
-   "string.gmatch creates a pattern iterator. Consider moving creation out of the loop when iteration semantics permit"),
+   "string.gmatch makes a pattern iterator. Move it before the loop if the iteration behavior stays correct."),
    hot_call("luajit/hot-string-gsub", "string.gsub",
    "Find substitutions inside loops that may be expensive.",
-   "string.gsub in a loop performs pattern substitution and creates a result string. Profile before restructuring"),
+   "string.gsub makes a string with the replacement text. Profile the loop before you change it."),
    hot_call("luajit/hot-string-dump", "string.dump",
    "Find repeated function serialization inside loops.",
-   "string.dump serializes a function and is unlikely to belong in a hot loop. Cache the result if it remains valid"),
+   "string.dump serializes a function. Cache the result if it stays valid."),
    hot_call("luajit/hot-load", "load",
    "Find repeated compilation of source inside loops.",
-   "load compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+   "load compiles a chunk at runtime. Compile it before the loop if the source does not change."),
    hot_call("luajit/hot-loadstring", "loadstring",
    "Find repeated compilation of strings inside loops.",
-   "loadstring compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+   "loadstring compiles a chunk at runtime. Compile it before the loop if the source does not change."),
    hot_call("luajit/hot-loadfile", "loadfile",
    "Find repeated loading and compilation of files inside loops.",
-   "loadfile reads and compiles a chunk. If the file is invariant, load it outside the loop"),
+   "loadfile reads and compiles a chunk. Load it before the loop if the file does not change."),
    hot_call("luajit/hot-dofile", "dofile",
    "Find repeated loading and execution of files inside loops.",
-   "dofile loads and executes a file on each iteration. Check whether that repeated work is needed"),
+   "dofile loads and executes a file on each iteration. Check if each execution is necessary."),
    hot_call("luajit/hot-collectgarbage", "collectgarbage",
    "Find explicit garbage collector operations inside loops.",
-   "collectgarbage in a loop may disrupt normal GC scheduling. Measure the effect before forcing collection or changing GC settings"),
+   "collectgarbage can change GC scheduling. Measure the effect before you change GC settings or force collection."),
    hot_call("luajit/hot-setfenv", "setfenv",
    "Find environment mutation inside loops.",
-   "setfenv changes a function environment and can interrupt a trace. Move invariant setup out of the loop when possible."),
+   "setfenv changes a function environment and can interrupt a trace. Move setup before the loop if it does not change."),
    hot_call("luajit/hot-newproxy", "newproxy",
    "Find repeated proxy allocations inside loops.",
-   "newproxy allocates userdata. Repeated allocations can increase GC pressure in a hot loop"),
+   "newproxy allocates userdata. Repeated allocations can increase GC pressure."),
    hot_call("luajit/hot-print", "print",
    "Find console output inside loops.",
-   "print performs output on every iteration. Buffer or sample logging if profiling shows it dominates the loop"),
+   "print writes output on each iteration. If profiling shows a high cost, buffer the output or write less often."),
    hot_call("luajit/hot-coroutine-create", "coroutine.create",
    "Find repeated coroutine creation inside loops.",
-   "coroutine.create allocates a coroutine. Consider reusing workers when its lifecycle permits"),
+   "coroutine.create allocates a coroutine. Reuse workers if their lifetime permits it."),
    hot_call("luajit/hot-coroutine-wrap", "coroutine.wrap",
    "Find repeated wrapped coroutine creation inside loops.",
-   "coroutine.wrap creates a coroutine and wrapper. Consider reusing workers when its lifecycle permits"),
+   "coroutine.wrap creates a coroutine and a wrapper. Reuse workers if their lifetime permits it."),
    hot_call("luajit/hot-table-new", "table.new",
    "Find repeated allocation of presized tables in loops.",
-   "table.new still allocates a table each iteration. If GC profiling shows pressure, reuse a presized table when its lifetime and aliasing permit."),
+   "table.new still allocates a table each iteration. If GC profiling shows pressure, reuse the table. Make sure its lifetime and aliases permit reuse."),
    {
       id = "luajit/string-find-pattern", severity = "hint", in_loop = true,
       description = "Find literal patterns that the LuaJIT string.find recorder cannot handle.",
@@ -11752,7 +11761,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local index = model.unwrap(n.e2[1])
          if index and not model.number(index) and index.kind ~= "string" then
-            s:emit(n, "The ordinary select recorder requires a constant numeric index. LuaJIT has a separate guarded path for single-result select(index, ...). If you only need one result, consider packing the values once before the loop and indexing the pack.")
+            s:emit(n, "The ordinary select recorder requires a constant numeric index. LuaJIT has a separate guarded path for single-result select(index, ...). If you need one result, pack the values before the loop. Then index the pack.")
          end
       end,
    },
@@ -11766,9 +11775,9 @@ local rules = {
          local first = (not start or start.kind == "nil") and 1 or model.number(start)
          local last = model.number(args[3])
          if not last or not first then
-            s:emit(n, "LuaJIT specializes the result count and guards variable bounds, including the default table length. Changing the bounds can exit the trace. Keep the range fixed or process the table directly.")
+            s:emit(n, "LuaJIT specializes the result count. It guards variable bounds, including the default table length. Changed bounds can exit the trace. Keep the range fixed if possible. Or process the table directly.")
          elseif first and last - first >= 16 then
-            s:emit(n, "LuaJIT records each unpacked element separately. A large fixed range can grow the trace and hit its slot limit. Consider processing the table directly.")
+            s:emit(n, "LuaJIT records each unpacked element separately. A large fixed range can grow the trace and hit its slot limit. Process the table directly if possible.")
          end
       end,
    },
@@ -11778,7 +11787,7 @@ local rules = {
       kinds = { "op" }, bindings = true, calls = { "getfenv" },
       check = function(s, n, _t, _children)
          if #n.e2 == 0 or model.number(n.e2[1]) ~= 0 then
-            s:emit(n, "LuaJIT's getfenv recorder supports only the constant getfenv(0) form. Cache an invariant environment outside the loop if it cannot change")
+            s:emit(n, "LuaJIT's getfenv recorder supports only the constant getfenv(0) form. Cache the environment before the loop if it cannot change.")
          end
       end,
    },
@@ -11791,7 +11800,7 @@ local rules = {
       "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
       "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo", },
       check = function(s, n, _t, _children)
-         s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move invariant inspection or setup outside the loop and check the path with a profile.")
+         s:emit(n, "This call runs in the interpreter. LuaJIT may stitch the trace across it. Move inspection or setup before the loop if it does not change. Check the path with a profile.")
       end,
    },
    {
@@ -11800,7 +11809,7 @@ local rules = {
       kinds = { "op" }, bindings = true, calls = { "table.insert" },
       check = function(s, n, _t, _children)
          if #n.e2 == 3 then
-            s:emit(n, "LuaJIT records the two-argument append. A positioned insert takes the interpreter path. If you are appending, use table.insert(t, value).")
+            s:emit(n, "LuaJIT records the two-argument append. A positioned insert takes the interpreter path. For an append, use table.insert(t, value).")
          end
       end,
    },
@@ -11811,7 +11820,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local base = model.unwrap(n.e2[2])
          if base and base.kind ~= "nil" and model.number(base) ~= 10 then
-            s:emit(n, "LuaJIT's tonumber recorder accepts an omitted base or constant base 10. Hoist invariant conversion or group inputs by conversion path before the loop.")
+            s:emit(n, "LuaJIT's tonumber recorder accepts an omitted base or constant base 10. Move conversion before the loop if its inputs do not change. Or group inputs by conversion path.")
          end
       end,
    },
@@ -11819,14 +11828,14 @@ local rules = {
       id = "luajit/jit-off-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated JIT disabling in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.off" },
       check = function(s, n, _t, _children)
-         s:emit(n, "jit.off inside a loop repeatedly changes JIT state. Configure it outside the loop when possible.")
+         s:emit(n, "jit.off changes JIT state on each iteration. Set the JIT state before the loop if possible.")
       end,
    },
    {
       id = "luajit/jit-flush-in-loop", severity = "warning", in_loop = true,
       description = "Find repeated trace flushing in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.flush" },
       check = function(s, n, _t, _children)
-         s:emit(n, "jit.flush discards compiled traces. Repeated flushing can prevent useful compilation.")
+         s:emit(n, "jit.flush removes compiled traces. Each flush can make LuaJIT compile the same trace again. Move jit.flush before the loop.")
       end,
    },
    {
@@ -11835,7 +11844,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local args = n.e2
          if #args == 3 and model.number(args[2]) == 1 then
-            s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, consider appending and reversing or using a deque.")
+            s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, append and reverse the elements. Or use a deque.")
          end
       end,
    },
@@ -11845,7 +11854,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local args = n.e2
          if #args == 2 and model.number(args[2]) == 1 then
-            s:emit(n, "Removing index 1 shifts following array elements. For a queue, consider tracking a head index.")
+            s:emit(n, "Removing index 1 shifts following array elements. For a queue, track a head index.")
          end
       end,
    },
@@ -11858,7 +11867,7 @@ local rules = {
          if dst.kind ~= "variable" or not value.op or value.op.op ~= ".." or value.op.meta_on_operand then return end
          local left = model.unwrap(value.e1)
          if left.kind == "variable" and left.tk == dst.tk then
-            s:emit(value, "Appending to a growing string repeatedly copies the prefix. Collect fragments and join them once with table.concat.")
+            s:emit(value, "Each append copies the growing string. Collect the fragments. Join them once with table.concat.")
          end
       end,
    },
@@ -11873,7 +11882,7 @@ local rules = {
             if member == "find" and uses_pattern(n.e2[1], n.e2[3]) then
                s:emit(callee.e2, pattern_message)
             elseif member == "match" or member == "gmatch" or member == "gsub" then
-               s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it and hoist invariant work where possible.")
+               s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it. Move work before the loop if its inputs do not change.")
             end
          end
       end,
@@ -11912,16 +11921,6 @@ end
 local function literal(n)
    n = model.unwrap(n)
    if n and n.kind == "string" then return n.conststr end
-end
-
-
-
-local function c_declaration(n)
-   local text = literal(n)
-   if text then
-      text = text:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
-   end
-   return text
 end
 
 local routes = {
@@ -11981,18 +11980,18 @@ local function add(id, severity, description,
    table.insert(rules, r)
 end
 
-add("cdef-in-loop", "warning", "Avoid parsing C declarations repeatedly in loops.", function(s, n, _a)
+add("cdef-in-loop", "warning", "Find repeated parsing of C declarations in loops.", function(s, n, _a)
    s:emit(n, "ffi.cdef parses declarations in the interpreter. Move fixed declarations into setup before the loop.")
 end)
-add("load-in-loop", "warning", "Avoid repeatedly loading C libraries in loops.", function(s, n, _a)
-   s:emit(n, "ffi.load creates a namespace in the interpreter. Load the library once and call named members on the cached namespace.")
+add("load-in-loop", "warning", "Find repeated loading of C libraries in loops.", function(s, n, _a)
+   s:emit(n, "ffi.load makes a namespace in the interpreter. Load the library once. Call named members on the cached namespace.")
 end)
-add("metatype-in-loop", "warning", "Avoid creating C metatypes repeatedly in loops.", function(s, n, _a)
-   s:emit(n, "ffi.metatype installs the type's metatable in the interpreter. Create the metatype once during setup and reuse its constructor.")
+add("metatype-in-loop", "warning", "Find repeated creation of C metatypes in loops.", function(s, n, _a)
+   s:emit(n, "ffi.metatype installs the type's metatable in the interpreter. Make the metatype before the loop. Use its constructor in the loop.")
 end)
-add("new-cdecl-in-loop", "hint", "Cache C types used repeatedly in loops.", function(s, n, a)
+add("new-cdecl-in-loop", "hint", "Find C types used repeatedly in loops.", function(s, n, a)
    if literal(a[1]) then
-      s:emit(n, "The interpreter parses this C declaration and the recorder specializes to the string. Call ffi.typeof once before the loop and reuse the ctype constructor.")
+      s:emit(n, "The interpreter parses this C declaration. The recorder specializes to the string. Call ffi.typeof before the loop. Use the same ctype constructor.")
    end
 end)
 local function literal_choices(n)
@@ -12009,93 +12008,93 @@ end
 add("ctype-choice-in-loop", "hint", "Find a loop call that selects between distinct C declaration strings.", function(s, _n, a)
    local first, second = literal_choices(a[1])
    if first and second and first ~= second then
-      s:emit(a[1], "LuaJIT guards the C declaration string it observed. A different choice can exit the trace, even if the two strings name equivalent types. Choose a stable ctype before the loop or batch the work by type.")
+      s:emit(a[1], "LuaJIT guards the C declaration string it observed. A different string can cause a trace exit, even for the same type. Choose a stable ctype before the loop. You can also group the work by type.")
    end
 end)
 add("sizeof-variable-length-in-loop", "warning", "Find sizeof calls on literal variable-length array types inside loops.", function(s, n, a)
    local decl = literal(a[1])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") then
-      s:emit(n, "LuaJIT's ffi.sizeof recorder rejects variable-length types. For a plain array, hoist the element size and multiply by the element count. Hoist the full size calculation for an invariant length.")
+      s:emit(n, "LuaJIT's ffi.sizeof recorder rejects variable-length types. For a plain array, find the element size before the loop. Multiply it by the element count. If the length does not change, calculate the full size before the loop.")
    end
 end)
 
 
 
-add("vla-initializer-in-loop", "warning", "Avoid initialized variable-length FFI arrays in hot loops.", function(s, n, a)
+add("vla-initializer-in-loop", "warning", "Find initialized variable-length FFI arrays in loops.", function(s, n, a)
    local decl = literal(a[1])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") and a[3] then
-      s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only and fill it separately, or reuse a typed buffer outside the loop")
+      s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only. Then fill the array. You can also use the same typed buffer for each iteration.")
    end
 end)
-add("array-table-initializer-in-loop", "warning", "Avoid table initialization of fixed C arrays in hot loops.", function(s, n, a)
+add("array-table-initializer-in-loop", "warning", "Find table initialization of fixed C arrays in loops.", function(s, n, a)
    local decl, init = literal(a[1]), model.unwrap(a[2])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%d+%s*%]%s*$") and #a == 2 and init and init.kind == "literal_table" then
-      s:emit(n, "LuaJIT's FFI recorder cannot convert this table initializer to C array elements. Initialize a reusable typed buffer outside the loop, or assign its elements separately")
+      s:emit(n, "LuaJIT's FFI recorder cannot convert this table initializer to C array elements. Initialize a typed buffer before the loop. You can also assign its elements separately.")
    end
 end)
-add("large-byte-array-initializer-in-loop", "warning", "Avoid initialized large byte arrays in hot loops.", function(s, n, a)
+add("large-byte-array-initializer-in-loop", "warning", "Find initialized large byte arrays in loops.", function(s, n, a)
    local decl = literal(a[1])
    if not decl or not a[2] then return end
    local size = decl:match("^%s*char%s*%[%s*(%d+)%s*%]%s*$") or
    decl:match("^%s*unsigned%s+char%s*%[%s*(%d+)%s*%]%s*$") or
    decl:match("^%s*signed%s+char%s*%[%s*(%d+)%s*%]%s*$")
    if size and tonumber(size) > 128 then
-      s:emit(n, "LuaJIT's FFI recorder cannot initialize this array larger than 128 bytes. Allocate it without an initializer and fill it separately, or reuse a buffer outside the loop")
+      s:emit(n, "LuaJIT's FFI recorder cannot initialize this array larger than 128 bytes. Allocate it without an initializer. Then fill the array. You can also use the same buffer for each iteration.")
    end
 end)
-add("callback-cast-in-loop", "hint", "Avoid creating FFI callbacks repeatedly in loops.", function(s, n, a)
+add("callback-cast-in-loop", "hint", "Find repeated creation of FFI callbacks in loops.", function(s, n, a)
    local decl, value = literal(a[1]), model.unwrap(a[2])
    if decl and decl:match("%(%s*%*%s*%)") and value and value.kind == "function" then
-      s:emit(n, "This creates a C callback in each iteration. Reuse an explicit callback when its lifetime permits, and free it only after C stops using it; batch calls to reduce C-to-Lua crossings")
+      s:emit(n, "Each iteration makes a C callback. Use the same callback when it is safe. Free the callback after C no longer uses it. Group calls to decrease C-to-Lua transitions.")
    end
 end)
-add("int64-tonumber", "warning", "Identify potentially lossy conversion of 64-bit cdata to Lua numbers.", function(s, n, a)
+add("int64-tonumber", "warning", "Find 64-bit cdata conversions that can lose precision.", function(s, n, a)
    local value = model.unwrap(a[1])
    local p = call_path(s, value)
    if p ~= "ffi.new" and p ~= "ffi.cast" then return end
    local args = call(value)
    local decl = args and literal(args[1])
    if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$") or decl:match("^%s*unsigned%s+long%s+long%s*$") or decl:match("^%s*long%s+long%s*$")) then
-      s:emit(n, "tonumber can lose precision for 64-bit integers outside the exactly representable Lua-number range. Keep cdata for integer arithmetic or use a lossless string representation")
+      s:emit(n, "tonumber can lose precision for 64-bit integers outside the exact Lua number range. Keep cdata for integer arithmetic. You can also use a string that keeps the full value.")
    end
 end)
-add("string-in-loop", "hint", "Avoid unnecessary C-to-Lua string copies in hot loops.", function(s, n, _a)
-   s:emit(n, "ffi.string copies bytes into a Lua string. Keep the owner alive and process the buffer directly, or convert it once outside the loop when possible.")
+add("string-in-loop", "hint", "Find C-to-Lua string copies in loops.", function(s, n, _a)
+   s:emit(n, "ffi.string copies bytes into a Lua string. Use the buffer directly if possible. Keep a reference to its owner while you use the buffer. You can also convert it before the loop.")
 end)
-add("gc-in-loop", "hint", "Avoid repeatedly attaching FFI finalizers in hot loops.", function(s, n, _a)
-   s:emit(n, "ffi.gc attaches or changes a finalizer. Consider allocating the owned buffer outside the loop and releasing it after its last use.")
+add("gc-in-loop", "hint", "Find repeated FFI finalizer changes in loops.", function(s, n, _a)
+   s:emit(n, "ffi.gc attaches or changes a finalizer. Allocate the buffer before the loop if you can use it again. Release the buffer after its last use.")
 end)
 add("typeof-in-loop", "hint", "Find string-based ffi.typeof calls that the recorder cannot handle.", function(s, n, a)
    if literal(a[1]) then
-      s:emit(n, "LuaJIT's ffi.typeof recorder accepts cdata inputs. A declaration string stays on the interpreter path. Build the ctype before the loop and reuse it.")
+      s:emit(n, "LuaJIT records ffi.typeof with cdata inputs. A declaration string uses the interpreter. Make the ctype before the loop. Use the same ctype in the loop.")
    end
 end)
-add("anonymous-aggregate", "warning", "Avoid creating distinct anonymous C types on each allocation.", function(s, n, a)
+add("anonymous-aggregate", "warning", "Find anonymous C types created for each allocation.", function(s, n, a)
    local decl = literal(a[1])
    if decl and (decl:match("%f[%w_]struct%s*{") or decl:match("%f[%w_]union%s*{")) then
-      s:emit(n, "each ffi.new of an anonymous aggregate creates a distinct C type. Define a named type or reuse one ffi.typeof result")
+      s:emit(n, "Each ffi.new of an anonymous aggregate makes a different C type. Use a named C type. You can also use the same ffi.typeof result.")
    end
 end)
 add("cdef-preprocessor", "warning", "C declarations are not passed through a C preprocessor.", function(s, n, a)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if not decl then return end
    for directive in ("\n" .. decl):gmatch("\n[ \t]*#[ \t]*([^\n]+)") do
       if not directive:match("^pragma[ \t]+pack[ \t]*%(") then
-         s:emit(n, "Resolve C preprocessor directives and macros before passing the declarations to ffi.cdef.")
+         s:emit(n, "Use a C preprocessor on the declarations. Give its result to ffi.cdef.")
          return
       end
    end
 end)
 add("cdef-volatile", "warning", "LuaJIT compiled code ignores volatile qualifiers.", function(s, n, a)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if decl and decl:match("%f[%w_]volatile%f[^%w_]") then
       s:emit(n, "LuaJIT compiled code ignores volatile qualifiers. Use a C wrapper when accesses must be volatile.")
    end
 end)
 add("cdef-long-double", "warning", "LuaJIT does not support long double operations.", function(s, n, a)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if decl and decl:match("%f[%w_]long%s+double%f[^%w_]") then
-      s:emit(n, "LuaJIT parses long double but does not support its conversions, accesses or arithmetic. Use a C wrapper")
+      s:emit(n, "LuaJIT parses long double. It does not support conversions, access, or arithmetic for this type. Use a C wrapper.")
    end
 end)
 add("negative-length", "error", "Reject negative literal FFI memory lengths.", function(s, n, a)
@@ -12105,14 +12104,14 @@ add("negative-length", "error", "Reject negative literal FFI memory lengths.", f
    elseif p == "ffi.fill" or p == "ffi.string" then len = a[2] end
    local value = len and model.number(len)
    if value and value < 0 then
-      s:emit(len, p .. " requires a nonnegative byte length")
+      s:emit(len, p .. " requires a byte length of zero or more.")
    end
 end)
 add("copy-string-overread", "error", "Detect literal string copies that exceed the source buffer.", function(s, n, a)
    if path(s, n.e1) == "ffi.copy" then
       local str, len = literal(a[2]), a[3] and model.number(a[3])
       if str and len and len > #str + 1 then
-         s:emit(a[3], "ffi.copy length exceeds the literal string and its terminating zero byte")
+         s:emit(a[3], "ffi.copy reads past the string and its final zero byte. Use a byte length that fits in the source buffer.")
       end
    end
 end)
@@ -12120,7 +12119,7 @@ add("copy-missing-length", "error", "Require a length when copying a non-string 
    if path(s, n.e1) == "ffi.copy" and #a == 2 then
       local src = model.unwrap(a[2])
       if src and (src.kind == "number" or src.kind == "integer" or src.kind == "boolean" or src.kind == "nil" or src.kind == "literal_table") then
-         s:emit(src, "the two-argument ffi.copy form requires a Lua string source. Pass a valid source and byte length")
+         s:emit(src, "The two-argument ffi.copy form requires a Lua string source. Pass a valid source and byte length.")
       end
    end
 end)
@@ -12130,7 +12129,7 @@ add("temporary-array-pointer", "warning", "Keep the owner of a pointer cast from
       local inner = call(value)
       local innerdecl = inner and literal(inner[1])
       if innerdecl and innerdecl:find("%[") then
-         s:emit(n, "this pointer does not keep the temporary array alive. Retain the array separately for the entire pointer lifetime")
+         s:emit(n, "The garbage collector can free the temporary array while you use this pointer. Keep a reference to the array.")
       end
    end
 end)
@@ -12143,7 +12142,7 @@ add("temporary-array-initializer", "hint", "Check temporary C array ownership wh
             local inner = call(value)
             local innerdecl = inner and literal(inner[1])
             if innerdecl and innerdecl:find("%[") then
-               s:emit(value, "If this initializes a pointer field, keep the array alive for as long as the field is used.")
+               s:emit(value, "If this value sets a pointer field, keep a reference to the array while you use the field.")
             end
          end
       end
@@ -12153,14 +12152,14 @@ add("implicit-callback", "warning", "Avoid permanent implicit Lua-to-C callback 
    for _, argument in ipairs(a) do
       local value = model.unwrap(argument)
       if value and value.kind == "function" then
-         s:emit(value, "An implicit FFI callback is permanent. Cast it explicitly and free it after C releases it. For hot paths, batch work to reduce C-to-Lua crossings.")
+         s:emit(value, "An implicit FFI callback is permanent. Cast it explicitly. Free it after C stops using it. For hot paths, group work to reduce C-to-Lua crossings.")
       end
    end
 end)
 add("callback-vararg", "error", "Require fixed signatures for LuaJIT callbacks.", function(s, n, a)
-   local decl, value = c_declaration(a[1]), model.unwrap(a[2])
+   local decl, value = model.c_declaration(s, a[1]), model.unwrap(a[2])
    if path(s, n.e1) == "ffi.cast" and decl and decl:find("...", 1, true) and value and value.kind == "function" then
-      s:emit(n, "LuaJIT does not support callbacks with C vararg function types. Use a fixed-signature C wrapper")
+      s:emit(n, "LuaJIT does not support callbacks with C vararg function types. Use a C wrapper with a fixed signature.")
    end
 end)
 local known_abi = {
@@ -12171,7 +12170,7 @@ local known_abi = {
 add("unknown-abi", "warning", "Detect unrecognized literal ffi.abi queries.", function(s, _n, a)
    local name = literal(a[1])
    if name and not known_abi[name] then
-      s:emit(a[1], "Unrecognized ffi.abi parameter '" .. name .. "'. Check the target ABI name.")
+      s:emit(a[1], "LuaJIT does not recognize this ABI name. Use a name from the ffi.abi reference.")
    end
 end)
 add("printf-integer-vararg", "warning", "Pass explicitly typed integers to printf-family C varargs.", function(s, n, a)
@@ -12193,7 +12192,7 @@ add("printf-integer-vararg", "warning", "Pass explicitly typed integers to print
          if not full then break end
          local value = model.unwrap(a[arg_index])
          if conversion:match("[diouxXc]") and model.number(value) then
-            s:emit(value, "Lua numbers become double in C varargs. Use ffi.cast or ffi.new with the integer type required by this format")
+            s:emit(value, "Lua numbers become double in C varargs. Use ffi.cast or ffi.new with the integer type required by this format.")
          end
          arg_index = arg_index + 1
          pos = start + #full
@@ -12206,7 +12205,7 @@ local function warn_boxed_operand(s, operand)
       local args = call(operand)
       local decl = args and literal(args[1])
       if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$")) then
-         s:emit(operand, "This arithmetic explicitly constructs 64-bit cdata in a loop. Use Lua numbers when their range and precision suffice. For 64-bit arithmetic, retain a consistent cdata type and profile whether the recorder eliminates boxing.")
+         s:emit(operand, "This arithmetic creates 64-bit cdata in a loop. Use Lua numbers if their range and precision are sufficient. For 64-bit arithmetic, keep a consistent cdata type. Profile to see if the recorder removes boxing.")
       end
    end
 end
@@ -12272,7 +12271,7 @@ local rules = {
       description = "Find function definitions created inside loops.",
       kinds = { "function", "local_function", "global_function" },
       check = function(s, n, _t, _children)
-         s:emit(n, "Upstream LuaJIT 2.1 aborts recording at FNEW when it creates this closure. Captures may also emit UCLO. Hoist the function and pass changing values as parameters when closure identity and capture semantics permit.")
+         s:emit(n, "Upstream LuaJIT 2.1 stops recording at FNEW. The compiler can also emit UCLO for captured locals. Move the function before the loop if its identity and captures permit it. Use loop values as parameters.")
       end,
    },
    {
@@ -12288,7 +12287,7 @@ local rules = {
          local av, bv = model.unwrap(a.vars[1]), model.unwrap(b.vars[1])
          local at, bt = literal_type(a.exps[1]), literal_type(b.exps[1])
          if av and bv and av.kind == "variable" and bv.kind == "variable" and av.tk == bv.tk and at and bt and at ~= bt then
-            s:emit(n, "These branches assign different value types to the same variable. If both paths occur in a hot loop and the value is used across iterations, type-specialized traces may exit or need separate traces. Consider keeping its representation stable, and check -jv before changing the code.")
+            s:emit(n, "These branches assign different value types to the same variable. If both paths run and the value persists, type-specialized traces may exit or need separate traces. Keep the representation stable if possible. Check -jv before you change the code.")
          end
       end,
    },
@@ -12297,7 +12296,7 @@ local rules = {
       description = "Find runtime type dispatch inside loops.", kinds = { "if_block" }, bindings = true,
       check = function(s, n, _t, _children)
          if type_test(s, n.exp) then
-            s:emit(n.exp, "Changing value types can take a different guarded path. If profiling shows frequent exits, group values by type or choose the operation before the loop.")
+            s:emit(n.exp, "A type change can cause a side exit. Check for frequent exits with a profile. If necessary, group values by type. You can also select the operation before the loop.")
          end
       end,
    },
@@ -12306,7 +12305,7 @@ local rules = {
       description = "Find parity branches that may alternate on successive iterations.", kinds = { "if_block" },
       check = function(s, n, _t, _children)
          if parity_test(n.exp) then
-            s:emit(n.exp, "This parity branch may alternate between guarded paths. LuaJIT can compile a side trace. If exits are frequent, consider handling one pair of items per iteration.")
+            s:emit(n.exp, "This parity branch can alternate between guarded paths. LuaJIT can compile a side trace. If exits are frequent, process one pair of items per iteration.")
          end
       end,
    },
@@ -12318,7 +12317,7 @@ local rules = {
          if callee and callee.op and callee.op.op == "@index" and not model.ffi_namespace(s:path(callee.e1)) then
             local key = model.unwrap(callee.e2)
             if key and key.kind ~= "string" and key.kind ~= "number" and key.kind ~= "integer" then
-               s:emit(callee, "The indexed call target may vary between iterations, causing function guards to fail. If profiling shows frequent exits, group work by target or select a stable function outside the loop.")
+               s:emit(callee, "The indexed call target can change between iterations. This can cause function guards to fail. Check for frequent exits with a profile. Group the work by function if necessary. You can also select the function before the loop.")
             end
          end
       end,
@@ -12330,7 +12329,7 @@ local rules = {
          if #n.vars ~= 1 or #n.exps ~= 1 then return end
          local dst, value = model.unwrap(n.vars[1]), model.unwrap(n.exps[1])
          if dst and dst.op and dst.op.op == "@index" and value and value.kind == "nil" then
-            s:emit(dst, "Deleting an indexed entry can create holes if this table is used as a sequence. If profiling shows unstable lookups or iteration, consider a dense array with a separate count or a swap-remove scheme when order permits.")
+            s:emit(dst, "Deleting an indexed entry can create holes in a sequence. Profile the lookups and iteration. If necessary, use a dense array with a separate count. Or use swap-remove if order does not matter.")
          end
       end,
    },
@@ -12338,7 +12337,7 @@ local rules = {
       id = "luajit/loop-table-allocation", severity = "hint", in_loop = true,
       description = "Find table constructors inside loops.", kinds = { "literal_table" },
       check = function(s, n, _t, _children)
-         s:emit(n, "This table is constructed on each iteration. LuaJIT may eliminate the allocation. If a profile shows GC pressure, reuse storage where its lifetime and aliasing permit.")
+         s:emit(n, "Each iteration makes a table. LuaJIT can remove the allocation. If garbage collection takes too much time, use the same table when it is safe.")
       end,
    },
 }
@@ -12349,13 +12348,15 @@ end
 
 -- module teal.diagnostics.model from teal/diagnostics/model.lua
 package.preload["teal.diagnostics.model"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local string = _tl_compat and _tl_compat.string or string
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 
 
 
 
 local model = { Rule = {}, RuleInfo = {}, EnabledRule = {}, Plan = {}, State = {} }
+
+
 
 
 
@@ -12469,6 +12470,61 @@ function model.call_args(n)
    if n and n.op and n.op.op == "@funcall" then
       return n.e2
    end
+end
+
+local function end_of_c_quote(source, start, quote)
+   local offset = start + 1
+   while offset <= #source do
+      local byte = source:byte(offset)
+      if byte == quote then return offset end
+      offset = offset + (byte == 92 and 2 or 1)
+   end
+   return #source
+end
+
+
+
+function model.c_declaration(state, node)
+   node = model.unwrap(node)
+   if not node or node.kind ~= "string" then return nil end
+   local source = node.conststr
+   if not source then return nil end
+   if source == state.last_c_source then return state.last_c_text end
+   local chunks
+   local copy_from, cursor = 1, 1
+   while true do
+      local start = source:find("[/'\"]", cursor)
+      if not start then break end
+      local byte = source:byte(start)
+      local finish
+      if byte == 47 then
+         local next_byte = source:byte(start + 1)
+         if next_byte == 42 then
+            local close = source:find("*/", start + 2, true)
+            finish = close and close + 1 or #source
+         elseif next_byte == 47 then
+            local newline = source:find("\n", start + 2, true)
+            finish = newline and newline - 1 or #source
+         end
+      else
+         finish = end_of_c_quote(source, start, byte)
+      end
+      cursor = (finish or start) + 1
+      if finish then
+         chunks = chunks or {}
+         chunks[#chunks + 1] = source:sub(copy_from, start - 1)
+         local newlines = source:sub(start, finish):gsub("[^\n]+", "")
+         chunks[#chunks + 1] = " " .. newlines
+         copy_from = cursor
+      end
+   end
+   local text = source
+   if chunks then
+      chunks[#chunks + 1] = source:sub(copy_from)
+      text = table.concat(chunks)
+   end
+   state.last_c_source, state.last_c_text = source, text
+   return text
 end
 
 function model.ffi_namespace(path)
@@ -13131,24 +13187,24 @@ local function op(id, severity, description, operators, check)
 end
 
 local rules = {
-   op("cast-to-any", "info", "Find casts that explicitly discard type information.", { "as" },
+   op("cast-to-any", "info", "Find casts that remove type information.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
       if original and cast and original.typename ~= "any" and original.typename ~= "invalid" and cast.typename == "any" then
-         s:emit(n.e2, "Casting to any discards static type checks for this value. Keep a specific type if possible.")
+         s:emit(n.e2, "A cast to any removes static type checks for this value. Keep the specific type if possible.")
       end
    end),
-   op("cast-from-any", "warning", "Find assertions of a concrete type on values typed as any.", { "as" },
+   op("cast-from-any", "warning", "Find casts from any to a specific type.", { "as" },
    function(s, n, _t, children)
       local original, cast = single(children[1]), children[3]
       if original and cast and original.typename == "any" and cast.typename ~= "any" and cast.typename ~= "invalid" then
-         s:emit(n.e2, "This cast asserts a type without checking the value at runtime. Validate untyped input before using it.")
+         s:emit(n.e2, "This cast sets a type without a runtime check. Check untyped input before use.")
       end
    end),
    op("cast-can-hide-nil", "warning", "Find casts from a nullable value to a non-nil type.", { "as" },
    function(s, n, _t, children)
       if can_be_nil(single(children[1])) and cannot_be_nil(children[3]) then
-         s:emit(n.e2, "This cast can hide nil from the checker. Guard against nil or provide a fallback before casting.")
+         s:emit(n.e2, "This cast can hide a nil value from the checker. Add a nil check before the cast. You can also use a fallback value.")
       end
    end),
    op("redundant-primitive-cast", "hint", "Find variable casts to their existing primitive type.", { "as" },
@@ -13158,37 +13214,37 @@ local rules = {
          s:emit(n.e2, "The variable already has this primitive type.")
       end
    end),
-   op("redundant-type-test", "hint", "Find primitive type tests implied by the operand's static type.", { "is" },
+   op("redundant-type-test", "hint", "Find primitive type tests that the static type already satisfies.", { "is" },
    function(s, n, _t, children)
       local original, test = single(children[1]), children[3]
       if s.strict_nil and n.e1.kind == "variable" and original and test and primitive[test.typename] and
          (original.typename == test.typename or (original.typename == "integer" and test.typename == "number")) then
-         s:emit(n.e2, "The variable's static type already satisfies this test.")
+         s:emit(n.e2, "The static type of this variable already satisfies this test.")
       end
    end),
    op("nil-coalescing-always-falls-back", "info", "Find nil-coalescing expressions whose left side is always nil.", { "??" },
    function(s, n, _t, children)
       local left = single(children[1])
       if left and left.typename == "nil" then
-         s:emit(n.e1, "The left operand has type nil, so this expression always uses its fallback.")
+         s:emit(n.e1, "The left operand has type nil. This expression always uses its fallback.")
       end
    end),
    op("nil-coalescing-unreachable-fallback", "hint", "Find fallback expressions for values with non-nil types.", { "??" },
    function(s, n, _t, children)
       if s.strict_nil and cannot_be_nil(single(children[1])) then
-         s:emit(n.e2, "The left operand has a non-nil type, so this fallback is unreachable under the declared types.")
+         s:emit(n.e2, "The left operand has a non-nil type. The declared types make this fallback unreachable.")
       end
    end),
    op("optional-chain-always-nil", "warning", "Find optional accesses that always stop at a nil receiver.", { ".", ":", "@index", "@funcall" },
    function(s, n, _t, _children)
       if n.safe_navigation and n.chain_always_nil and not n.e1.chain_always_nil then
-         s:emit(n, "This optional access stops at a nil receiver, so the rest of the chain is skipped.")
+         s:emit(n, "This optional access stops at a nil receiver. It skips the rest of the chain.")
       end
    end),
    op("optional-chain-non-nil-receiver", "hint", "Find optional accesses on non-nil receiver types.", { ".", ":", "@index", "@funcall" },
    function(s, n, _t, children)
       if s.strict_nil and n.safe_navigation and not n.e1.optional_chain and cannot_be_nil(single(children[1])) then
-         s:emit(n, "This receiver has a non-nil type, so optional access is unnecessary under the declared types.")
+         s:emit(n, "This receiver has a non-nil type. The declared types make optional access unnecessary.")
       end
    end),
    op("boolean-default-masks-false", "warning", "Find boolean defaults that replace false with true.", { "or" },
@@ -13224,7 +13280,7 @@ local rules = {
       description = "Find parameters explicitly annotated as any.", kinds = { "argument" },
       check = function(s, n, _t, _children)
          if n.argtype and n.argtype.typename == "any" then
-            s:emit(n, "This parameter accepts any value. A type parameter or a more specific type can preserve type checks for callers.")
+            s:emit(n, "This parameter accepts any value. A type parameter or a more specific type can keep checks for callers.")
          end
       end,
    },
@@ -13236,7 +13292,7 @@ local rules = {
          if n.has_return_annotation then
             for i, ret in ipairs(n.rets.tuple) do
                if ret.typename == "any" then
-                  s:emit(n.name or n, "Return value " .. i .. " is annotated as any. Give it a type that callers can check.")
+                  s:emit(n.name or n, "Return value " .. i .. " has type any. Use a more specific type for this value.")
                end
             end
          end
@@ -13250,7 +13306,7 @@ local rules = {
             for i, var in ipairs(n.vars) do
                local annotation = n.decltuple.tuple[i]
                if annotation and annotation.typename == "any" then
-                  s:emit(var, "This variable is annotated as any, which disables many checks on its uses.")
+                  s:emit(var, "This variable has type any. This type disables many checks on its uses.")
                end
             end
          end

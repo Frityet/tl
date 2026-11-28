@@ -116,13 +116,12 @@ for examples, hooks, and assertion helpers.
 Once `tl` is in your path, there are a few subcommands:
 
 * `tl run script.tl` will run a Teal script.
-* `tl check module.tl` will type check a Teal module, report any errors and
-  quit.
+* `tl check module.tl` reports type errors and the
+  [diagnostics enabled in `tlconfig.lua`](docs/src/compiler_options.md#diagnostics).
 * `tl gen module.tl` will check for syntax errors and
   generate a `module.lua` file in plain Lua with all type annotations
   stripped.
-* `tl warnings` will list all warnings the compiler can generate.
-* `tl check` reports type errors and the [diagnostics enabled in `tlconfig.lua`](docs/src/compiler_options.md#diagnostics).
+* `tl warnings` lists compiler warning categories.
 * `tl lsp [--stdio]` runs Teal's Language Server Protocol server over standard
   input and output. It provides compiler-backed push and pull diagnostics,
   macro-aware completion and hover, resolved definitions, references and rename,

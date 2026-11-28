@@ -26,16 +26,6 @@ local function literal(n: Node): string
    if n and n.kind == "string" then return n.conststr end
 end
 
--- Remove C comments before looking for declaration tokens. Keep line breaks so
--- preprocessor directives continue to be recognized only at line starts.
-local function c_declaration(n: Node): string
-   local text = literal(n)
-   if text then
-      text = text:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
-   end
-   return text
-end
-
 local routes: {string:{string}} = {
    ["cdef-in-loop"] = { "ffi.cdef" },
    ["load-in-loop"] = { "ffi.load" },
@@ -93,18 +83,18 @@ local function add(id: string, severity: model.Severity, description: string,
    table.insert(rules, r)
 end
 
-add("cdef-in-loop", "warning", "Avoid parsing C declarations repeatedly in loops.", function(s: State, n: Node, _a: Node)
+add("cdef-in-loop", "warning", "Find repeated parsing of C declarations in loops.", function(s: State, n: Node, _a: Node)
    s:emit(n, "ffi.cdef parses declarations in the interpreter. Move fixed declarations into setup before the loop.")
 end)
-add("load-in-loop", "warning", "Avoid repeatedly loading C libraries in loops.", function(s: State, n: Node, _a: Node)
-   s:emit(n, "ffi.load creates a namespace in the interpreter. Load the library once and call named members on the cached namespace.")
+add("load-in-loop", "warning", "Find repeated loading of C libraries in loops.", function(s: State, n: Node, _a: Node)
+   s:emit(n, "ffi.load makes a namespace in the interpreter. Load the library once. Call named members on the cached namespace.")
 end)
-add("metatype-in-loop", "warning", "Avoid creating C metatypes repeatedly in loops.", function(s: State, n: Node, _a: Node)
-   s:emit(n, "ffi.metatype installs the type's metatable in the interpreter. Create the metatype once during setup and reuse its constructor.")
+add("metatype-in-loop", "warning", "Find repeated creation of C metatypes in loops.", function(s: State, n: Node, _a: Node)
+   s:emit(n, "ffi.metatype installs the type's metatable in the interpreter. Make the metatype before the loop. Use its constructor in the loop.")
 end)
-add("new-cdecl-in-loop", "hint", "Cache C types used repeatedly in loops.", function(s: State, n: Node, a: Node)
+add("new-cdecl-in-loop", "hint", "Find C types used repeatedly in loops.", function(s: State, n: Node, a: Node)
    if literal(a[1]) then
-      s:emit(n, "The interpreter parses this C declaration and the recorder specializes to the string. Call ffi.typeof once before the loop and reuse the ctype constructor.")
+      s:emit(n, "The interpreter parses this C declaration. The recorder specializes to the string. Call ffi.typeof before the loop. Use the same ctype constructor.")
    end
 end)
 local function literal_choices(n: Node): string, string
@@ -121,93 +111,93 @@ end
 add("ctype-choice-in-loop", "hint", "Find a loop call that selects between distinct C declaration strings.", function(s: State, _n: Node, a: Node)
    local first, second = literal_choices(a[1])
    if first and second and first ~= second then
-      s:emit(a[1], "LuaJIT guards the C declaration string it observed. A different choice can exit the trace, even if the two strings name equivalent types. Choose a stable ctype before the loop or batch the work by type.")
+      s:emit(a[1], "LuaJIT guards the C declaration string it observed. A different string can cause a trace exit, even for the same type. Choose a stable ctype before the loop. You can also group the work by type.")
    end
 end)
 add("sizeof-variable-length-in-loop", "warning", "Find sizeof calls on literal variable-length array types inside loops.", function(s: State, n: Node, a: Node)
    local decl = literal(a[1])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") then
-      s:emit(n, "LuaJIT's ffi.sizeof recorder rejects variable-length types. For a plain array, hoist the element size and multiply by the element count. Hoist the full size calculation for an invariant length.")
+      s:emit(n, "LuaJIT's ffi.sizeof recorder rejects variable-length types. For a plain array, find the element size before the loop. Multiply it by the element count. If the length does not change, calculate the full size before the loop.")
    end
 end)
 -- LuaJIT's recorder can allocate a variable-length array with a runtime
 -- length, but its aggregate initialization path aborts when a third argument
 -- is present. Restrict this to literal array declarations we can identify.
-add("vla-initializer-in-loop", "warning", "Avoid initialized variable-length FFI arrays in hot loops.", function(s: State, n: Node, a: Node)
+add("vla-initializer-in-loop", "warning", "Find initialized variable-length FFI arrays in loops.", function(s: State, n: Node, a: Node)
    local decl = literal(a[1])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%?%s*%]%s*$") and a[3] then
-      s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only and fill it separately, or reuse a typed buffer outside the loop")
+      s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only. Then fill the array. You can also use the same typed buffer for each iteration.")
    end
 end)
-add("array-table-initializer-in-loop", "warning", "Avoid table initialization of fixed C arrays in hot loops.", function(s: State, n: Node, a: Node)
+add("array-table-initializer-in-loop", "warning", "Find table initialization of fixed C arrays in loops.", function(s: State, n: Node, a: Node)
    local decl, init = literal(a[1]), model.unwrap(a[2])
    if decl and not decl:find("(", 1, true) and decl:match("%[%s*%d+%s*%]%s*$") and #a == 2 and init and init.kind == "literal_table" then
-      s:emit(n, "LuaJIT's FFI recorder cannot convert this table initializer to C array elements. Initialize a reusable typed buffer outside the loop, or assign its elements separately")
+      s:emit(n, "LuaJIT's FFI recorder cannot convert this table initializer to C array elements. Initialize a typed buffer before the loop. You can also assign its elements separately.")
    end
 end)
-add("large-byte-array-initializer-in-loop", "warning", "Avoid initialized large byte arrays in hot loops.", function(s: State, n: Node, a: Node)
+add("large-byte-array-initializer-in-loop", "warning", "Find initialized large byte arrays in loops.", function(s: State, n: Node, a: Node)
    local decl = literal(a[1])
    if not decl or not a[2] then return end
    local size = decl:match("^%s*char%s*%[%s*(%d+)%s*%]%s*$")
       or decl:match("^%s*unsigned%s+char%s*%[%s*(%d+)%s*%]%s*$")
       or decl:match("^%s*signed%s+char%s*%[%s*(%d+)%s*%]%s*$")
    if size and tonumber(size) > 128 then
-      s:emit(n, "LuaJIT's FFI recorder cannot initialize this array larger than 128 bytes. Allocate it without an initializer and fill it separately, or reuse a buffer outside the loop")
+      s:emit(n, "LuaJIT's FFI recorder cannot initialize this array larger than 128 bytes. Allocate it without an initializer. Then fill the array. You can also use the same buffer for each iteration.")
    end
 end)
-add("callback-cast-in-loop", "hint", "Avoid creating FFI callbacks repeatedly in loops.", function(s: State, n: Node, a: Node)
+add("callback-cast-in-loop", "hint", "Find repeated creation of FFI callbacks in loops.", function(s: State, n: Node, a: Node)
    local decl, value = literal(a[1]), model.unwrap(a[2])
    if decl and decl:match("%(%s*%*%s*%)") and value and value.kind == "function" then
-      s:emit(n, "This creates a C callback in each iteration. Reuse an explicit callback when its lifetime permits, and free it only after C stops using it; batch calls to reduce C-to-Lua crossings")
+      s:emit(n, "Each iteration makes a C callback. Use the same callback when it is safe. Free the callback after C no longer uses it. Group calls to decrease C-to-Lua transitions.")
    end
 end)
-add("int64-tonumber", "warning", "Identify potentially lossy conversion of 64-bit cdata to Lua numbers.", function(s: State, n: Node, a: Node)
+add("int64-tonumber", "warning", "Find 64-bit cdata conversions that can lose precision.", function(s: State, n: Node, a: Node)
    local value = model.unwrap(a[1])
    local p = call_path(s, value)
    if p ~= "ffi.new" and p ~= "ffi.cast" then return end
    local args = call(value)
    local decl = args and literal(args[1])
    if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$") or decl:match("^%s*unsigned%s+long%s+long%s*$") or decl:match("^%s*long%s+long%s*$")) then
-      s:emit(n, "tonumber can lose precision for 64-bit integers outside the exactly representable Lua-number range. Keep cdata for integer arithmetic or use a lossless string representation")
+      s:emit(n, "tonumber can lose precision for 64-bit integers outside the exact Lua number range. Keep cdata for integer arithmetic. You can also use a string that keeps the full value.")
    end
 end)
-add("string-in-loop", "hint", "Avoid unnecessary C-to-Lua string copies in hot loops.", function(s: State, n: Node, _a: Node)
-   s:emit(n, "ffi.string copies bytes into a Lua string. Keep the owner alive and process the buffer directly, or convert it once outside the loop when possible.")
+add("string-in-loop", "hint", "Find C-to-Lua string copies in loops.", function(s: State, n: Node, _a: Node)
+   s:emit(n, "ffi.string copies bytes into a Lua string. Use the buffer directly if possible. Keep a reference to its owner while you use the buffer. You can also convert it before the loop.")
 end)
-add("gc-in-loop", "hint", "Avoid repeatedly attaching FFI finalizers in hot loops.", function(s: State, n: Node, _a: Node)
-   s:emit(n, "ffi.gc attaches or changes a finalizer. Consider allocating the owned buffer outside the loop and releasing it after its last use.")
+add("gc-in-loop", "hint", "Find repeated FFI finalizer changes in loops.", function(s: State, n: Node, _a: Node)
+   s:emit(n, "ffi.gc attaches or changes a finalizer. Allocate the buffer before the loop if you can use it again. Release the buffer after its last use.")
 end)
 add("typeof-in-loop", "hint", "Find string-based ffi.typeof calls that the recorder cannot handle.", function(s: State, n: Node, a: Node)
    if literal(a[1]) then
-      s:emit(n, "LuaJIT's ffi.typeof recorder accepts cdata inputs. A declaration string stays on the interpreter path. Build the ctype before the loop and reuse it.")
+      s:emit(n, "LuaJIT records ffi.typeof with cdata inputs. A declaration string uses the interpreter. Make the ctype before the loop. Use the same ctype in the loop.")
    end
 end)
-add("anonymous-aggregate", "warning", "Avoid creating distinct anonymous C types on each allocation.", function(s: State, n: Node, a: Node)
+add("anonymous-aggregate", "warning", "Find anonymous C types created for each allocation.", function(s: State, n: Node, a: Node)
    local decl = literal(a[1])
    if decl and (decl:match("%f[%w_]struct%s*{") or decl:match("%f[%w_]union%s*{")) then
-      s:emit(n, "each ffi.new of an anonymous aggregate creates a distinct C type. Define a named type or reuse one ffi.typeof result")
+      s:emit(n, "Each ffi.new of an anonymous aggregate makes a different C type. Use a named C type. You can also use the same ffi.typeof result.")
    end
 end)
 add("cdef-preprocessor", "warning", "C declarations are not passed through a C preprocessor.", function(s: State, n: Node, a: Node)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if not decl then return end
    for directive in ("\n" .. decl):gmatch("\n[ \t]*#[ \t]*([^\n]+)") do
       if not directive:match("^pragma[ \t]+pack[ \t]*%(") then
-         s:emit(n, "Resolve C preprocessor directives and macros before passing the declarations to ffi.cdef.")
+         s:emit(n, "Use a C preprocessor on the declarations. Give its result to ffi.cdef.")
          return
       end
    end
 end)
 add("cdef-volatile", "warning", "LuaJIT compiled code ignores volatile qualifiers.", function(s: State, n: Node, a: Node)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if decl and decl:match("%f[%w_]volatile%f[^%w_]") then
       s:emit(n, "LuaJIT compiled code ignores volatile qualifiers. Use a C wrapper when accesses must be volatile.")
    end
 end)
 add("cdef-long-double", "warning", "LuaJIT does not support long double operations.", function(s: State, n: Node, a: Node)
-   local decl = c_declaration(a[1])
+   local decl = model.c_declaration(s, a[1])
    if decl and decl:match("%f[%w_]long%s+double%f[^%w_]") then
-      s:emit(n, "LuaJIT parses long double but does not support its conversions, accesses or arithmetic. Use a C wrapper")
+      s:emit(n, "LuaJIT parses long double. It does not support conversions, access, or arithmetic for this type. Use a C wrapper.")
    end
 end)
 add("negative-length", "error", "Reject negative literal FFI memory lengths.", function(s: State, n: Node, a: Node)
@@ -217,14 +207,14 @@ add("negative-length", "error", "Reject negative literal FFI memory lengths.", f
    elseif p == "ffi.fill" or p == "ffi.string" then len = a[2] end
    local value = len and model.number(len)
    if value and value < 0 then
-      s:emit(len, p .. " requires a nonnegative byte length")
+      s:emit(len, p .. " requires a byte length of zero or more.")
    end
 end)
 add("copy-string-overread", "error", "Detect literal string copies that exceed the source buffer.", function(s: State, n: Node, a: Node)
    if path(s, n.e1) == "ffi.copy" then
       local str, len = literal(a[2]), a[3] and model.number(a[3])
       if str and len and len > #str + 1 then
-         s:emit(a[3], "ffi.copy length exceeds the literal string and its terminating zero byte")
+         s:emit(a[3], "ffi.copy reads past the string and its final zero byte. Use a byte length that fits in the source buffer.")
       end
    end
 end)
@@ -232,7 +222,7 @@ add("copy-missing-length", "error", "Require a length when copying a non-string 
    if path(s, n.e1) == "ffi.copy" and #a == 2 then
       local src = model.unwrap(a[2])
       if src and (src.kind == "number" or src.kind == "integer" or src.kind == "boolean" or src.kind == "nil" or src.kind == "literal_table") then
-         s:emit(src, "the two-argument ffi.copy form requires a Lua string source. Pass a valid source and byte length")
+         s:emit(src, "The two-argument ffi.copy form requires a Lua string source. Pass a valid source and byte length.")
       end
    end
 end)
@@ -242,7 +232,7 @@ add("temporary-array-pointer", "warning", "Keep the owner of a pointer cast from
       local inner = call(value)
       local innerdecl = inner and literal(inner[1])
       if innerdecl and innerdecl:find("%[") then
-         s:emit(n, "this pointer does not keep the temporary array alive. Retain the array separately for the entire pointer lifetime")
+         s:emit(n, "The garbage collector can free the temporary array while you use this pointer. Keep a reference to the array.")
       end
    end
 end)
@@ -255,7 +245,7 @@ add("temporary-array-initializer", "hint", "Check temporary C array ownership wh
             local inner = call(value)
             local innerdecl = inner and literal(inner[1])
             if innerdecl and innerdecl:find("%[") then
-               s:emit(value, "If this initializes a pointer field, keep the array alive for as long as the field is used.")
+               s:emit(value, "If this value sets a pointer field, keep a reference to the array while you use the field.")
             end
          end
       end
@@ -265,14 +255,14 @@ add("implicit-callback", "warning", "Avoid permanent implicit Lua-to-C callback 
    for _, argument in ipairs(a) do
       local value = model.unwrap(argument)
       if value and value.kind == "function" then
-         s:emit(value, "An implicit FFI callback is permanent. Cast it explicitly and free it after C releases it. For hot paths, batch work to reduce C-to-Lua crossings.")
+         s:emit(value, "An implicit FFI callback is permanent. Cast it explicitly. Free it after C stops using it. For hot paths, group work to reduce C-to-Lua crossings.")
       end
    end
 end)
 add("callback-vararg", "error", "Require fixed signatures for LuaJIT callbacks.", function(s: State, n: Node, a: Node)
-   local decl, value = c_declaration(a[1]), model.unwrap(a[2])
+   local decl, value = model.c_declaration(s, a[1]), model.unwrap(a[2])
    if path(s, n.e1) == "ffi.cast" and decl and decl:find("...", 1, true) and value and value.kind == "function" then
-      s:emit(n, "LuaJIT does not support callbacks with C vararg function types. Use a fixed-signature C wrapper")
+      s:emit(n, "LuaJIT does not support callbacks with C vararg function types. Use a C wrapper with a fixed signature.")
    end
 end)
 local known_abi: {string:boolean} = {
@@ -283,7 +273,7 @@ local known_abi: {string:boolean} = {
 add("unknown-abi", "warning", "Detect unrecognized literal ffi.abi queries.", function(s: State, _n: Node, a: Node)
    local name = literal(a[1])
    if name and not known_abi[name] then
-      s:emit(a[1], "Unrecognized ffi.abi parameter '" .. name .. "'. Check the target ABI name.")
+      s:emit(a[1], "LuaJIT does not recognize this ABI name. Use a name from the ffi.abi reference.")
    end
 end)
 add("printf-integer-vararg", "warning", "Pass explicitly typed integers to printf-family C varargs.", function(s: State, n: Node, a: Node)
@@ -305,7 +295,7 @@ add("printf-integer-vararg", "warning", "Pass explicitly typed integers to print
          if not full then break end
          local value = model.unwrap(a[arg_index])
          if conversion:match("[diouxXc]") and model.number(value) then
-            s:emit(value, "Lua numbers become double in C varargs. Use ffi.cast or ffi.new with the integer type required by this format")
+            s:emit(value, "Lua numbers become double in C varargs. Use ffi.cast or ffi.new with the integer type required by this format.")
          end
          arg_index = arg_index + 1
          pos = start + #full
@@ -318,7 +308,7 @@ local function warn_boxed_operand(s: State, operand: Node)
       local args = call(operand)
       local decl = args and literal(args[1])
       if decl and (decl:match("^%s*int64_t%s*$") or decl:match("^%s*uint64_t%s*$")) then
-         s:emit(operand, "This arithmetic explicitly constructs 64-bit cdata in a loop. Use Lua numbers when their range and precision suffice. For 64-bit arithmetic, retain a consistent cdata type and profile whether the recorder eliminates boxing.")
+         s:emit(operand, "This arithmetic creates 64-bit cdata in a loop. Use Lua numbers if their range and precision are sufficient. For 64-bit arithmetic, keep a consistent cdata type. Profile to see if the recorder removes boxing.")
       end
    end
 end

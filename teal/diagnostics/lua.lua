@@ -18,7 +18,7 @@ local function condition(s, n)
    local e = model.unwrap(n.exp)
    if e and ((e.kind == "number" or e.kind == "integer") and model.number(e) == 0 or
       e.kind == "string" and e.conststr == "") then
-      s:emit(e, "This value is truthy in Lua. Use an explicit comparison if you meant to test for zero or an empty string.")
+      s:emit(e, "This value is truthy in Lua. Use an explicit comparison to test for zero or an empty string.")
    end
 end
 
@@ -43,7 +43,7 @@ local rules = {
          if not left or left.kind ~= "op" or left.op.op ~= "and" then return end
          local middle = model.unwrap(left.e2)
          if middle and (middle.kind == "nil" or (middle.kind == "boolean" and middle.tk == "false")) then
-            s:emit(left.e2, "The middle value is falsey, so this and-or expression always selects the fallback.")
+            s:emit(left.e2, "The middle value is falsey. This and-or expression always selects the fallback.")
          end
       end,
    },
@@ -54,7 +54,7 @@ local rules = {
       kinds = { "fornum" },
       check = function(s, n, _t, _children)
          if n.step and model.number(n.step) == 0 then
-            s:emit(n.step, "A zero numeric-for step can error or prevent the loop from progressing")
+            s:emit(n.step, "A zero step can cause an error. It can also stop the loop counter from changing. Use a nonzero step.")
          end
       end,
    },
@@ -67,7 +67,7 @@ local rules = {
          local first, last = model.number(n.from), model.number(n.to)
          local step = n.step and model.number(n.step) or (not n.step and 1 or nil)
          if first and last and step and ((step > 0 and first > last) or (step < 0 and first < last)) then
-            s:emit(n, "This numeric for loop never runs: its step points away from the limit")
+            s:emit(n, "This numeric for loop never runs. Its step points away from the limit.")
          end
       end,
    },
@@ -79,7 +79,7 @@ local rules = {
       check = function(s, n, _t, children)
          local left = children[1] and types.untuple(children[1])
          if is_numeric_type(left) and not n.op.meta_on_operand and model.number(n.e2) == 0 then
-            s:emit(n.e2, "Division or modulo by zero can raise an error or produce a non-finite value depending on the operation and runtime")
+            s:emit(n.e2, "Division or modulo by zero can raise an error or produce a non-finite value. The result depends on the operation and runtime.")
          end
       end,
    },
@@ -91,7 +91,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local key = model.unwrap(n.key)
          if n.key_parsed == "long" and key and key.kind == "nil" then
-            s:emit(key, "A table key cannot be nil")
+            s:emit(key, "A table key must have a value other than nil.")
          end
       end,
    },
@@ -104,7 +104,7 @@ local rules = {
          for i = 1, #n - 1 do
             local result = children[i]
             if result.typename == "tuple" and #result.tuple > 1 then
-               s:emit(n[i], "Only the first result is used in this position. Use parentheses to make the truncation explicit.")
+               s:emit(n[i], "Lua uses only the first result here. Add parentheses to show that you want one result.")
             end
          end
       end,
@@ -117,7 +117,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local test = model.unwrap(n.exp)
          if test and (test.kind == "nil" or (test.kind == "boolean" and test.tk == "false")) then
-            s:emit(n.exp, "This condition is always falsey, so its body is unreachable.")
+            s:emit(n.exp, "This condition is always falsey. Its body is unreachable.")
          end
       end,
    },
@@ -132,7 +132,7 @@ local rules = {
          local a = model.number(args[1])
          local b = model.number(args[2])
          if a and a % 1 == 0 and ((#args == 1 and a < 0) or (#args == 2 and b and b % 1 == 0 and a > b)) then
-            s:emit(n, "math.random receives an empty interval")
+            s:emit(n, "The arguments give math.random an empty interval. Use a lower bound that is less than or equal to the upper bound.")
          end
       end,
    },
@@ -144,7 +144,7 @@ local rules = {
       check = function(s, n, _t, _children)
          local args = call_is(s, n, "math.random")
          if args and #args == 1 and model.number(args[1]) == 0 then
-            s:emit(args[1], "math.random(0) has different behavior across Lua versions")
+            s:emit(args[1], "Lua versions handle math.random(0) differently. Use explicit bounds for the range you need.")
          end
       end,
    },
@@ -157,7 +157,7 @@ local rules = {
          local args = call_is(s, n, "tonumber")
          local base = args and model.number(args[2])
          if base and (base < 2 or base > 36 or base % 1 ~= 0) then
-            s:emit(args[2], "Use an integer base from 2 through 36. Fractional bases are handled differently across Lua versions.")
+            s:emit(args[2], "Use an integer base from 2 through 36. Lua versions handle fractional bases differently.")
          end
       end,
    },
@@ -184,7 +184,7 @@ local rules = {
          for _, argument in ipairs(args) do
             local value = model.number(argument)
             if value and (value < 0 or value > 255 or value % 1 ~= 0) then
-               s:emit(argument, "Use integer byte values from 0 through 255. Fractional values are handled differently across Lua versions.")
+               s:emit(argument, "Use integer byte values from 0 through 255. Lua versions handle fractional values differently.")
             end
          end
       end,
@@ -198,7 +198,7 @@ local rules = {
          local args = call_is(s, n, "string.rep")
          local count = args and model.number(args[2])
          if count and count < 0 then
-            s:emit(args[2], "A negative repetition count produces an empty string")
+            s:emit(args[2], "A negative repetition count produces an empty string.")
          end
       end,
    },
@@ -212,7 +212,7 @@ local rules = {
          local first = args and model.number(args[2])
          local last = args and model.number(args[3])
          if first and last and first > 0 and last > 0 and first % 1 == 0 and last % 1 == 0 and first > last then
-            s:emit(args[2], "These string.sub bounds always produce an empty string")
+            s:emit(args[2], "These string.sub bounds always produce an empty string.")
          end
       end,
    },

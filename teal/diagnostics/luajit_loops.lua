@@ -43,7 +43,7 @@ local rules = {
       description = "Find function definitions created inside loops.",
       kinds = { "function", "local_function", "global_function" },
       check = function(s, n, _t, _children)
-         s:emit(n, "Upstream LuaJIT 2.1 aborts recording at FNEW when it creates this closure. Captures may also emit UCLO. Hoist the function and pass changing values as parameters when closure identity and capture semantics permit.")
+         s:emit(n, "Upstream LuaJIT 2.1 stops recording at FNEW. The compiler can also emit UCLO for captured locals. Move the function before the loop if its identity and captures permit it. Use loop values as parameters.")
       end,
    },
    {
@@ -59,7 +59,7 @@ local rules = {
          local av, bv = model.unwrap(a.vars[1]), model.unwrap(b.vars[1])
          local at, bt = literal_type(a.exps[1]), literal_type(b.exps[1])
          if av and bv and av.kind == "variable" and bv.kind == "variable" and av.tk == bv.tk and at and bt and at ~= bt then
-            s:emit(n, "These branches assign different value types to the same variable. If both paths occur in a hot loop and the value is used across iterations, type-specialized traces may exit or need separate traces. Consider keeping its representation stable, and check -jv before changing the code.")
+            s:emit(n, "These branches assign different value types to the same variable. If both paths run and the value persists, type-specialized traces may exit or need separate traces. Keep the representation stable if possible. Check -jv before you change the code.")
          end
       end,
    },
@@ -68,7 +68,7 @@ local rules = {
       description = "Find runtime type dispatch inside loops.", kinds = { "if_block" }, bindings = true,
       check = function(s, n, _t, _children)
          if type_test(s, n.exp) then
-            s:emit(n.exp, "Changing value types can take a different guarded path. If profiling shows frequent exits, group values by type or choose the operation before the loop.")
+            s:emit(n.exp, "A type change can cause a side exit. Check for frequent exits with a profile. If necessary, group values by type. You can also select the operation before the loop.")
          end
       end,
    },
@@ -77,7 +77,7 @@ local rules = {
       description = "Find parity branches that may alternate on successive iterations.", kinds = { "if_block" },
       check = function(s, n, _t, _children)
          if parity_test(n.exp) then
-            s:emit(n.exp, "This parity branch may alternate between guarded paths. LuaJIT can compile a side trace. If exits are frequent, consider handling one pair of items per iteration.")
+            s:emit(n.exp, "This parity branch can alternate between guarded paths. LuaJIT can compile a side trace. If exits are frequent, process one pair of items per iteration.")
          end
       end,
    },
@@ -89,7 +89,7 @@ local rules = {
          if callee and callee.op and callee.op.op == "@index" and not model.ffi_namespace(s:path(callee.e1)) then
             local key = model.unwrap(callee.e2)
             if key and key.kind ~= "string" and key.kind ~= "number" and key.kind ~= "integer" then
-               s:emit(callee, "The indexed call target may vary between iterations, causing function guards to fail. If profiling shows frequent exits, group work by target or select a stable function outside the loop.")
+               s:emit(callee, "The indexed call target can change between iterations. This can cause function guards to fail. Check for frequent exits with a profile. Group the work by function if necessary. You can also select the function before the loop.")
             end
          end
       end,
@@ -101,7 +101,7 @@ local rules = {
          if #n.vars ~= 1 or #n.exps ~= 1 then return end
          local dst, value = model.unwrap(n.vars[1]), model.unwrap(n.exps[1])
          if dst and dst.op and dst.op.op == "@index" and value and value.kind == "nil" then
-            s:emit(dst, "Deleting an indexed entry can create holes if this table is used as a sequence. If profiling shows unstable lookups or iteration, consider a dense array with a separate count or a swap-remove scheme when order permits.")
+            s:emit(dst, "Deleting an indexed entry can create holes in a sequence. Profile the lookups and iteration. If necessary, use a dense array with a separate count. Or use swap-remove if order does not matter.")
          end
       end,
    },
@@ -109,7 +109,7 @@ local rules = {
       id = "luajit/loop-table-allocation", severity = "hint", in_loop = true,
       description = "Find table constructors inside loops.", kinds = { "literal_table" },
       check = function(s, n, _t, _children)
-         s:emit(n, "This table is constructed on each iteration. LuaJIT may eliminate the allocation. If a profile shows GC pressure, reuse storage where its lifetime and aliasing permit.")
+         s:emit(n, "Each iteration makes a table. LuaJIT can remove the allocation. If garbage collection takes too much time, use the same table when it is safe.")
       end,
    },
 }

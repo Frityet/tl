@@ -17,9 +17,18 @@ end
 local function remember_prototypes(s: State, argument: Node)
    local decl = model.unwrap(argument)
    if not decl or decl.kind ~= "string" or #decl.conststr > 64 * 1024 then return end
-   local text = decl.conststr:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
+   local text = model.c_declaration(s, decl)
    for statement in text:gmatch("[^;]+") do
-      local result, name, parameters = statement:match("^%s*([_%w%s]+)%s+([_%a][_%w]*)%s*%(([^()]*)%)%s*$")
+      -- Match short, plain prototypes and leave typedefs and nested
+      -- declarators to the C parser.
+      local result, name, parameters: string, string, string
+      if #statement <= 512 then
+         local head, args = statement:match("^([^()]*)%(([^()]*)%)%s*$")
+         if head then
+            result, name = head:match("^%s*(.-)%s+([_%a][_%w]*)%s*$")
+            parameters = args
+         end
+      end
       if name and not result:match("^typedef%s") then
          local aggregate: string
          if aggregate_type(result, false) then
@@ -51,7 +60,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local callee = model.unwrap(n.e1)
          if callee.kind == "variable" and not model.ffi_temporary_symbol(s.called_path) then
-            s:emit(callee, "Keep the C library namespace in a local and call its named member. LuaJIT can specialize the namespace and literal symbol together, folding the function lookup out of the trace.")
+            s:emit(callee, "Keep the C library namespace in a local variable. Call the function by name on that namespace. LuaJIT can remove the lookup from the trace.")
          end
       end,
    },
@@ -64,7 +73,7 @@ local rules: {Rule} = {
          if not callee.op or callee.op.op ~= "@index" then return end
          local key = model.unwrap(callee.e2)
          if key.kind ~= "string" and model.ffi_namespace(s:path(callee.e1)) then
-            s:emit(key, "LuaJIT specializes C namespace lookup to the observed symbol string. A different symbol can exit that trace. Dispatch before the loop or batch the work by symbol and use a literal member in each loop.")
+            s:emit(key, "LuaJIT makes a guard for the C symbol name. A different name can cause a side exit. Select the symbol before the loop. If names change, use a different loop for each symbol.")
          end
       end,
    },
@@ -75,7 +84,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          local callee = model.unwrap(n.e1)
          if callee.kind == "variable" and model.ffi_temporary_symbol(s.called_path) then
-            s:emit(callee, "This function alias was taken from a temporary namespace. Keep the result of ffi.load in a local for as long as the library is in use, and call its named member.")
+            s:emit(callee, "This symbol comes from a temporary C library namespace. Put the ffi.load result in a local variable. Keep that variable in scope while you use the symbol.")
          end
       end,
    },
@@ -90,7 +99,7 @@ local rules: {Rule} = {
             local name = s.called_path:match("([_%a][_%w]*)$")
             local aggregate = name and s.ffi_aggregate_prototypes[name]
             if aggregate then
-               s:emit(n, "This prototype " .. aggregate .. ". LuaJIT's FFI recorder cannot compile that call. For a hot path, move the call out of the loop or use a C wrapper with pointer or scalar parameters and a scalar result.")
+               s:emit(n, "This prototype " .. aggregate .. ". LuaJIT cannot record this call. For hot paths, use a C wrapper with pointer or scalar types.")
             end
          end
       end,
@@ -102,7 +111,7 @@ local rules: {Rule} = {
       check = function(s: State, n: Node, _t: Type, _children: {Type})
          for _, argument in ipairs(n.e2) do
             if s:path(argument) == "ffi.callback()" then
-               s:emit(argument, "If C invokes this callback synchronously, the compiled call cannot reenter Lua. Prefer a batched or pull-style API, or put the call in a small Lua wrapper and use jit.off(wrapper) during setup.")
+               s:emit(argument, "A compiled FFI call cannot run a Lua callback before it returns. Use a pull API for hot paths. If the callback is necessary, put the C call in a Lua wrapper. Use jit.off on the wrapper before the loop.")
                return
             end
          end
