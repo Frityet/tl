@@ -1596,6 +1596,13 @@ local function completion_kind_for_type(info)
    return 6
 end
 
+local function qualified_type_receiver(document, separator)
+   local report = document.type_report
+   local rows = report and report.type_receivers and report.type_receivers[document.path]
+   local row = rows and rows[separator.y]
+   return row and row[separator.x]
+end
+
 local function completion_probe_report(server, document, position, separator)
    local offset = lsp_position_to_offset(document.text, document.lines, position)
    local placeholder = "__teal_completion_probe" .. (separator.tk == ":" and "()" or "")
@@ -1645,7 +1652,14 @@ local function completion_items(server, document, position)
    else
       previous, previous_index = previous_token(document, index)
    end
-   if previous and (previous.tk == "." or previous.tk == ":") then
+   local namespace_id = previous and previous.tk == "." and qualified_type_receiver(document, previous)
+   if namespace_id then
+      local namespace = document.type_report.types[namespace_id]
+      for name, id in pairs(namespace and namespace.nested_types or {}) do
+         local info = document.type_report.types[id]
+         add(name, 7, info and info.str or "type")
+      end
+   elseif previous and (previous.tk == "." or previous.tk == ":") then
       local receiver = previous_token(document, previous_index)
       local receiver_position
       if receiver then

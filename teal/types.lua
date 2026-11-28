@@ -430,6 +430,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end

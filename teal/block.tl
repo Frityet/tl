@@ -1,6 +1,7 @@
 --#pragma strict_nil off
 local errors = require("teal.errors")
 local type Where = errors.Where
+local type Token = require("teal.lexer").Token
 
 local record block
    enum BlockKind
@@ -129,6 +130,7 @@ local record block
       kind: BlockKind
       yend: integer
       xend: integer
+      qualifier_dots: {Token} -- nominal types
    end
 
    enum BlockLang

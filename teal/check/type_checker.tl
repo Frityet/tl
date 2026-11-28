@@ -68,7 +68,7 @@ local record type_checker
       assert_is_a: function(self, w: Where, t1: Type, t2: Type, ctx?: ErrorContext, name?: string): boolean
       begin_implied_scope: function(self)
       end_implied_scope: function(self)
-      find_type: function(self, names: {string}): TypeDeclType, TypeArgType
+      find_type: function(self, names: {string}, at?: NominalType): TypeDeclType, TypeArgType
       find_var_type: function(self, name: string, use?: VarUse): Type, Attribute, Type
       infer_at: function<T is Type>(self, w: Where, t: T): T
       infer_emptytable: function(self, emptytable: EmptyTableType, fresh_t: Type)

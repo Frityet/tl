@@ -278,29 +278,26 @@ do
       return typ
    end
 
-   function Context:find_type(names)
-      local typ = self:find_var_type(names[1], "use_type")
-      if not typ then
-         if #names == 1 and names[1] == "metatable" then
-            return self:find_type({ "_metatable" })
-         end
-         return nil
+   function Context:find_type(names, at)
+      local dots = self.collector and at and at.f == self.filename and at.qualifier_dots
+      local count = #names - 1
+      if dots and dots[#names] and at.resolved and at.resolved.typename == "invalid" then
+         count = #names
       end
-      for i = 2, #names do
-         typ = unwrap_for_find_type(typ)
-         if typ == nil then
+      local typ = self:find_var_type(names[1], "use_type")
+      if not typ and count == 0 and names[1] == "metatable" then
+         return self:find_type({ "_metatable" })
+      end
+      for i = 1, count do
+         local prefix = typ and unwrap_for_find_type(typ)
+         local receiver = prefix and prefix.fields and prefix or nil
+         local dot = dots and dots[i]
+         if dot then
+            self.collector.store_type_receiver(dot.y, dot.x, receiver)
+         elseif not receiver then
             return nil
          end
-
-         local fields = typ.fields and typ.fields
-         if not fields then
-            return nil
-         end
-
-         typ = fields[names[i]]
-         if typ == nil then
-            return nil
-         end
+         typ = receiver and receiver.fields[names[i + 1]]
       end
 
 
@@ -821,7 +818,7 @@ do
          return t.resolved
       end
 
-      local found = t.found or self:find_type(t.names)
+      local found = t.found or self:find_type(t.names, t)
       if not found then
          return self.errs:invalid_at(t, "unknown type %s", t)
       end

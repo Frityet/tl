@@ -2125,7 +2125,7 @@ parse_simple_type_or_nominal = function(state, block)
    local tk = block.tk
    local st = simple_types[tk]
    local rest = block[BLOCK_INDEXES.NOMINAL_TYPE.NAME + 1]
-   if st and not (rest and rest.kind == "identifier") then
+   if st and not (block.qualifier_dots or (rest and rest.kind == "identifier")) then
       return new_type(state, block, tk)
    elseif tk == "table" and block.kind ~= "nominal_type" then
       local typ = new_type(state, block, "map")
@@ -2142,6 +2142,7 @@ parse_simple_type_or_nominal = function(state, block)
 
       local typ = new_nominal(state, block)
       typ.names = {}
+      typ.qualifier_dots = block.qualifier_dots
       local current_block_idx = 1
 
       if block[current_block_idx] and block[current_block_idx].kind == "identifier" then
@@ -2169,9 +2170,10 @@ parse_simple_type_or_nominal = function(state, block)
       end
 
 
-      if block[current_block_idx] and block[current_block_idx].kind == "type_list" then
+      local suffix = block[current_block_idx]
+      if suffix and suffix.kind == "type_list" then
          typ.typevals = {}
-         for _, tv_block in ipairs(block[current_block_idx]) do
+         for _, tv_block in ipairs(suffix) do
             local parsed_tv = parse_type(state, tv_block)
             if parsed_tv then
                table.insert(typ.typevals, parsed_tv)
@@ -2179,6 +2181,8 @@ parse_simple_type_or_nominal = function(state, block)
                fail(state, tv_block, "Invalid type argument in nominal type.")
             end
          end
+      elseif suffix and suffix.kind == "error_block" then
+         typ.resolved = new_type(state, suffix, "invalid")
       end
       if #typ.names == 0 then
          fail(state, block, "Nominal type ended up with no name parts.")
@@ -2428,7 +2432,9 @@ local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 th
 local errors = require("teal.errors")
 
 
+
 local block = { Block = {} }
+
 
 
 
@@ -3469,29 +3475,26 @@ do
       return typ
    end
 
-   function Context:find_type(names)
-      local typ = self:find_var_type(names[1], "use_type")
-      if not typ then
-         if #names == 1 and names[1] == "metatable" then
-            return self:find_type({ "_metatable" })
-         end
-         return nil
+   function Context:find_type(names, at)
+      local dots = self.collector and at and at.f == self.filename and at.qualifier_dots
+      local count = #names - 1
+      if dots and dots[#names] and at.resolved and at.resolved.typename == "invalid" then
+         count = #names
       end
-      for i = 2, #names do
-         typ = unwrap_for_find_type(typ)
-         if typ == nil then
+      local typ = self:find_var_type(names[1], "use_type")
+      if not typ and count == 0 and names[1] == "metatable" then
+         return self:find_type({ "_metatable" })
+      end
+      for i = 1, count do
+         local prefix = typ and unwrap_for_find_type(typ)
+         local receiver = prefix and prefix.fields and prefix or nil
+         local dot = dots and dots[i]
+         if dot then
+            self.collector.store_type_receiver(dot.y, dot.x, receiver)
+         elseif not receiver then
             return nil
          end
-
-         local fields = typ.fields and typ.fields
-         if not fields then
-            return nil
-         end
-
-         typ = fields[names[i]]
-         if typ == nil then
-            return nil
-         end
+         typ = receiver and receiver.fields[names[i + 1]]
       end
 
 
@@ -4012,7 +4015,7 @@ do
          return t.resolved
       end
 
-      local found = t.found or self:find_type(t.names)
+      local found = t.found or self:find_type(t.names, t)
       if not found then
          return self.errs:invalid_at(t, "unknown type %s", t)
       end
@@ -10326,15 +10329,13 @@ visit_node.cbs = {
          if node.op.op == "is" then
             if ra.typename == "typedecl" then
                self.errs:add(node, "can only use 'is' on variables, not types")
-            elseif node.e1.kind == "variable" then
-               if rb.typename == "union" then
-                  convert_is_of_union_to_or_of_is(self, node, ra, rb)
-               else
-                  self:check_metamethod(node, "__is", ra, resolve_typedecl(rb), ua, ub)
-                  self.fdb:set_is(node, node.e1.tk, ub)
-               end
-            else
+            elseif node.e1.kind ~= "variable" then
                self.errs:add(node, "can only use 'is' on variables")
+            elseif rb.typename == "union" then
+               convert_is_of_union_to_or_of_is(self, node, ra, rb)
+            elseif not (ub.typename == "invalid") then
+               self:check_metamethod(node, "__is", ra, resolve_typedecl(rb), ua, ub)
+               self.fdb:set_is(node, node.e1.tk, ub)
             end
             return a_type(node, "boolean", {})
          end
@@ -11138,7 +11139,12 @@ visit_type.cbs = {
             return typ
          end
 
-         local t, typearg = self:find_type(typ.names)
+         local resolved = typ.resolved
+         if resolved and resolved.typename == "invalid" then
+            if self.collector and typ.qualifier_dots then self:find_type(typ.names, typ) end
+            return resolved
+         end
+         local t, typearg = self:find_type(typ.names, typ)
          if t then
             local def = t.def
             if t.is_typeof_alias and def.typename == "nominal" then
@@ -20959,6 +20965,7 @@ local function clone_block_deep(b)
       tk = b.tk,
       yend = b.yend,
       xend = b.xend,
+      qualifier_dots = b.qualifier_dots,
    }
    for idx = 1, block.child_limit(b) do
       local child = b[idx]
@@ -22171,7 +22178,9 @@ local function read_anglebracket_list(ps, i, read_item)
 
       split_greater_token(ps, i)
    else
-      return fail(ps, i, "syntax error, expected '>'")
+      local next_i = fail(ps, i, "syntax error, expected '>'")
+
+      return next_i, ps.tokens[i].kind == "$EOF$" and #typelist > 0 and typelist or nil
    end
    return i, typelist
 end
@@ -22273,6 +22282,8 @@ local function read_simple_type_or_nominal(ps, i)
    end
 
    while ps.tokens[i].tk == "." do
+      typ.qualifier_dots = typ.qualifier_dots or {}
+      table.insert(typ.qualifier_dots, ps.tokens[i])
       i = i + 1
       if ps.tokens[i].kind == "identifier" then
          local nom = new_block(ps, i, "identifier")
@@ -22291,7 +22302,10 @@ local function read_simple_type_or_nominal(ps, i)
          table.insert(typ, nom)
          i = i + 0
       else
-         return fail(ps, i, "syntax error, expected identifier")
+         end_at(typ, ps.tokens[i - 1])
+         fail(ps, i, "syntax error, expected identifier")
+         table.insert(typ, new_block(ps, i - 1, "error_block"))
+         return i, typ
       end
    end
 
@@ -26128,6 +26142,9 @@ local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location =
 
 
 
+
+
+
 local TypeReport = type_reporter.TypeReport
 local TypeReporter = type_reporter.TypeReporter
 
@@ -26238,6 +26255,7 @@ function type_reporter.new()
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         type_receivers = {},
          table_positions = {},
          types = {},
          symbols_by_file = {},
@@ -26279,6 +26297,17 @@ function TypeReporter:store_function(ti, rt)
    ti.rets = mark_array(rets)
    ti.vararg = not not rt.args.is_va
    ti.varret = not not rt.rets.is_va
+end
+
+local function store_field(reporter, info, name, typ)
+   local id = reporter:get_typenum(typ)
+   info.fields[name] = id
+   if typ.typename == "typedecl" then
+      info.nested_types = info.nested_types or {}
+      info.nested_types[name] = id
+   elseif info.nested_types then
+      info.nested_types[name] = nil
+   end
 end
 
 function TypeReporter:get_typenum(t)
@@ -26346,12 +26375,10 @@ function TypeReporter:get_typenum(t)
 
    if rt.fields then
 
-      local r = {}
+      ti.fields = {}
       for _, k in ipairs(rt.field_order) do
-         local v = rt.fields[k]
-         r[k] = self:get_typenum(v)
+         store_field(self, ti, k, rt.fields[k])
       end
-      ti.fields = r
       local locations = {}
       for name, location in pairs(rt.field_locations or {}) do
          locations[name] = { file = location.f, y = location.y, x = location.x }
@@ -26399,7 +26426,7 @@ function TypeReporter:add_field(rtype, fname, ftype)
    local n = self:get_typenum(rtype)
    local ti = self.tr.types[n]
    assert(ti.fields)
-   ti.fields[fname] = self:get_typenum(ftype)
+   store_field(self, ti, fname, ftype)
 end
 
 function TypeReporter:set_ref(nom, resolved)
@@ -26418,6 +26445,8 @@ function TypeReporter:get_collector(filename)
    self.tr.by_pos[filename] = ft
    local receivers = {}
    self.tr.member_receivers[filename] = receivers
+   local type_receivers = {}
+   self.tr.type_receivers[filename] = type_receivers
    local table_positions = {}
    self.tr.table_positions[filename] = table_positions
    local expansions = {}
@@ -26446,6 +26475,11 @@ function TypeReporter:get_collector(filename)
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_type_receiver = function(y, x, typ)
+      type_receivers[y] = type_receivers[y] or {}
+      type_receivers[y][x] = typ and self:get_typenum(typ) or 0
    end
 
    collector.store_table_context = function(node, typ)
@@ -26618,7 +26652,7 @@ function TypeReporter:discard_unused_types()
    end
    for _, id in pairs(self.typename_to_num) do keep(id) end
    for _, id in pairs(tr.globals) do keep(id) end
-   for _, positions in ipairs({ tr.by_pos, tr.member_receivers }) do
+   for _, positions in ipairs({ tr.by_pos, tr.member_receivers, tr.type_receivers }) do
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end
@@ -26727,6 +26761,7 @@ local TL_DEBUG = tldebug.TL_DEBUG
 
 
 local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType = {}, BooleanType = {}, BooleanContextType = {}, TypeDeclType = {}, LiteralTableItemType = {}, NominalType = {}, TypeofType = {}, SelfType = {}, ArrayType = {}, RecordType = {}, InterfaceType = {}, InvalidType = {}, UnknownType = {}, TupleType = {}, UnresolvedTypeArgType = {}, UnresolvableTypeArgType = {}, TypeVarType = {}, MapType = {}, NilType = {}, EmptyTableType = {}, UnresolvedEmptyTableValueType = {}, FunctionType = {}, UnionType = {}, TupleTableType = {}, PolyType = {}, EnumType = {} }
+
 
 
 

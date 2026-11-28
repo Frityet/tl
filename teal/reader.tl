@@ -409,6 +409,7 @@ local function clone_block_deep(b: Block): Block
       tk = b.tk,
       yend = b.yend,
       xend = b.xend,
+      qualifier_dots = b.qualifier_dots,
    }
    for idx = 1, block.child_limit(b) do
       local child = b[idx]
@@ -1621,7 +1622,9 @@ local function read_anglebracket_list(ps: ReadState, i: integer, read_item: Read
       -- tokenizer hack: consume one bracket from '>>', don't increment i
       split_greater_token(ps, i)
    else
-      return fail(ps, i, "syntax error, expected '>'")
+      local next_i = fail(ps, i, "syntax error, expected '>'")
+      -- Keep the arguments already parsed when the editor buffer ends here.
+      return next_i, ps.tokens[i].kind == "$EOF$" and #typelist > 0 and typelist or nil
    end
    return i, typelist
 end
@@ -1723,6 +1726,8 @@ local function read_simple_type_or_nominal(ps: ReadState, i: integer): integer, 
    end
 
    while ps.tokens[i].tk == "." do
+      typ.qualifier_dots = typ.qualifier_dots or {}
+      table.insert(typ.qualifier_dots, ps.tokens[i])
       i = i + 1
       if ps.tokens[i].kind == "identifier" then
          local nom = new_block(ps, i, "identifier")
@@ -1741,7 +1746,10 @@ local function read_simple_type_or_nominal(ps: ReadState, i: integer): integer, 
          table.insert(typ, nom)
          i = i + 0
       else
-         return fail(ps, i, "syntax error, expected identifier")
+         end_at(typ, ps.tokens[i - 1])
+         fail(ps, i, "syntax error, expected identifier")
+         table.insert(typ, new_block(ps, i - 1, "error_block"))
+         return i, typ
       end
    end
 

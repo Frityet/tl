@@ -2121,7 +2121,7 @@ parse_simple_type_or_nominal = function(state, block)
    local tk = block.tk
    local st = simple_types[tk]
    local rest = block[BLOCK_INDEXES.NOMINAL_TYPE.NAME + 1]
-   if st and not (rest and rest.kind == "identifier") then
+   if st and not (block.qualifier_dots or (rest and rest.kind == "identifier")) then
       return new_type(state, block, tk)
    elseif tk == "table" and block.kind ~= "nominal_type" then
       local typ = new_type(state, block, "map")
@@ -2138,6 +2138,7 @@ parse_simple_type_or_nominal = function(state, block)
 
       local typ = new_nominal(state, block)
       typ.names = {}
+      typ.qualifier_dots = block.qualifier_dots
       local current_block_idx = 1
 
       if block[current_block_idx] and block[current_block_idx].kind == "identifier" then
@@ -2165,9 +2166,10 @@ parse_simple_type_or_nominal = function(state, block)
       end
 
 
-      if block[current_block_idx] and block[current_block_idx].kind == "type_list" then
+      local suffix = block[current_block_idx]
+      if suffix and suffix.kind == "type_list" then
          typ.typevals = {}
-         for _, tv_block in ipairs(block[current_block_idx]) do
+         for _, tv_block in ipairs(suffix) do
             local parsed_tv = parse_type(state, tv_block)
             if parsed_tv then
                table.insert(typ.typevals, parsed_tv)
@@ -2175,6 +2177,8 @@ parse_simple_type_or_nominal = function(state, block)
                fail(state, tv_block, "Invalid type argument in nominal type.")
             end
          end
+      elseif suffix and suffix.kind == "error_block" then
+         typ.resolved = new_type(state, suffix, "invalid")
       end
       if #typ.names == 0 then
          fail(state, block, "Nominal type ended up with no name parts.")

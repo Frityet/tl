@@ -41,6 +41,7 @@ local record type_reporter
 
       store_type: function(y: integer, x: integer, typ: Type)
       store_member_receiver: function(y: integer, x: integer, typ: Type)
+      store_type_receiver: function(y: integer, x: integer, typ?: RecordLikeType)
       store_table_context: function(node: Node, typ: RecordLikeType)
       store_macro_expansion: function(y: integer, x: integer, expansion: string)
       reserve_symbol_list_slot: function(Node)
@@ -65,6 +66,7 @@ local record type_reporter
       ref: integer -- NOMINAL
       typeargs: {{string, integer}} -- FUNCTION, RECORD (optional)
       fields: {string: integer} -- RECORD
+      nested_types: {string: integer} -- RECORD (optional, a subset of fields)
       field_locations: {string: Location} -- RECORD
       meta_fields: {string: integer} -- RECORD (optional)
       meta_field_locations: {string: Location} -- RECORD (optional)
@@ -94,6 +96,7 @@ local record type_reporter
 
       by_pos: {string: {integer: {integer: integer}}}
       member_receivers: {string: {integer: {integer: integer}}}
+      type_receivers: {string: {integer: {integer: integer}}} -- by qualifier dot, 0 for unknown namespaces
       table_positions: {string: {integer: {integer: TablePosition}}}
       types: {integer: TypeInfo}
       symbols: {Symbol}
@@ -224,6 +227,7 @@ function type_reporter.new(): TypeReporter
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         type_receivers = {},
          table_positions = {},
          types = {},
          symbols_by_file = {},
@@ -265,6 +269,17 @@ function TypeReporter:store_function(ti: TypeInfo, rt: FunctionType)
    ti.rets = mark_array(rets)
    ti.vararg = not not rt.args.is_va
    ti.varret = not not rt.rets.is_va
+end
+
+local function store_field(reporter: TypeReporter, info: TypeInfo, name: string, typ: Type)
+   local id = reporter:get_typenum(typ)
+   info.fields[name] = id
+   if typ is TypeDeclType then
+      info.nested_types = info.nested_types or {}
+      info.nested_types[name] = id
+   elseif info.nested_types then
+      info.nested_types[name] = nil
+   end
 end
 
 function TypeReporter:get_typenum(t: Type): integer
@@ -332,12 +347,10 @@ function TypeReporter:get_typenum(t: Type): integer
 
    if rt is RecordLikeType then
       -- store record field info
-      local r = {}
+      ti.fields = {}
       for _, k in ipairs(rt.field_order) do
-         local v = rt.fields[k]
-         r[k] = self:get_typenum(v)
+         store_field(self, ti, k, rt.fields[k])
       end
-      ti.fields = r
       local locations: {string:TypeInfo.Location} = {}
       for name, location in pairs(rt.field_locations or {}) do
          locations[name] = { file = location.f, y = location.y, x = location.x }
@@ -385,7 +398,7 @@ function TypeReporter:add_field(rtype: RecordLikeType, fname: string, ftype: Typ
    local n = self:get_typenum(rtype)
    local ti = self.tr.types[n]
    assert(ti.fields)
-   ti.fields[fname] = self:get_typenum(ftype)
+   store_field(self, ti, fname, ftype)
 end
 
 function TypeReporter:set_ref(nom: NominalType, resolved: Type)
@@ -404,6 +417,8 @@ function TypeReporter:get_collector(filename: string): TypeCollector
    self.tr.by_pos[filename] = ft
    local receivers: {integer:{integer:integer}} = {}
    self.tr.member_receivers[filename] = receivers
+   local type_receivers: {integer:{integer:integer}} = {}
+   self.tr.type_receivers[filename] = type_receivers
    local table_positions: {integer:{integer:type_reporter.TablePosition}} = {}
    self.tr.table_positions[filename] = table_positions
    local expansions: {integer:{integer:string}} = {}
@@ -432,6 +447,11 @@ function TypeReporter:get_collector(filename: string): TypeCollector
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_type_receiver = function(y: integer, x: integer, typ?: RecordLikeType)
+      type_receivers[y] = type_receivers[y] or {}
+      type_receivers[y][x] = typ and self:get_typenum(typ) or 0
    end
 
    collector.store_table_context = function(node: Node, typ: RecordLikeType)
@@ -604,7 +624,7 @@ function TypeReporter:discard_unused_types()
    end
    for _, id in pairs(self.typename_to_num) do keep(id) end
    for _, id in pairs(tr.globals) do keep(id) end
-   for _, positions in ipairs({tr.by_pos, tr.member_receivers}) do
+   for _, positions in ipairs({tr.by_pos, tr.member_receivers, tr.type_receivers}) do
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end

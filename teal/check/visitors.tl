@@ -2421,15 +2421,13 @@ visit_node.cbs = {
          if node.op.op == "is" then
             if ra is TypeDeclType then
                self.errs:add(node, "can only use 'is' on variables, not types")
-            elseif node.e1.kind == "variable" then
-               if rb is UnionType then
-                  convert_is_of_union_to_or_of_is(self, node, ra, rb)
-               else
-                  self:check_metamethod(node, "__is", ra, resolve_typedecl(rb), ua, ub)
-                  self.fdb:set_is(node, node.e1.tk, ub)
-               end
-            else
+            elseif node.e1.kind ~= "variable" then
                self.errs:add(node, "can only use 'is' on variables")
+            elseif rb is UnionType then
+               convert_is_of_union_to_or_of_is(self, node, ra, rb)
+            elseif not (ub is InvalidType) then
+               self:check_metamethod(node, "__is", ra, resolve_typedecl(rb), ua, ub)
+               self.fdb:set_is(node, node.e1.tk, ub)
             end
             return a_type(node, "boolean", {})
          end
@@ -3233,7 +3231,12 @@ visit_type.cbs = {
             return typ
          end
 
-         local t, typearg = self:find_type(typ.names)
+         local resolved = typ.resolved
+         if resolved and resolved is InvalidType then
+            if self.collector and typ.qualifier_dots then self:find_type(typ.names, typ) end
+            return resolved
+         end
+         local t, typearg = self:find_type(typ.names, typ)
          if t then
             local def = t.def
            if t.is_typeof_alias and def is NominalType then

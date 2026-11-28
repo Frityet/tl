@@ -114,6 +114,9 @@ local type_reporter = { TypeCollector = { Symbol = {} }, TypeInfo = { Location =
 
 
 
+
+
+
 local TypeReport = type_reporter.TypeReport
 local TypeReporter = type_reporter.TypeReporter
 
@@ -224,6 +227,7 @@ function type_reporter.new()
       tr = setmetatable({
          by_pos = {},
          member_receivers = {},
+         type_receivers = {},
          table_positions = {},
          types = {},
          symbols_by_file = {},
@@ -265,6 +269,17 @@ function TypeReporter:store_function(ti, rt)
    ti.rets = mark_array(rets)
    ti.vararg = not not rt.args.is_va
    ti.varret = not not rt.rets.is_va
+end
+
+local function store_field(reporter, info, name, typ)
+   local id = reporter:get_typenum(typ)
+   info.fields[name] = id
+   if typ.typename == "typedecl" then
+      info.nested_types = info.nested_types or {}
+      info.nested_types[name] = id
+   elseif info.nested_types then
+      info.nested_types[name] = nil
+   end
 end
 
 function TypeReporter:get_typenum(t)
@@ -332,12 +347,10 @@ function TypeReporter:get_typenum(t)
 
    if rt.fields then
 
-      local r = {}
+      ti.fields = {}
       for _, k in ipairs(rt.field_order) do
-         local v = rt.fields[k]
-         r[k] = self:get_typenum(v)
+         store_field(self, ti, k, rt.fields[k])
       end
-      ti.fields = r
       local locations = {}
       for name, location in pairs(rt.field_locations or {}) do
          locations[name] = { file = location.f, y = location.y, x = location.x }
@@ -385,7 +398,7 @@ function TypeReporter:add_field(rtype, fname, ftype)
    local n = self:get_typenum(rtype)
    local ti = self.tr.types[n]
    assert(ti.fields)
-   ti.fields[fname] = self:get_typenum(ftype)
+   store_field(self, ti, fname, ftype)
 end
 
 function TypeReporter:set_ref(nom, resolved)
@@ -404,6 +417,8 @@ function TypeReporter:get_collector(filename)
    self.tr.by_pos[filename] = ft
    local receivers = {}
    self.tr.member_receivers[filename] = receivers
+   local type_receivers = {}
+   self.tr.type_receivers[filename] = type_receivers
    local table_positions = {}
    self.tr.table_positions[filename] = table_positions
    local expansions = {}
@@ -432,6 +447,11 @@ function TypeReporter:get_collector(filename)
       if skip_types[typ.typename] then return end
       receivers[y] = receivers[y] or {}
       receivers[y][x] = self:get_typenum(typ)
+   end
+
+   collector.store_type_receiver = function(y, x, typ)
+      type_receivers[y] = type_receivers[y] or {}
+      type_receivers[y][x] = typ and self:get_typenum(typ) or 0
    end
 
    collector.store_table_context = function(node, typ)
@@ -604,7 +624,7 @@ function TypeReporter:discard_unused_types()
    end
    for _, id in pairs(self.typename_to_num) do keep(id) end
    for _, id in pairs(tr.globals) do keep(id) end
-   for _, positions in ipairs({ tr.by_pos, tr.member_receivers }) do
+   for _, positions in ipairs({ tr.by_pos, tr.member_receivers, tr.type_receivers }) do
       for _, lines in pairs(positions) do
          for _, row in pairs(lines) do
             for _, id in pairs(row) do keep(id) end

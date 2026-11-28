@@ -156,6 +156,7 @@ local record types
       where self.typename == "nominal"
 
       names: {string}
+      qualifier_dots: {lexer.Token}
       typevals: {FirstClassType}
       found: TypeDeclType      -- type is found but typeargs are not resolved
       resolved: Type           -- type is found and typeargs are resolved

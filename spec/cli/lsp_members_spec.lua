@@ -17,17 +17,29 @@ describe('LSP member completion', function()
       return API
    ]]
 
-   local function completions(source)
-      local dir = util.write_tmp_dir(finally, {['completion_fixture.d.tl'] = module_source})
+   local types_source = [[
+      local record Types
+         record Options end
+         value: string
+      end
+      return Types
+   ]]
+
+   local function completions(before_cursor, after_cursor)
+      local dir = util.write_tmp_dir(finally, {
+         ['completion_fixture.d.tl'] = module_source,
+         ['completion_types.d.tl'] = types_source,
+      })
       return util.do_in(dir, function()
-         local document = lsp.document(finally, 'local record Noise unrelated: string end\n' .. source)
-         local lines = {}
-         for line in document.text:gmatch('[^\n]+') do lines[#lines + 1] = line end
+         local prefix = 'local record Noise unrelated: string end\n' .. before_cursor
+         local document = lsp.document(finally, prefix .. (after_cursor or ''))
+         local _, line = prefix:gsub('\n', '\n')
+         local character = #prefix:match('[^\n]*$')
          local responses = lsp.exchange(finally, {
             {jsonrpc = '2.0', id = 1, method = 'initialize', params = {}},
             {jsonrpc = '2.0', method = 'textDocument/didOpen', params = {textDocument = document}},
             {jsonrpc = '2.0', id = 2, method = 'textDocument/completion', params = {
-               textDocument = {uri = document.uri}, position = {line = #lines - 1, character = #lines[#lines]}}},
+               textDocument = {uri = document.uri}, position = {line = line, character = character}}},
             {jsonrpc = '2.0', id = 3, method = 'shutdown', params = {}},
             {jsonrpc = '2.0', method = 'exit', params = {}},
          })
@@ -61,6 +73,47 @@ describe('LSP member completion', function()
 
    it('does not guess unrelated record fields for an unknown receiver', function()
       assert.same({}, completions('local value: any = {}\nlocal result = value.'))
+   end)
+
+   it('completes reflection types in an unfinished is expression', function()
+      local labels = completions('local ty = typeof!(42)\nif ty is reflection.')
+      local found = {}
+      for _, label in ipairs(labels) do found[label] = true end
+      assert.is_true(found['ArrayType'])
+      assert.is_true(found['RecordType'])
+      assert.is_true(found['Type'])
+   end)
+
+   it('completes the namespace while typing a qualified type name', function()
+      local prefix = 'local ty = typeof!(42)\nif ty is reflection.'
+      local expected = completions(prefix)
+      assert.same(expected, completions(prefix .. 'Ar', ' then end'))
+      assert.same(expected, completions(prefix .. 'ArrayType', ' then end'))
+   end)
+
+   it('completes types in a nested namespace using the current scope', function()
+      assert.same({'Counter', 'Object'}, completions([[
+         local record reflection
+            record Nested
+               field: string
+               record Object end
+               type Counter = integer
+            end
+         end
+         local value: reflection.Nested.]], ' = nil'))
+   end)
+
+   it('completes types from an imported namespace', function()
+      assert.same({'Options'}, completions([[
+         local Types = require("completion_types")
+         local options: Types.]]))
+   end)
+
+   it('completes qualified types in an unfinished generic argument list', function()
+      assert.same({'Options'}, completions([[
+         local Types = require("completion_types")
+         local record Box<T> value: T end
+         local options: Box<Types.]]))
    end)
 
    it('resolves types introduced by statement operator expansions', function()
