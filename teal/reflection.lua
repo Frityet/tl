@@ -86,6 +86,30 @@ local primitive_kinds = {
    ["userdata"] = "userdata", ["emptytable"] = "table",
 }
 
+local function describe_leaf(t)
+   local kind = primitive_kinds[t.typename] or "unknown"
+   local info = { kind = kind, text = kind == "table" and "{}" or kind }
+   local literal
+   if t.typename == "string" then
+      (info).literal = t.literal
+      literal = t.literal
+   elseif t.typename == "boolean" then
+      (info).literal = t.literal
+      literal = t.literal
+   elseif t.typename == "integer" then
+      (info).literal = t.literal
+      literal = t.literal
+   elseif t.typename == "number" then
+      (info).literal = t.literal
+      literal = t.literal
+   end
+
+   if literal == nil then return info, kind end
+   info.text = type(literal) == "string" and quote(literal) or tostring(literal)
+   local key = type(literal) == "number" and number_text(literal) or info.text
+   return info, identity(kind, { key })
+end
+
 function type_reflection.describe(root, resolve)
    local keys = {}
    local active = {}
@@ -150,8 +174,10 @@ function type_reflection.describe(root, resolve)
       (argument_keys and identity(declaration, argument_keys) or declaration)
       local named_text = name and (argument_texts and name .. "<" .. table.concat(argument_texts, ", ") .. ">" or name)
       if active[t] or (declaration and active_declarations[declaration]) then
-         return remember({ kind = "reference", name = name, text = named_text or t.typename, type_arguments = arguments },
-         named_key or identity("reference", { t.typename }))
+         local link = {
+            kind = "reference", name = name, text = named_text or t.typename, type_arguments = arguments,
+         }
+         return remember(link, named_key or identity("reference", { t.typename }))
       end
       if named_key and named_types[named_key] then
          seen[original] = named_types[named_key]
@@ -160,71 +186,80 @@ function type_reflection.describe(root, resolve)
 
       active[t] = true
       if declaration then active_declarations[declaration] = true end
-      local info = { name = name, type_arguments = arguments }
+      local info
       local key = named_key
       if t.fields then
-         local field_key, field_text
-         info.kind = t.typename == "interface" and "interface" or "record"
 
-         info.fields, field_key, field_text = fields(t.fields, false)
+         local field_types, field_key, field_text = fields(t.fields, false)
+         local kind = t.typename == "interface" and "interface" or "record"
+         local record_info = {
+            kind = kind, name = name, text = named_text or kind .. " {" .. field_text .. "}",
+            fields = field_types, userdata = t.is_userdata or nil,
+         }
          local meta_key = ""
-         if t.meta_fields then info.metamethods, meta_key = fields(t.meta_fields, true) end
-         if t.interface_list then info.interfaces = list(t.interface_list) end
-         if t.elements then info.element = visit(t.elements) end
+         if t.meta_fields then record_info.metamethods, meta_key = fields(t.meta_fields, true) end
+         if t.interface_list then record_info.interfaces = list(t.interface_list) end
+         if t.elements then record_info.element = visit(t.elements) end
          local item_keys
-         if t.types then info.items, item_keys = list(t.types) end
-         info.userdata = t.is_userdata or nil
-         info.text = named_text or info.kind .. " {" .. field_text .. "}"
-         key = key or identity(info.kind, {
-            field_key, meta_key, info.element and keys[info.element] or "",
-            item_keys and identity("items", item_keys) or "", tostring(info.userdata),
+         if t.types then record_info.items, item_keys = list(t.types) end
+         info = record_info
+         key = key or identity(kind, {
+            field_key, meta_key, record_info.element and keys[record_info.element] or "",
+            item_keys and identity("items", item_keys) or "", tostring(record_info.userdata),
          })
       elseif t.typename == "enum" then
-         info.kind = "enum"
-         info.values = sorted_keys(t.enumset)
-         info.text = named_text or "enum"
-         key = key or identity(info.kind, info.values)
+         local enum_info = {
+            kind = "enum", name = name, text = named_text or "enum", values = sorted_keys(t.enumset),
+         }
+         info = enum_info
+         key = key or identity(info.kind, enum_info.values)
       elseif t.typename == "array" then
-         info.kind = "array"
-         info.element = visit(t.elements)
-         info.text = "{" .. info.element.text .. "}"
-         key = identity(info.kind, { keys[info.element] })
+         local element = visit(t.elements)
+         local array_info = { kind = "array", text = "{" .. element.text .. "}", element = element }
+         info = array_info
+         key = identity(info.kind, { keys[element] })
       elseif t.typename == "map" then
-         info.kind = "map"
-         info.key = visit(t.keys)
-         info.value = visit(t.values)
-         info.text = "{" .. info.key.text .. ": " .. info.value.text .. "}"
-         key = identity(info.kind, { keys[info.key], keys[info.value] })
+         local key_type, value_type = visit(t.keys), visit(t.values)
+         local map_info = {
+            kind = "map", text = "{" .. key_type.text .. ": " .. value_type.text .. "}", key = key_type, value = value_type,
+         }
+         info = map_info
+         key = identity(info.kind, { keys[key_type], keys[value_type] })
       elseif t.typename == "union" or t.typename == "poly" or t.typename == "tupletable" then
          local members, ids, texts = list((t).types)
          if t.typename == "tupletable" then
-            info.kind, info.items = "tuple", members
-            info.text = "{" .. table.concat(texts, ", ") .. "}"
+            local tuple_info = { kind = "tuple", text = "{" .. table.concat(texts, ", ") .. "}", items = members }
+            info = tuple_info
+         elseif t.typename == "union" then
+            local union_info = { kind = "union", text = table.concat(texts, " | "), alternatives = members }
+            info = union_info
+            table.sort(ids)
          else
-            info.kind = t.typename == "union" and "union" or "overload"
-            info.alternatives = members
-            info.text = table.concat(texts, t.typename == "union" and " | " or " & ")
-            if t.typename == "union" then table.sort(ids) end
+            local overload_info = {
+               kind = "overload", text = table.concat(texts, " & "), alternatives = members,
+            }
+            info = overload_info
          end
          key = identity(info.kind, ids)
       elseif t.typename == "function" then
-         info.kind = "function"
          local parameters, parameter_keys, parameter_texts = list(t.args.tuple)
          local returns, return_keys, return_texts = list(t.rets.tuple)
          for i = t.min_arity + 1, #parameter_texts do
             if i ~= #parameter_texts or not t.args.is_va then parameter_texts[i] = "?" .. parameter_texts[i] end
          end
-         info.parameters, info.returns = parameters, returns
-         info.required_parameters = t.min_arity
-         info.variadic_parameters, info.variadic_returns = t.args.is_va or false, t.rets.is_va or false
-         info.method = t.is_method or nil
-         info.text = "function(" .. table.concat(parameter_texts, ", ") .. (t.args.is_va and "..." or "") .. ")"
+         local text = "function(" .. table.concat(parameter_texts, ", ") .. (t.args.is_va and "..." or "") .. ")"
          if #return_texts > 0 then
-            info.text = info.text .. ": (" .. table.concat(return_texts, ", ") .. (t.rets.is_va and "..." or "") .. ")"
+            text = text .. ": (" .. table.concat(return_texts, ", ") .. (t.rets.is_va and "..." or "") .. ")"
          end
+         local fn = {
+            kind = "function", text = text, parameters = parameters, returns = returns,
+            required_parameters = t.min_arity, variadic_parameters = t.args.is_va or false,
+            variadic_returns = t.rets.is_va or false, method = t.is_method or nil,
+         }
+         info = fn
          key = identity(info.kind, {
             identity("parameters", parameter_keys), identity("returns", return_keys),
-            tostring(info.required_parameters), tostring(info.variadic_parameters), tostring(info.variadic_returns),
+            tostring(fn.required_parameters), tostring(fn.variadic_parameters), tostring(fn.variadic_returns),
          })
       elseif t.typename == "generic" then
          generic_level = generic_level + 1
@@ -249,31 +284,23 @@ function type_reflection.describe(root, resolve)
          key = identity("generic", { identity("parameters", parameter_keys), keys[body] })
       elseif t.typename == "typevar" or t.typename == "typearg" then
          local parameter = t.typename == "typevar" and t.typevar or (t).typearg
-         info.kind = "type_parameter"
-         info.name = parameter:gsub("@.*", "")
-         info.constraint = t.constraint and visit(t.constraint)
-         info.text = info.name
-         if info.constraint and t.typename == "typearg" then
-            info.text = info.text .. " is " .. info.constraint.text
+         local parameter_name = parameter:gsub("@.*", "")
+         local constraint = t.constraint and visit(t.constraint)
+         local text = parameter_name
+         if constraint and t.typename == "typearg" then
+            text = text .. " is " .. constraint.text
          end
-         key = identity(info.kind, { bindings[parameter] or info.name, info.constraint and keys[info.constraint] or "" })
+         local parameter_info = { kind = "type_parameter", name = parameter_name, text = text, constraint = constraint }
+         info = parameter_info
+         key = identity(info.kind, { bindings[parameter] or parameter_name, constraint and keys[constraint] or "" })
       else
-         info.kind = primitive_kinds[t.typename] or "unknown"
-         info.text = info.kind == "table" and "{}" or info.kind
-         if t.typename == "string" then
-            info.literal = t.literal
-         elseif t.typename == "number" or t.typename == "integer" or t.typename == "boolean" then
-            info.literal = (t).literal
+         info, key = describe_leaf(t)
+         if not arguments then
+            info = leaves[key] or info
+            leaves[key] = info
          end
-         if info.literal ~= nil then
-            local literal = info.literal
-            info.text = type(literal) == "string" and quote(literal) or tostring(literal)
-            key = identity(info.kind, { type(literal) == "number" and number_text(literal) or info.text })
-         end
-         key = key or info.kind
-         info = leaves[key] or info
-         leaves[key] = info
       end
+      if arguments then info.type_arguments = arguments end
       active[t] = nil
       if declaration then active_declarations[declaration] = nil end
       seen[original] = info

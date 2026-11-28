@@ -19,13 +19,55 @@ describe("typeof", function()
          local b: typeof!(a) = 20
          local c: typeof!(a + b) = 30
          local map: {typeof!(a): string} = { [a] = "ten" }
-         local info: reflection.TypeInfo = typeof!(b)
+         local info: reflection.Type = typeof!(b)
          local kind: reflection.Kind = info.kind
          return typeof!(a) == info and info == typeof!(c) and typeof!(map).kind == "map", tostring(info), kind
       ]])
       assert.is_true(equal)
       assert.equals("integer", text)
       assert.equals("integer", kind)
+   end)
+
+   it("narrows descriptions to records with kind-specific fields", function()
+      local array, map, boolean, generic, different = run([[
+         local function describe(info: reflection.Type): string
+            if info is reflection.ArrayType then
+               local kind: "array" = info.kind
+               return kind .. " " .. info.element.text
+            elseif info is reflection.MapType then
+               return info.key.text .. " to " .. info.value.text
+            elseif info is reflection.BooleanType then
+               local literal: boolean? = info.literal
+               return tostring(literal)
+            elseif info is reflection.FunctionType then
+               local parameters = info.type_parameters
+               if parameters then
+                  return parameters[1].name .. " to " .. info.returns[1].text
+               end
+            end
+            return info.text
+         end
+
+         local function identity<T>(x: T): T return x end
+         local array: {integer} = {1, 2}
+         local map: {string: boolean} = {ready = true}
+         return describe(typeof!(array)), describe(typeof!(map)), describe(typeof!(false)),
+                describe(typeof!(identity)), typeof!(array) ~= typeof!(map)
+      ]])
+      assert.equals("array integer", array)
+      assert.equals("string to boolean", map)
+      assert.equals("false", boolean)
+      assert.equals("T to T", generic)
+      assert.is_true(different)
+   end)
+
+   it("requires narrowing to read fields specific to a kind", function()
+      local _, errors = teal.compiler():input([[
+         local data: {integer} = {1}
+         local info: reflection.Type = typeof!(data)
+         return info.element
+      ]], "requires-narrowing.tl"):check()
+      assert.matches("key 'element'", errors.type_errors[1].msg, 1, true)
    end)
 
    it("checks the operand without running it and uses its first result", function()
@@ -84,7 +126,7 @@ describe("typeof", function()
          local function identity<T>(value: T): typeof!(value)
             return value
          end
-         local function inspect(a: integer | string, b: string | integer, state: State): (reflection.TypeInfo, boolean, reflection.TypeInfo)
+         local function inspect(a: integer | string, b: string | integer, state: State): (reflection.Type, boolean, reflection.Type)
             return typeof!(a), typeof!(a) == typeof!(b), typeof!(state)
          end
          return typeof!(identity), inspect(1, 2, "ready")

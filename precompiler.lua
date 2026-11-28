@@ -225,7 +225,7 @@ do
 
    recurse = function(ps, tbl)
       if ps.table_map[tbl] then
-         return "T" .. tostring(ps.table_map[tbl])
+         return "T[" .. tostring(ps.table_map[tbl]) .. "]"
       end
 
       if ps.table_rc[tbl] == 1 then
@@ -236,15 +236,11 @@ do
 
       ps.table_ctr = ps.table_ctr + 1
       local n = ps.table_ctr
-      local name = "T" .. tostring(n)
+      local name = "T[" .. tostring(n) .. "]"
       ps.table_map[tbl] = n
 
-      local inits = {}
-      local any_subtable = false
-      put(inits, "local ")
-      put(inits, name)
-      put(inits, " = ")
-      any_subtable = print_table_to(inits, tbl, ps, false)
+      local inits = { name, " = " }
+      local any_subtable = print_table_to(inits, tbl, ps, false)
       put(inits, "\n")
       ps.table_inits[n] = inits
 
@@ -318,6 +314,8 @@ do
       end
       flush_vars_vals(out, vars, vals, top)
 
+
+      table.insert(out, "local T = {}\n")
       for _, cs in ipairs(ps.table_inits) do
          for _, c in ipairs(cs) do
             table.insert(out, c)

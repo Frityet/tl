@@ -2229,8 +2229,8 @@ visit_node.cbs = {
             return self:resolve_nominal(n)
          end)
          local namespace = self.env.globals["reflection"].t
-         local result = (namespace.def).fields["TypeInfo"]
-         return a_type(node, "nominal", { names = { "reflection", "TypeInfo" }, found = result, resolved = result.def })
+         local result = (namespace.def).fields["Type"]
+         return a_type(node, "nominal", { names = { "reflection", "Type" }, found = result, resolved = result.def })
       end,
    },
    ["op"] = {

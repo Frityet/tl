@@ -63,32 +63,128 @@ global record reflection
       "overload" "union" "type_parameter" "reference"
    end
 
-   record TypeInfo
+   interface Type where self.kind
       kind: Kind
       text: string
-      name: string?
-      literal: (string | number | boolean)?
-      element: TypeInfo?
-      key: TypeInfo?
-      value: TypeInfo?
-      items: {TypeInfo}?
-      fields: {string: TypeInfo}?
-      metamethods: {string: TypeInfo}?
-      interfaces: {TypeInfo}?
-      userdata: boolean?
-      values: {string}?
-      alternatives: {TypeInfo}?
-      parameters: {TypeInfo}?
-      returns: {TypeInfo}?
-      required_parameters: integer?
-      variadic_parameters: boolean?
-      variadic_returns: boolean?
-      method: boolean?
-      type_arguments: {TypeInfo}?
-      type_parameters: {TypeInfo}?
-      constraint: TypeInfo?
+      type_arguments: {Type}?
+      type_parameters: {TypeParameter}?
 
-      metamethod __eq: function(TypeInfo, TypeInfo): boolean
-      metamethod __tostring: function(TypeInfo): string
+      metamethod __eq: function(Type, Type): boolean
+      metamethod __tostring: function(Type): string
+   end
+
+   record AnyType is Type where self.kind == "any"
+      kind: "any"
+   end
+
+   record UnknownType is Type where self.kind == "unknown"
+      kind: "unknown"
+   end
+
+   record NilType is Type where self.kind == "nil"
+      kind: "nil"
+   end
+
+   record BooleanType is Type where self.kind == "boolean"
+      kind: "boolean"
+      literal: boolean?
+   end
+
+   record IntegerType is Type where self.kind == "integer"
+      kind: "integer"
+      literal: integer?
+   end
+
+   record NumberType is Type where self.kind == "number"
+      kind: "number"
+      literal: number?
+   end
+
+   record StringType is Type where self.kind == "string"
+      kind: "string"
+      literal: string?
+   end
+
+   record ThreadType is Type where self.kind == "thread"
+      kind: "thread"
+   end
+
+   record UserdataType is Type where self.kind == "userdata"
+      kind: "userdata"
+   end
+
+   record TableType is Type where self.kind == "table"
+      kind: "table"
+   end
+
+   record ArrayType is Type where self.kind == "array"
+      kind: "array"
+      element: Type
+   end
+
+   record MapType is Type where self.kind == "map"
+      kind: "map"
+      key: Type
+      value: Type
+   end
+
+   record TupleType is Type where self.kind == "tuple"
+      kind: "tuple"
+      items: {Type}
+   end
+
+   interface RecordLikeType is Type where self.fields
+      name: string?
+      fields: {string: Type}
+      metamethods: {string: Type}?
+      interfaces: {Type}?
+      userdata: boolean?
+      element: Type?
+      items: {Type}?
+   end
+
+   record RecordType is RecordLikeType where self.kind == "record"
+      kind: "record"
+   end
+
+   record InterfaceType is RecordLikeType where self.kind == "interface"
+      kind: "interface"
+   end
+
+   record EnumType is Type where self.kind == "enum"
+      kind: "enum"
+      name: string?
+      values: {string}
+   end
+
+   record FunctionType is Type where self.kind == "function"
+      kind: "function"
+      parameters: {Type}
+      returns: {Type}
+      required_parameters: integer
+      variadic_parameters: boolean
+      variadic_returns: boolean
+      method: boolean?
+   end
+
+   record OverloadType is Type where self.kind == "overload"
+      kind: "overload"
+      alternatives: {FunctionType}
+   end
+
+   record UnionType is Type where self.kind == "union"
+      kind: "union"
+      alternatives: {Type}
+   end
+
+   record TypeParameter is Type where self.kind == "type_parameter"
+      kind: "type_parameter"
+      name: string
+      constraint: Type?
+   end
+
+   record ReferenceType is Type where self.kind == "reference"
+      kind: "reference"
+      name: string?
    end
 end
