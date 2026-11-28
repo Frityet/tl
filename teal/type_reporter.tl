@@ -195,6 +195,7 @@ local typename_to_typecode <total>: {TypeName:integer} = {
    ["invalid"] = typecodes.INVALID,
    -- types that should be skipped or not present:
    ["none"] = typecodes.UNKNOWN,
+   ["typeof"] = typecodes.UNKNOWN,
    ["tuple"] = typecodes.UNKNOWN,
    ["literal_table_item"] = typecodes.UNKNOWN,
    ["typedecl"] = typecodes.UNKNOWN,

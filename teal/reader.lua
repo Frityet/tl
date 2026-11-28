@@ -122,7 +122,7 @@ function reader.node_is_funcall(node)
    if node.kind == "paren" and node[BLOCK_INDEXES.PAREN.EXP] then
       return reader.node_is_funcall(node[BLOCK_INDEXES.PAREN.EXP])
    end
-   return node.kind == "op_funcall" or node.kind == "macro_invocation"
+   return node.kind == "op_funcall" or node.kind == "macro_invocation" or node.kind == "typeof_expression"
 end
 
 local function starts_with(str, prefix)
@@ -256,6 +256,7 @@ local read_type_list
 local read_typeargs_if_any
 local read_expression
 local read_prefix_expression
+local read_typeof_operand
 local read_short_function
 local read_argument
 local read_expression_and_tk
@@ -1753,9 +1754,44 @@ local function read_simple_type_or_nominal(ps, i)
    return i, typ
 end
 
+local function read_typeof_macro_operand(ps, start)
+   local token = ps.tokens[start]
+   local i = start + 2
+   if ps.tokens[i].tk ~= "(" then
+      return fail(ps, i, "Put the typeof! operand in parentheses.")
+   end
+   local previous_errors = #ps.errs
+   local args
+   i, args = read_bracket_list(ps, i, {}, "(", ")", "sep", read_nested_expression)
+   if forbidden_macro_invocation(ps, token.y, token.x) or #ps.errs ~= previous_errors then return i end
+   if #args ~= 1 then
+      fail(ps, start, "Give typeof! one operand.")
+      return i
+   end
+   return i, args[1]
+end
+
 local function read_base_type(ps, i)
    local tk = ps.tokens[i].tk
-   if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and ps.tokens[i].tk == "$") then
+   if tk == "typeof" and ps.read_lang ~= "lua" then
+      local next_token = ps.tokens[i + 1]
+      local macro = next_token.tk == "!"
+      if macro or (next_token.y == ps.tokens[i].y and (next_token.kind == "identifier" or
+         next_token.tk == "..." or (ps.allow_macro_vars and next_token.tk == "$"))) then
+         local typ = new_type(ps, i, "typeof_type")
+         local exp
+         if macro then
+            i, exp = read_typeof_macro_operand(ps, i)
+         else
+            i, exp = read_typeof_operand(ps, i + 1)
+         end
+         if not exp then return i end
+         typ[BLOCK_INDEXES.TYPEOF_TYPE.EXP] = exp
+         end_at(typ, ps.tokens[i - 1])
+         return i, typ
+      end
+   end
+   if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and tk == "$") then
       return read_simple_type_or_nominal(ps, i)
    elseif ps.tokens[i].kind == "string" then
       local node = new_block(ps, i, "string")
@@ -2345,7 +2381,8 @@ do
       prevnode.kind == "op_dot" or
       prevnode.kind == "op_colon" or
       prevnode.kind == "identifier" or
-      prevnode.kind == "macro_invocation"
+      prevnode.kind == "macro_invocation" or
+      prevnode.kind == "typeof_expression"
    end
 
 
@@ -2355,7 +2392,7 @@ do
       return paren
    end
 
-   local function P(ps, i)
+   local function P(ps, i, type_operand)
       local t1 = ps.tokens[i]
       if t1.kind == "$EOF$" then
          return i
@@ -2423,6 +2460,11 @@ do
       end
 
       while true do
+         if type_operand then
+            local tk = ps.tokens[i].tk
+
+            if tk ~= "." and tk ~= "[" and tk ~= "(" and tk ~= "!" then break end
+         end
          if ps.custom_operators then
             local infix = find_operator(ps, i, "infix")
             local postfix, postfix_width = find_operator(ps, i, "postfix")
@@ -2502,6 +2544,12 @@ do
             end
 
             e1 = { f = ps.filename, y = tkop.y, x = tkop.x, kind = op_kind, [BLOCK_INDEXES.OP.E1] = e1, [BLOCK_INDEXES.OP.E2] = key, tk = tkop.tk }
+         elseif tkop.tk == "!" and not navigation and e1.kind == "identifier" and e1.tk == "typeof" and ps.read_lang ~= "lua" then
+            local result = { kind = "typeof_expression", tk = "typeof!", y = e1.y, x = e1.x, f = ps.filename }
+            i, result[1] = read_typeof_macro_operand(ps, i - 1)
+            if not result[1] then return i end
+            end_at(result, ps.tokens[i - 1])
+            e1 = result
          elseif tkop.tk == "!" then
             local prev_i = i
             i = i + 1
@@ -2653,6 +2701,10 @@ do
          fail(ps, i, "operator macro references require '!()' or a local macro import")
       end
       return i, e1
+   end
+
+   read_typeof_operand = function(ps, i)
+      return P(ps, i, true)
    end
 
    read_prefix_expression = function(ps, i)

@@ -228,7 +228,8 @@ function lua_generator.generate(ast, gen_target, opts)
       return table.concat(out)
    end
 
-   local visit_node = {}
+   local visit_node = { skip_typeof_operands = true }
+   local typeof_outputs
 
    local lua_54_attribute = {
       ["const"] = " <const>",
@@ -1087,6 +1088,17 @@ function lua_generator.generate(ast, gen_target, opts)
             return out
          end,
       },
+      ["typeof_expression"] = {
+         after = function(_, node, _children)
+            local out = { y = node.y, h = 0, "nil" }
+            if node.typeof_description then
+               out[1] = require("teal.reflection").encode(node.typeof_description)
+               typeof_outputs = typeof_outputs or {}
+               typeof_outputs[#typeof_outputs + 1] = out
+            end
+            return out
+         end,
+      },
       ["op"] = {
          after = function(_, node, children)
             local out = { y = node.y, h = 0 }
@@ -1419,6 +1431,7 @@ function lua_generator.generate(ast, gen_target, opts)
    visit_type.cbs["integer"] = default_type_visitor
    visit_type.cbs["union"] = default_type_visitor
    visit_type.cbs["nominal"] = default_type_visitor
+   visit_type.cbs["typeof"] = default_type_visitor
    visit_type.cbs["emptytable"] = default_type_visitor
    visit_type.cbs["literal_table_item"] = default_type_visitor
    visit_type.cbs["unresolved_emptytable_value"] = default_type_visitor
@@ -1443,6 +1456,39 @@ function lua_generator.generate(ast, gen_target, opts)
    end
    local parts = {}
    append_output(code, parts)
+   if typeof_outputs then
+      local body = table.concat(parts)
+      local name = "__tl_typeof"
+      local suffix = 0
+      while body:find(name, 1, true) do
+         suffix = suffix + 1
+         name = "__tl_typeof_" .. tostring(suffix)
+      end
+      for _, output in ipairs(typeof_outputs) do
+         output[1] = output[1]:gsub("%z", name)
+      end
+      parts = {}
+      append_output(code, parts)
+      body = table.concat(parts)
+      local factory = require("teal.reflection").factory
+      if ast.kind ~= "statements" then
+         if contains_varargs(ast) then
+            body = "(function(" .. name .. ", ...) return " .. body .. " end)(" .. factory .. ", ...)"
+         else
+            body = "(function(" .. name .. ") return " .. body .. " end)(" .. factory .. ")"
+         end
+      else
+         local init = "local " .. name .. " = " .. factory .. "; "
+         if opts.preserve_hashbang and ast.hashbang then
+            local start = #ast.hashbang + 1
+            if body:sub(start, start) == "\n" then start = start + 1 end
+            body = ast.hashbang .. "\n" .. init .. body:sub(start)
+         else
+            body = init .. body
+         end
+      end
+      return (body:gsub(" *\n", "\n"))
+   end
    return (table.concat(parts):gsub(" *\n", "\n"))
 end
 

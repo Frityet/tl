@@ -145,6 +145,8 @@ local block = { Block = {} }
 
 
 
+
+
 local BLOCK_INDEXES = {
    PRAGMA = {
       KEY = 1,
@@ -352,6 +354,9 @@ local BLOCK_INDEXES = {
    NOMINAL_TYPE = {
       NAME = 1,
    },
+   TYPEOF_TYPE = {
+      EXP = 1,
+   },
    ARRAY_TYPE = {
       ELEMENT = 1,
    },
@@ -412,6 +417,7 @@ local BLOCK_KINDS = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
+   ["typeof_expression"] = true,
    ["operator_spec"] = true,
    ["operator_use"] = true,
    ["operator_grouping"] = true,
@@ -467,6 +473,7 @@ local BLOCK_KINDS = {
    ["typedecl"] = true,
    ["tuple_type"] = true,
    ["nominal_type"] = true,
+   ["typeof_type"] = true,
    ["map_type"] = true,
    ["array_type"] = true,
    ["union_type"] = true,

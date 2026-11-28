@@ -144,7 +144,8 @@ local function adjust_code(ast: Node, needs_compat: {string:boolean}, gen_compat
    local visit = false
 
    local visit_node: Visitor<nil, NodeKind, Node, nil> = {
-      cbs = {}
+      cbs = {},
+      skip_typeof_operands = true,
    }
 
    -- Statements that aren't supported in compat have already had errors raised or are ignored:

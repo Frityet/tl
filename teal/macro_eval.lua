@@ -368,7 +368,7 @@ end
 local function is_expression_kind(k)
    return k == "nil" or k == "string" or k == "number" or k == "integer" or
    k == "boolean" or k == "literal_table" or k == "function" or
-   k == "identifier" or k == "..." or k == "paren" or k == "conditional" or k == "macro_invocation" or
+   k == "identifier" or k == "..." or k == "paren" or k == "conditional" or k == "macro_invocation" or k == "typeof_expression" or
    k:sub(1, 3) == "op_"
 end
 
@@ -380,7 +380,7 @@ local function validate_statement_positions(b, statement)
       while b.kind == "paren" and b[BLOCK_INDEXES.PAREN.EXP] do
          b = b[BLOCK_INDEXES.PAREN.EXP]
       end
-      if b.kind ~= "statements" and b.kind ~= "op_funcall" and not is_statement_kind(b.kind) then
+      if b.kind ~= "statements" and b.kind ~= "op_funcall" and b.kind ~= "typeof_expression" and not is_statement_kind(b.kind) then
          return nil
       end
    end

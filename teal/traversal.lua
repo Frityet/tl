@@ -64,6 +64,7 @@ local traversal = { VisitorCallbacks = {}, Visitor = {} }
 
 
 
+
 function traversal.fields_of(t, meta)
    local i = 1
    local field_order, fields
@@ -128,6 +129,7 @@ end
 
 local type_walkers = {
    ["typevar"] = false,
+   ["typeof"] = false,
    ["unresolved_typearg"] = false,
    ["unresolvable_typearg"] = false,
    ["self"] = false,
@@ -358,6 +360,11 @@ function traversal.traverse_nodes(s, root,
          xs[2] = recurse(ast.e2)
          extra_callback("before_e3", s, ast, xs, visit_node)
          xs[3] = recurse(ast.e3)
+      end,
+      ["typeof_expression"] = function(ast, xs)
+         if not visit_node.skip_typeof_operands then
+            xs[1] = recurse(ast.e1)
+         end
       end,
       ["op"] = function(ast, xs)
          xs[1] = recurse(ast.e1)

@@ -40,6 +40,7 @@ local types = require("teal.types")
 
 
 
+
 local a_type = types.a_type
 local raw_type = types.raw_type
 local simple_types = types.simple_types
@@ -106,9 +107,11 @@ local lexer = require("teal.lexer")
 
 
 
+
 local parse_type
 local parse_type_list
 local parse_typeargs_if_any
+
 
 
 
@@ -953,6 +956,8 @@ parse_expression = function(state, block)
       local r = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION.RETS], "rets")
       node.rets = r
       node.body = parse_statements(state, block[BLOCK_INDEXES.FUNCTION.BODY])
+   elseif kind == "typeof_expression" then
+      node.e1 = parse_expression(state, block[1]) or new_node(state, block, "error_node")
    elseif kind == "macro_invocation" then
       if state.in_local_macro then
          fail(state, block, "macro invocations cannot appear inside macro bodies")
@@ -992,6 +997,7 @@ end
 local function new_typedecl(state, block, def)
    local t = new_type(state, block, "typedecl")
    t.def = def
+   if def.typename == "typeof" then t.is_typeof_alias = true end
    return t
 end
 
@@ -2188,7 +2194,11 @@ parse_base_type = function(state, block)
 
    local tk = block.tk
 
-   if block.kind == "identifier" or block.kind == "nominal_type" or simple_types[tk] then
+   if block.kind == "typeof_type" then
+      local t = new_type(state, block, "typeof")
+      t.operand = parse_expression(state, block[BLOCK_INDEXES.TYPEOF_TYPE.EXP])
+      return t
+   elseif block.kind == "identifier" or block.kind == "nominal_type" or simple_types[tk] then
       return parse_simple_type_or_nominal(state, block)
    elseif block.kind == "function" then
       return parse_function_type(state, block)

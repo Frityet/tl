@@ -145,6 +145,7 @@ local function adjust_code(ast, needs_compat, gen_compat, gen_target)
 
    local visit_node = {
       cbs = {},
+      skip_typeof_operands = true,
    }
 
 

@@ -82,6 +82,7 @@ build = {
       ["teal.type_errors"] = "teal/type_errors.lua",
       ["teal.type_reporter"] = "teal/type_reporter.lua",
       ["teal.types"] = "teal/types.lua",
+      ["teal.reflection"] = "teal/reflection.lua",
       ["teal.util"] = "teal/util.lua",
       ["teal.variables"] = "teal/variables.lua",
 
@@ -169,6 +170,7 @@ build = {
          ["teal.type_errors"] = "teal/type_errors.tl",
          ["teal.type_reporter"] = "teal/type_reporter.tl",
          ["teal.types"] = "teal/types.tl",
+         ["teal.reflection"] = "teal/reflection.tl",
          ["teal.util"] = "teal/util.tl",
          ["teal.variables"] = "teal/variables.tl",
       }

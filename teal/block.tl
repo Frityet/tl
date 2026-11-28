@@ -54,6 +54,7 @@ local record block
       "macro_quote"
       "macro_var"
       "macro_invocation"
+      "typeof_expression"
       "operator_spec"
       "operator_use"
       "operator_grouping"
@@ -109,6 +110,7 @@ local record block
       "typedecl"
       "tuple_type"
       "nominal_type"
+      "typeof_type"
       "map_type"
       "array_type"
       "union_type"
@@ -352,6 +354,9 @@ local BLOCK_INDEXES <const> = {
    NOMINAL_TYPE = {
       NAME = 1,
    },
+   TYPEOF_TYPE = {
+      EXP = 1,
+   },
    ARRAY_TYPE = {
       ELEMENT = 1,
    },
@@ -412,6 +417,7 @@ local BLOCK_KINDS <total>: {block.BlockKind: boolean} = {
    ["macro_quote"] = true,
    ["macro_var"] = true,
    ["macro_invocation"] = true,
+   ["typeof_expression"] = true,
    ["operator_spec"] = true,
    ["operator_use"] = true,
    ["operator_grouping"] = true,
@@ -467,6 +473,7 @@ local BLOCK_KINDS <total>: {block.BlockKind: boolean} = {
    ["typedecl"] = true,
    ["tuple_type"] = true,
    ["nominal_type"] = true,
+   ["typeof_type"] = true,
    ["map_type"] = true,
    ["array_type"] = true,
    ["union_type"] = true,

@@ -153,6 +153,7 @@ local record context
       errs: Errors
       has_syntax_errors: boolean
       module_type: Type
+      check_typeof_operand: function(Node): Type
 
       subtype_relations: relations.TypeRelations
       eqtype_relations: relations.TypeRelations
@@ -823,6 +824,18 @@ do
       local found = t.found or self:find_type(t.names)
       if not found then
          return self.errs:invalid_at(t, "unknown type %s", t)
+      end
+
+      if found is TypeDeclType and found.is_typeof_alias then
+         local def = found.def
+         if def is NominalType then
+            if t.typevals then
+               t.resolved = self.errs:invalid_at(t, "Remove the type arguments from this typeof alias.")
+            else
+               t.names, t.typevals, t.found, t.resolved = def.names, def.typevals, def.found, def.resolved
+            end
+            return t.resolved, t.found
+         end
       end
 
       if found is TypeDeclType and found.is_alias then

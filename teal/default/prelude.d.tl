@@ -54,3 +54,41 @@ global record metatable<T>
    __lt: function<A, B>(A, B): boolean
    __le: function<A, B>(A, B): boolean
 end
+
+--- Types returned by the builtin typeof! macro.
+global record reflection
+   enum Kind
+      "any" "unknown" "nil" "boolean" "integer" "number" "string" "thread" "userdata"
+      "table" "array" "map" "tuple" "record" "interface" "enum" "function"
+      "overload" "union" "type_parameter" "reference"
+   end
+
+   record TypeInfo
+      kind: Kind
+      text: string
+      name: string?
+      literal: (string | number | boolean)?
+      element: TypeInfo?
+      key: TypeInfo?
+      value: TypeInfo?
+      items: {TypeInfo}?
+      fields: {string: TypeInfo}?
+      metamethods: {string: TypeInfo}?
+      interfaces: {TypeInfo}?
+      userdata: boolean?
+      values: {string}?
+      alternatives: {TypeInfo}?
+      parameters: {TypeInfo}?
+      returns: {TypeInfo}?
+      required_parameters: integer?
+      variadic_parameters: boolean?
+      variadic_returns: boolean?
+      method: boolean?
+      type_arguments: {TypeInfo}?
+      type_parameters: {TypeInfo}?
+      constraint: TypeInfo?
+
+      metamethod __eq: function(TypeInfo, TypeInfo): boolean
+      metamethod __tostring: function(TypeInfo): string
+   end
+end

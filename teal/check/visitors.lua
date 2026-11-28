@@ -102,12 +102,27 @@ local visitors = {}
 
 
 
-visitors.visit_node = {}
+visitors.visit_node = { skip_typeof_operands = true }
 visitors.visit_type = {}
 local visit_node = visitors.visit_node
 local visit_type = visitors.visit_type
 
 
+
+local function queried_type(self, operand, t)
+   t = untuple(t)
+   while operand.kind == "paren" do operand = operand.e1 end
+   if operand.kind == "variable" then
+      local var = self:find_var(operand.tk, "check_only")
+      if var and var.is_specialized == "narrowed_declaration" and var.specialized_from and
+         (t.typename == "string" or t.typename == "number" or t.typename == "integer" or t.typename == "boolean") and
+         (t).literal ~= nil and
+         self:same_type(var.specialized_from, drop_constant_value(t)) then
+         return var.specialized_from
+      end
+   end
+   return t
+end
 
 
 
@@ -2204,6 +2219,20 @@ visit_node.cbs = {
          return unite(node, { untuple(children[2]), untuple(children[3]) }, true, not self.feat_strict_nil)
       end,
    },
+   ["typeof_expression"] = {
+      after = function(self, node, _children)
+         node.typeof_description = nil
+         local t = queried_type(self, node.e1, self.check_typeof_operand(node.e1))
+         if t.typename == "invalid" then return t end
+         local type_reflection = require("teal.reflection")
+         node.typeof_description = type_reflection.describe(t, function(n)
+            return self:resolve_nominal(n)
+         end)
+         local namespace = self.env.globals["reflection"].t
+         local result = (namespace.def).fields["TypeInfo"]
+         return a_type(node, "nominal", { names = { "reflection", "TypeInfo" }, found = result, resolved = result.def })
+      end,
+   },
    ["op"] = {
       before = function(self, node)
          self:begin_implied_scope()
@@ -3025,6 +3054,30 @@ local metamethod_is_method = {
 }
 
 visit_type.cbs = {
+   ["typeof"] = {
+      after = function(self, typ, _children)
+         local operand = typ.operand
+         local t = queried_type(self, operand, self.check_typeof_operand(operand))
+
+         if t.typename == "nominal" then
+            local resolved = self:resolve_nominal(t)
+            if resolved.typename == "typeof" or (resolved.typename == "typedecl" and resolved.def.typename == "typeof") then
+               t = self.errs:invalid_at(operand, "The typeof operand refers to a type query that has no result yet.")
+            elseif resolved.typename == "invalid" then
+               t = resolved
+            end
+         end
+
+         local target = typ
+         target.operand = nil
+         for key, value in pairs(t) do
+            if key ~= "f" and key ~= "y" and key ~= "x" then
+               target[key] = value
+            end
+         end
+         return typ
+      end,
+   },
    ["generic"] = {
       before = function(self, typ)
          self:begin_implied_scope()
@@ -3183,7 +3236,10 @@ visit_type.cbs = {
          local t, typearg = self:find_type(typ.names)
          if t then
             local def = t.def
-            if t.is_alias then
+            if t.is_typeof_alias and def.typename == "nominal" then
+               typ.found = t
+               self:resolve_nominal(typ)
+            elseif t.is_alias then
                if def.typename == "generic" then
                   def = def.t
                end

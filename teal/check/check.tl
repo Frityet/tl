@@ -151,6 +151,19 @@ function check.check(ast: Node, env: Env, filename: string, syntax_errors?: {Err
       )
    end
 
+   local operand_visitor = visit_node
+   local operand_compat: {string: boolean}
+   self.check_typeof_operand = function(operand: Node): Type
+      local saved_compat = self.needs_compat
+      operand_compat = operand_compat or {}
+      self.needs_compat = operand_compat
+      self:begin_implied_scope()
+      local result = traverse_nodes(self, operand, operand_visitor, visit_type)
+      self:end_implied_scope()
+      self.needs_compat = saved_compat
+      return result
+   end
+
    local state: diagnostics.State
    local runner: diagnostics_runner
    local plan = env.diagnostics_plan

@@ -179,6 +179,7 @@ local context = { Context = {} }
 
 
 
+
 local Context = context.Context
 
 
@@ -823,6 +824,18 @@ do
       local found = t.found or self:find_type(t.names)
       if not found then
          return self.errs:invalid_at(t, "unknown type %s", t)
+      end
+
+      if found.typename == "typedecl" and found.is_typeof_alias then
+         local def = found.def
+         if def.typename == "nominal" then
+            if t.typevals then
+               t.resolved = self.errs:invalid_at(t, "Remove the type arguments from this typeof alias.")
+            else
+               t.names, t.typevals, t.found, t.resolved = def.names, def.typevals, def.found, def.resolved
+            end
+            return t.resolved, t.found
+         end
       end
 
       if found.typename == "typedecl" and found.is_alias then

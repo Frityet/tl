@@ -39,6 +39,7 @@ local record types
       "integer"
       "union"
       "nominal"
+      "typeof"
       "emptytable"
       "literal_table_item"
       "unresolved_emptytable_value"
@@ -132,6 +133,7 @@ local record types
       def: FirstClassType
       closed: boolean
       is_alias: boolean
+      is_typeof_alias: boolean
       is_nested_alias: boolean
    end
 
@@ -157,6 +159,14 @@ local record types
       typevals: {FirstClassType}
       found: TypeDeclType      -- type is found but typeargs are not resolved
       resolved: Type           -- type is found and typeargs are resolved
+   end
+
+   -- A query in a type annotation, replaced with its result during checking.
+   record TypeofType
+      is FirstOrderType
+      where self.typename == "typeof"
+
+      operand: Node
    end
 
    record SelfType
@@ -483,6 +493,7 @@ local table_types <total>: {TypeName:boolean} = {
    ["integer"] = false,
    ["union"] = false,
    ["nominal"] = false,
+   ["typeof"] = false,
    ["literal_table_item"] = false,
    ["unresolved_emptytable_value"] = false,
    ["unresolved_typearg"] = false,

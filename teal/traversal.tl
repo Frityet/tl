@@ -53,6 +53,7 @@ local record traversal
       cbs: {K:VisitorCallbacks<S, N, T>}
       after: VisitorAfter<S, N, T>
       allow_missing_cbs: boolean
+      skip_typeof_operands: boolean
    end
 
    enum MetaMode
@@ -128,6 +129,7 @@ end
 
 local type_walkers <total>: {TypeName: boolean | function<S, T>(s: S, ast: Type, visit: Visitor<S, TypeName, Type, T>): {T}} = {
    ["typevar"] = false,
+   ["typeof"] = false,
    ["unresolved_typearg"] = false,
    ["unresolvable_typearg"] = false,
    ["self"] = false,
@@ -358,6 +360,11 @@ function traversal.traverse_nodes<S, T>(s: S, root: types.Node,
          xs[2] = recurse(ast.e2)
          extra_callback("before_e3", s, ast, xs, visit_node)
          xs[3] = recurse(ast.e3)
+      end,
+      ["typeof_expression"] = function(ast: Node, xs: {T})
+         if not visit_node.skip_typeof_operands then
+            xs[1] = recurse(ast.e1)
+         end
       end,
       ["op"] = function(ast: Node, xs: {T})
          xs[1] = recurse(ast.e1)

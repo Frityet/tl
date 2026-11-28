@@ -78,3 +78,46 @@ local record File
    close: function(File): boolean, string
 end
 ```
+
+### Query a static type
+
+Use `typeof value` in a type annotation to reuse the type of a value. Use
+`typeof!(expression)` for a query that contains an operator, a method call, or
+another compound expression.
+
+```teal
+local a = 10
+local b: typeof a = 20
+local c: typeof!(a + b) = 30
+
+local info: reflection.TypeInfo = typeof!(b)
+local kind: reflection.Kind = info.kind
+print(kind, tostring(info))      -- integer  integer
+print(typeof!(a) == typeof!(b))  -- true
+```
+
+In an expression, `typeof!` creates a Lua table that describes the type Teal
+sees at that point. Teal checks the operand and uses its first result type.
+The generated Lua skips the operand, so its calls and other side effects
+never run. The actual values passed to a generic function do not change the
+description of a type parameter inside that function.
+
+The default `reflection` namespace provides `TypeInfo` and `Kind` for type
+annotations. Each `TypeInfo` has a `kind` and a short `text` description.
+Other fields are present when they apply to that kind.
+
+| Description | Fields |
+| --- | --- |
+| Named type or literal type | `name`, `literal` |
+| Array, map, or tuple | `element`, `key` and `value`, or `items` |
+| Record or interface | `fields`, `metamethods`, `interfaces`, `userdata`, and any `element` or `items` |
+| Enum | `values` |
+| Union or overload | `alternatives` |
+| Function | `parameters`, `returns`, `required_parameters`, `variadic_parameters`, `variadic_returns`, `method` |
+| Generic type or type parameter | `type_arguments`, `type_parameters`, `constraint` |
+
+Recursive links have kind `reference` so the descriptions stay finite.
+`tostring(info)` returns `info.text`. `==` compares the described types,
+including their type arguments and the declaration of a named record, interface,
+or enum. The order of union members does not affect equality. Each invocation
+creates fresh tables.

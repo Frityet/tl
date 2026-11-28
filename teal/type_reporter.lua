@@ -195,6 +195,7 @@ local typename_to_typecode = {
    ["invalid"] = typecodes.INVALID,
 
    ["none"] = typecodes.UNKNOWN,
+   ["typeof"] = typecodes.UNKNOWN,
    ["tuple"] = typecodes.UNKNOWN,
    ["literal_table_item"] = typecodes.UNKNOWN,
    ["typedecl"] = typecodes.UNKNOWN,
