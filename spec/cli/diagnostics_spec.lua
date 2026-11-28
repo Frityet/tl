@@ -12,7 +12,7 @@ end
 describe("tl check diagnostics", function()
    it("validates rule names and uses check as the CLI entry point", function()
       local dir = util.write_tmp_dir(finally, {
-         ["tlconfig.lua"] = 'return {lua = {typo = "info"}}',
+         ["tlconfig.lua"] = 'return {diagnostics = {lua = {typo = "info"}}}',
          ["example.tl"] = 'print(1)',
       })
       util.do_in(dir, function()
@@ -22,11 +22,34 @@ describe("tl check diagnostics", function()
       end)
    end)
 
+   it("validates the project diagnostics table and pack tables", function()
+      local cases = {
+         { 'diagnostics = true', 'in key "diagnostics": Use a table of diagnostic packs.' },
+         { 'diagnostics = { [1] = {} }', 'Use pack names as string keys.' },
+         { 'diagnostics = { luajitt = {} }', 'Unknown diagnostic pack "luajitt".' },
+         { 'diagnostics = { lua = true }', 'in key "diagnostics.lua": Use a table of diagnostic rules.' },
+         { 'diagnostics = { lua = { [1] = "off" } }', 'Use rule names as string keys.' },
+         { 'diagnostics = { lua = { all = "note" } }', 'invalid level for "lua"' },
+         { 'lua = { all = true }', 'Move this pack to the diagnostics table.' },
+      }
+      for _, case in ipairs(cases) do
+         local dir = util.write_tmp_dir(finally, {
+            ["tlconfig.lua"] = 'return { ' .. case[1] .. ' }',
+            ["example.tl"] = 'print(1)',
+         })
+         util.do_in(dir, function()
+            assert.match(case[2], command(1, "check", "example.tl"), 1, true)
+         end)
+      end
+   end)
+
    it("uses local rule names and limits diagnostic errors to check", function()
       local dir = util.write_tmp_dir(finally, {
          ["tlconfig.lua"] = [[return {
-            teal = { ["cast-can-hide-nil"] = "error" },
-            lua = { all = "error", ["truthy-zero-or-empty"] = "off" },
+            diagnostics = {
+               teal = { ["cast-can-hide-nil"] = "error" },
+               lua = { all = "error", ["truthy-zero-or-empty"] = "off" },
+            },
          }]],
          ["example.tl"] = [[local function f(x: number | nil): number
    return x as number
@@ -45,7 +68,7 @@ if 0 then print(f(1)) end]],
 
    it("infers the LuaJIT analysis target from the selected packs", function()
       local dir = util.write_tmp_dir(finally, {
-         ["tlconfig.lua"] = 'return {gen_target = "5.1", luajit = { ["hot-print"] = "warning" }}',
+         ["tlconfig.lua"] = 'return {gen_target = "5.1", diagnostics = {luajit = { ["hot-print"] = "warning" }}}',
          ["example.tl"] = 'for i = 1, 100 do print(i) end',
       })
       util.do_in(dir, function()
@@ -53,11 +76,27 @@ if 0 then print(f(1)) end]],
       end)
    end)
 
+   it("enables LuaJIT FFI diagnostics through the FFI pack table", function()
+      local dir = util.write_tmp_dir(finally, {
+         ["tlconfig.lua"] = [[return {
+            gen_target = "5.1",
+            diagnostics = { ["luajit-ffi"] = { ["cdef-preprocessor"] = "warning" } },
+         }]],
+         ["example.tl"] = [[local ffi = require("ffi")
+ffi.cdef("#define SIZE 1")]],
+      })
+      util.do_in(dir, function()
+         assert.match("warning [luajit-ffi/cdef-preprocessor]", command(0, "check", "example.tl"), 1, true)
+      end)
+   end)
+
    it("maps stable rule codes, severities and UTF-16 ranges into LSP diagnostics", function()
       local dir = util.write_tmp_dir(finally, {
          ["tlconfig.lua"] = [[return {
-            lua = { ["truthy-zero-or-empty"] = "hint" },
-            luajit = { ["loop-closure"] = "warning" },
+            diagnostics = {
+               lua = { ["truthy-zero-or-empty"] = "hint" },
+               luajit = { ["loop-closure"] = "warning" },
+            },
             lsp = { diagnostics_debounce_ms = 0 },
          }]],
       })

@@ -29,7 +29,7 @@ return {
 | `-p --pretend`       |                            |            | `gen`                | Don't compile/write to any files, but type check and log what files would be written to.
 | `--wdisable`         | `disable_warnings`         | `{string}` | `check` `run`        | Disable the given warnings.
 | `--werror`           | `warning_error`            | `{string}` | `check` `run`        | Promote the given warnings to errors.
-|                      | `teal`, `lua`, `luajit`, `luajit-ffi` | map | `check` `lsp` | Enable diagnostic rules and configure their severity. |
+|                      | `diagnostics`              | map        | `check` `lsp` | Configure diagnostic rules by pack. |
 |                      | `diagnostic_target`        | `string`   | `check` `lsp` | Set the analysis target independently of code generation. |
 | `--global-env-def`   | `global_env_def`           | `string`   | `check` `gen` `run`  | Specify a definition module declaring any custom globals predefined in your Lua environment. See the [declaration files](declaration_files.md#global-environment-definition) page for details. |
 | `--no-stdlib`        | `no_stdlib`                | `boolean`  | `check` `gen` `run`  | Don't include the standard library definitions in the type checker. This is useful when using a custom environment that differs from the PUC-Rio Lua standard library. |
@@ -41,9 +41,10 @@ such as `src` without repeating that directory in `include_dir`; any explicit
 
 ### Diagnostics
 
-Configure opt-in diagnostics in `tlconfig.lua`. Run `tl check main.tl` to see
-findings. Editors use the same project settings and show the rule ID and
-severity. Standard type errors and warnings use their usual settings.
+Configure opt-in diagnostic packs in the `diagnostics` table in `tlconfig.lua`.
+Run `tl check main.tl` to see findings. Editors use the same project settings
+and show the rule ID and severity. Standard type errors and warnings use their
+usual settings.
 
 | Pack | Examples |
 | ---- | -------- |
@@ -62,14 +63,16 @@ editor diagnostics require no separate LuaJIT process or program execution.
 -- tlconfig.lua
 return {
    gen_target = "5.1",
-   teal = { ["cast-can-hide-nil"] = "error" },
-   lua = { ["truthy-zero-or-empty"] = "warning" },
-   luajit = {
-      all = "hint",
-      ["hot-print"] = "off",
-   },
-   ["luajit-ffi"] = {
-      ["negative-length"] = "error",
+   diagnostics = {
+      teal = { ["cast-can-hide-nil"] = "error" },
+      lua = { ["truthy-zero-or-empty"] = "warning" },
+      luajit = {
+         all = "hint",
+         ["hot-print"] = "off",
+      },
+      ["luajit-ffi"] = {
+         ["negative-length"] = "error",
+      },
    },
 }
 ```

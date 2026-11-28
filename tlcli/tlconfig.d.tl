@@ -3,10 +3,14 @@ local type teal = require("teal.init")
 local record TlConfig
    type DiagnosticPack = {string: boolean | teal.DiagnosticLevel}
 
-   teal: DiagnosticPack
-   lua: DiagnosticPack
-   luajit: DiagnosticPack
-   ["luajit-ffi"]: DiagnosticPack
+   record DiagnosticPacks
+      teal: DiagnosticPack
+      lua: DiagnosticPack
+      luajit: DiagnosticPack
+      ["luajit-ffi"]: DiagnosticPack
+   end
+
+   diagnostics: DiagnosticPacks
    diagnostic_target: teal.GenTarget
    disable_warnings: {string}
    include_dir: {string}

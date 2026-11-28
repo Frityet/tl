@@ -5,7 +5,7 @@ local common = require("tlcli.common")
 local teal = require("teal.init")
 
 local warning_set = teal.warning_set()
-local diagnostic_packs = { "teal", "lua", "luajit", "luajit-ffi" }
+local diagnostic_packs: {string: boolean} = { teal = true, lua = true, luajit = true, ["luajit-ffi"] = true }
 
 local record configuration
 end
@@ -98,6 +98,11 @@ local function validate_config(config: {any:any}): TlConfig, {string}, {string}
          return
       end
 
+      if diagnostic_packs[k] then
+         fail(k, "Move this pack to the diagnostics table.")
+         return
+      end
+
       if not valid_keys[k] then
          -- skip invalid keys, to be used by other tools
          return
@@ -137,29 +142,33 @@ local function validate_config(config: {any:any}): TlConfig, {string}, {string}
 
    local diagnostics: teal.DiagnosticOptions
    local targets_luajit = false
-   for _, pack in ipairs(diagnostic_packs) do
-      local settings = config[pack]
-      if settings ~= nil then
-         if not settings is table then
-            fail(pack, "expected a table of diagnostic rules")
+   local packs = config.diagnostics
+   if packs is table then
+      for name, settings in pairs(packs as {any: any}) do
+         if not name is string then
+            fail("diagnostics", "Use pack names as string keys.")
+         elseif not diagnostic_packs[name] then
+            fail("diagnostics", "Unknown diagnostic pack %q.", name)
+         elseif not settings is table then
+            fail("diagnostics." .. name, "Use a table of diagnostic rules.")
          else
-            for name, level in pairs(settings as {any:any}) do
-               if not name is string then
-                  fail(pack, "expected diagnostic rule names as string keys")
+            local targets_pack_luajit = name == "luajit" or name == "luajit-ffi"
+            for rule, level in pairs(settings as {any: any}) do
+               if not rule is string then
+                  fail("diagnostics." .. name, "Use rule names as string keys.")
                else
                   diagnostics = diagnostics or {}
-                  local selector = name == "all" and pack or pack .. "/" .. name
+                  local selector = rule == "all" and name or name .. "/" .. rule
                   diagnostics[selector] = level as (boolean | teal.DiagnosticLevel)
-                  if (pack == "luajit" or pack == "luajit-ffi") and level ~= false and level ~= "off" then
+                  if targets_pack_luajit and level ~= false and level ~= "off" then
                      targets_luajit = true
                   end
                end
             end
          end
       end
-   end
-   if config.diagnostics ~= nil then
-      fail("diagnostics", "put rule settings in top-level teal, lua, luajit, or luajit-ffi tables")
+   elseif packs ~= nil then
+      fail("diagnostics", "Use a table of diagnostic packs.")
    end
    if diagnostics then
       local registry = require("teal.diagnostics.registry")
