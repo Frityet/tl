@@ -1,5 +1,6 @@
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local io = _tl_compat and _tl_compat.io or io; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string
 local check = require("teal.check.check")
+
 local environment = require("teal.environment")
 
 local errors = require("teal.errors")
@@ -15,6 +16,14 @@ local targets = require("teal.gen.targets")
 local util = require("teal.util")
 
 local teal = { CheckError = {}, Compiler = {}, Input = {}, TokenList = {}, ParseTree = {}, Module = {}, CompilerOptions = {} }
+
+
+
+
+
+
+
+
 
 
 
@@ -177,6 +186,7 @@ local function module_from_result(result)
       syntax_errors = result.syntax_errors or {},
       type_errors = result.type_errors or {},
       warnings = result.warnings or {},
+      diagnostics = result.diagnostics or {},
    }
 
    return module, check_error
@@ -367,11 +377,19 @@ function teal.compiler(opts)
       gen_compat = opts and opts.gen_compat,
       gen_target = opts and opts.gen_target,
       no_stdlib = opts and not not opts.no_stdlib,
+      diagnostics = opts and opts.diagnostics,
+      diagnostic_target = opts and opts.diagnostic_target,
    }
 
    compiler.env = environment.new(env_opts)
 
    return compiler
+end
+
+function teal.diagnostic_catalog(opts)
+   local registry = require("teal.diagnostics.registry")
+   local target = opts and (opts.diagnostic_target or opts.gen_target) or environment.DEFAULT_GEN_TARGET
+   return registry.catalog(opts and opts.diagnostics, target)
 end
 
 teal.load = loader.load

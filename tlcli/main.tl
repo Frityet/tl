@@ -62,7 +62,7 @@ local function get_args_parser(): argparse.Parser
    parser:require_command(false)
    parser:command_target("command")
 
-   local check_command = parser:command("check", "Type-check one or more Teal files.")
+   local check_command = parser:command("check", "Type-check source files and report configured diagnostics.")
    check_command:argument("file", "The Teal source file."):args("+")
 
    local gen_command = parser:command("gen", "Generate a Lua file for one or more Teal files.")

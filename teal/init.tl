@@ -1,5 +1,6 @@
 --#pragma strict_nil off
 local type check = require("teal.check.check")
+local type diagnostics = require("teal.diagnostics.model")
 local type environment = require("teal.environment")
 local type Env = environment.Env
 local type errors = require("teal.errors")
@@ -16,6 +17,10 @@ local type util = require("teal.util")
 
 local record teal
    type Error = errors.Error
+   type DiagnosticLevel = diagnostics.Level
+   type DiagnosticOptions = diagnostics.Options
+   type DiagnosticRule = diagnostics.RuleInfo
+   type DiagnosticSeverity = errors.Severity
    type Extension = require_file.Extension
    type Feat = environment.Feat
    type GenCompat = environment.GenCompat
@@ -45,6 +50,7 @@ local record teal
       syntax_errors: {Error}
       type_errors: {Error}
       warnings: {Error}
+      diagnostics: {Error}
    end
 
    ----------------------------------------
@@ -122,9 +128,12 @@ local record teal
       gen_compat: GenCompat
       gen_target: GenTarget
       no_stdlib: boolean
+      diagnostics: DiagnosticOptions
+      diagnostic_target: GenTarget
    end
 
    compiler: function(opts?: CompilerOptions): Compiler
+   diagnostic_catalog: function(opts?: CompilerOptions): {DiagnosticRule}
    load: function(input: string, chunkname?: string, mode?: LoadMode, ...: {any:any}): LoadFunction, string
    loader: function()
    search_module: function(module_name: string, extension_set?: {Extension:boolean}): string, SearchError
@@ -177,6 +186,7 @@ local function module_from_result(result: environment.Result): Module, CheckErro
       syntax_errors = result.syntax_errors or {},
       type_errors = result.type_errors or {},
       warnings = result.warnings or {},
+      diagnostics = result.diagnostics or {},
    }
 
    return module, check_error
@@ -367,11 +377,19 @@ function teal.compiler(opts?: CompilerOptions): Compiler
       gen_compat = opts and opts.gen_compat,
       gen_target = opts and opts.gen_target,
       no_stdlib = opts and not not opts.no_stdlib,
+      diagnostics = opts and opts.diagnostics,
+      diagnostic_target = opts and opts.diagnostic_target,
    }
 
    compiler.env = environment.new(env_opts)
 
    return compiler
+end
+
+function teal.diagnostic_catalog(opts?: CompilerOptions): {teal.DiagnosticRule}
+   local registry = require("teal.diagnostics.registry")
+   local target = opts and (opts.diagnostic_target or opts.gen_target) or environment.DEFAULT_GEN_TARGET
+   return registry.catalog(opts and opts.diagnostics, target)
 end
 
 teal.load = loader.load

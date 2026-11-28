@@ -30,6 +30,7 @@ local type TypeReporter = type_reporter.TypeReporter
 
 local type variables = require("teal.variables")
 local type Variable = variables.Variable
+local type diagnostics = require("teal.diagnostics.model")
 
 local record environment
    VERSION: string
@@ -54,6 +55,8 @@ local record environment
       gen_target: GenTarget
       run_internal_compiler_checks: boolean
       no_stdlib: boolean
+      diagnostics: diagnostics.Options
+      diagnostic_target: GenTarget
    end
 
    type RequireModuleFn = function(env: Env, module_name: string): Type, string
@@ -71,6 +74,7 @@ local record environment
       modules: {string:Type}
       module_filenames: {string:string}
       require_module: RequireModuleFn
+      diagnostics_plan: diagnostics.Plan
    end
 
    record Result
@@ -81,6 +85,7 @@ local record environment
       type_errors: {Error}
       gen_error: string
       warnings: {Error}
+      diagnostics: {Error}
       env: Env
       dependencies: {string:string} -- module name, file found
       needs_compat: {string:boolean}
@@ -143,6 +148,11 @@ end
 function environment.new(opts?: EnvOptions): Env
    local env = empty_environment()
    env.opts = opts or env.opts
+   if env.opts.diagnostics ~= nil then
+      local registry = require("teal.diagnostics.registry")
+      local target = env.opts.diagnostic_target or env.opts.gen_target or environment.DEFAULT_GEN_TARGET
+      env.diagnostics_plan = registry.plan(env.opts.diagnostics, target)
+   end
    if not env.opts.no_stdlib then
       load_precompiled_default_env(env)
    else

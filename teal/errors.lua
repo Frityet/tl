@@ -39,6 +39,17 @@ local errors = { Error = {}, ErrorContext = {} }
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 function errors.new(msg)
    return { msg = msg }
 end

@@ -12,6 +12,7 @@ local require_file = require("teal.check.require_file")
 local input = require("teal.input")
 local targets = require("teal.gen.targets")
 
+
 local type_reporter = require("teal.type_reporter")
 
 
@@ -19,6 +20,8 @@ local type_reporter = require("teal.type_reporter")
 
 
 local v2 = { CheckOptions = {}, EnvOptions = {} }
+
+
 
 
 
@@ -103,6 +106,8 @@ local function env_from_check_options(opts)
       feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
+      diagnostics = opts.diagnostics,
+      diagnostic_target = opts.diagnostic_target,
    })
 end
 

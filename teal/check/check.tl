@@ -9,6 +9,8 @@ local TL_DEBUG = tldebug.TL_DEBUG
 local type environment = require("teal.environment")
 local type Env = environment.Env
 local type Result = environment.Result
+local type diagnostics = require("teal.diagnostics.model")
+local type diagnostics_runner = require("teal.diagnostics.runner")
 
 local type errors = require("teal.errors")
 local type Error = errors.Error
@@ -149,6 +151,14 @@ function check.check(ast: Node, env: Env, filename: string, syntax_errors?: {Err
       )
    end
 
+   local state: diagnostics.State
+   local runner: diagnostics_runner
+   local plan = env.diagnostics_plan
+   if plan and not self.has_syntax_errors and not filename:match("%.d%.tl$") and not (plan.teal_only and self.feat_lax) then
+      runner = require("teal.diagnostics.runner")
+      visit_node, state = runner.attach(self, visit_node)
+   end
+
    assert(ast.kind == "statements")
    traverse_nodes(self, ast, visit_node, visit_type)
 
@@ -165,6 +175,7 @@ function check.check(ast: Node, env: Env, filename: string, syntax_errors?: {Err
       filename = filename,
       syntax_errors = syntax_errors,
       warnings = self.errs.warnings,
+      diagnostics = runner and runner.finish(state),
       type_errors = self.errs.errors,
       dependencies = self.dependencies,
       needs_compat = self.needs_compat,

@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
 
 local teal = require("teal.init")
 local common = require("tlcli.common")
@@ -12,6 +12,17 @@ local report = { ErrorSummary = {} }
 
 
 
+
+
+local function report_diagnostics(findings)
+   local failed = false
+   for _, finding in ipairs(findings) do
+      common.printerr(("%s:%d:%d: %s [%s] %s"):format(
+      finding.filename, finding.y, finding.x, finding.severity, finding.code, finding.msg))
+      failed = failed or finding.severity == "error"
+   end
+   return failed
+end
 
 local function report_errors(category, errors)
    if not errors then
@@ -46,7 +57,7 @@ local function filter_warnings(tlconfig, errs)
    end
 end
 
-function report.report_all_errors(tlconfig, compiler, syntax_only)
+function report.report_all_errors(tlconfig, compiler, syntax_only, include_diagnostics)
    local summary = {}
    for name in compiler:loaded_files() do
       local _, errs = compiler:recall(name)
@@ -54,13 +65,18 @@ function report.report_all_errors(tlconfig, compiler, syntax_only)
       local syntax_err = report_errors("syntax error", errs.syntax_errors)
       if syntax_err then
          summary.any_syntax_err = true
-      elseif not syntax_only then
-         filter_warnings(tlconfig, errs)
-         summary.any_warning = report_errors("warning", errs.warnings) or summary.any_warning
-         summary.any_type_err = report_errors("error", errs.type_errors) or summary.any_type_err
+      else
+         if not syntax_only then
+            filter_warnings(tlconfig, errs)
+            summary.any_warning = report_errors("warning", errs.warnings) or summary.any_warning
+            summary.any_type_err = report_errors("error", errs.type_errors) or summary.any_type_err
+         end
+         if include_diagnostics then
+            summary.any_diagnostic_err = report_diagnostics(errs.diagnostics) or summary.any_diagnostic_err
+         end
       end
    end
-   local ok = not (summary.any_syntax_err or summary.any_type_err)
+   local ok = not (summary.any_syntax_err or summary.any_type_err or summary.any_diagnostic_err)
    return ok, summary
 end
 

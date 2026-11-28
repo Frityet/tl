@@ -19,6 +19,9 @@ SOURCES = teal/debug.tl teal/attributes.tl teal/errors.tl teal/lexer.tl \
 	teal/variables.tl teal/type_reporter.tl \
 	teal/macroexps.tl teal/macro_eval.tl teal/metamethods.tl \
 	teal/type_errors.tl teal/environment.tl \
+	teal/diagnostics/model.tl teal/diagnostics/registry.tl teal/diagnostics/runner.tl \
+	teal/diagnostics/teal.tl teal/diagnostics/lua.tl teal/diagnostics/luajit.tl teal/diagnostics/luajit_loops.tl \
+	teal/diagnostics/luajit_ffi.tl teal/diagnostics/type_errors.tl \
 	teal/check/context.tl teal/check/visitors.tl teal/check/check.tl \
 	teal/check/relations.tl teal/check/special_functions.tl \
 	teal/check/type_checker.tl teal/check/node_checker.tl \

@@ -51,6 +51,15 @@ build = {
       ["teal.check.type_checker"] = "teal/check/type_checker.lua",
       ["teal.check.visitors"] = "teal/check/visitors.lua",
       ["teal.debug"] = "teal/debug.lua",
+      ["teal.diagnostics.lua"] = "teal/diagnostics/lua.lua",
+      ["teal.diagnostics.luajit"] = "teal/diagnostics/luajit.lua",
+      ["teal.diagnostics.luajit_ffi"] = "teal/diagnostics/luajit_ffi.lua",
+      ["teal.diagnostics.luajit_loops"] = "teal/diagnostics/luajit_loops.lua",
+      ["teal.diagnostics.model"] = "teal/diagnostics/model.lua",
+      ["teal.diagnostics.registry"] = "teal/diagnostics/registry.lua",
+      ["teal.diagnostics.runner"] = "teal/diagnostics/runner.lua",
+      ["teal.diagnostics.teal"] = "teal/diagnostics/teal.lua",
+      ["teal.diagnostics.type_errors"] = "teal/diagnostics/type_errors.lua",
       ["teal.environment"] = "teal/environment.lua",
       ["teal.errors"] = "teal/errors.lua",
       ["teal.facts"] = "teal/facts.lua",
@@ -99,6 +108,8 @@ build = {
       lua = {
          -- Ship the `tl` Teal module for API compatibility:
          "tl.tl",
+         ["ffi"] = "ffi.d.tl",
+         ["jit"] = "jit.d.tl",
 
          -- Ship the Teal modules in the `teal` namespace for requiring the Teal API:
          --[[ Generated via
@@ -124,6 +135,15 @@ build = {
          ["teal.check.type_checker"] = "teal/check/type_checker.tl",
          ["teal.check.visitors"] = "teal/check/visitors.tl",
          ["teal.debug"] = "teal/debug.tl",
+         ["teal.diagnostics.lua"] = "teal/diagnostics/lua.tl",
+         ["teal.diagnostics.luajit"] = "teal/diagnostics/luajit.tl",
+         ["teal.diagnostics.luajit_ffi"] = "teal/diagnostics/luajit_ffi.tl",
+         ["teal.diagnostics.luajit_loops"] = "teal/diagnostics/luajit_loops.tl",
+         ["teal.diagnostics.model"] = "teal/diagnostics/model.tl",
+         ["teal.diagnostics.registry"] = "teal/diagnostics/registry.tl",
+         ["teal.diagnostics.runner"] = "teal/diagnostics/runner.tl",
+         ["teal.diagnostics.teal"] = "teal/diagnostics/teal.tl",
+         ["teal.diagnostics.type_errors"] = "teal/diagnostics/type_errors.tl",
          ["teal.default.prelude"] = "teal/default/prelude.d.tl",
          ["teal.default.stdlib"] = "teal/default/stdlib.d.tl",
          ["teal.environment"] = "teal/environment.tl",

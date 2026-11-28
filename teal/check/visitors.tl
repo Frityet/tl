@@ -85,7 +85,7 @@ local type Visitor = traversal.Visitor
 local traverse_nodes = traversal.traverse_nodes
 local fields_of = traversal.fields_of
 
-local type_errors = require("teal.type_errors")
+local type_errors = require("teal.diagnostics.type_errors")
 local type CheckableKey = type_errors.CheckableKey
 local ensure_not_abstract = type_errors.ensure_not_abstract
 

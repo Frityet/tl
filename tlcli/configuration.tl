@@ -5,6 +5,7 @@ local common = require("tlcli.common")
 local teal = require("teal.init")
 
 local warning_set = teal.warning_set()
+local diagnostic_packs = { "teal", "lua", "luajit", "luajit-ffi" }
 
 local record configuration
 end
@@ -80,6 +81,7 @@ local function validate_config(config: {any:any}): TlConfig, {string}, {string}
       feat_arity = { ["off"] = true, ["on"] = true },
       gen_compat = { ["off"] = true, ["optional"] = true, ["required"] = true },
       gen_target = { ["luajit"] = true, ["5.1"] = true, ["5.3"] = true, ["5.4"] = true, ["5.5"] = true },
+      diagnostic_target = { ["luajit"] = true, ["5.1"] = true, ["5.3"] = true, ["5.4"] = true, ["5.5"] = true },
       disable_warnings = "{string}",
       warning_error = "{string}",
       no_stdlib = "boolean"
@@ -133,6 +135,42 @@ local function validate_config(config: {any:any}): TlConfig, {string}, {string}
       check_key(k, v)
    end
 
+   local diagnostics: teal.DiagnosticOptions
+   local targets_luajit = false
+   for _, pack in ipairs(diagnostic_packs) do
+      local settings = config[pack]
+      if settings ~= nil then
+         if not settings is table then
+            fail(pack, "expected a table of diagnostic rules")
+         else
+            for name, level in pairs(settings as {any:any}) do
+               if not name is string then
+                  fail(pack, "expected diagnostic rule names as string keys")
+               else
+                  diagnostics = diagnostics or {}
+                  local selector = name == "all" and pack or pack .. "/" .. name
+                  diagnostics[selector] = level as (boolean | teal.DiagnosticLevel)
+                  if (pack == "luajit" or pack == "luajit-ffi") and level ~= false and level ~= "off" then
+                     targets_luajit = true
+                  end
+               end
+            end
+         end
+      end
+   end
+   if config.diagnostics ~= nil then
+      fail("diagnostics", "put rule settings in top-level teal, lua, luajit, or luajit-ffi tables")
+   end
+   if diagnostics then
+      local registry = require("teal.diagnostics.registry")
+      for _, problem in ipairs(registry.validate(diagnostics)) do
+         fail("diagnostics", "%s", problem)
+      end
+   end
+   local normalized = config as TlConfig
+   normalized._diagnostics = diagnostics
+   normalized._diagnostic_target = normalized.diagnostic_target or (targets_luajit and "luajit" or nil)
+
    if config.skip_compat53 then
       config.gen_compat = "off"
    end
@@ -140,7 +178,7 @@ local function validate_config(config: {any:any}): TlConfig, {string}, {string}
    check_warnings("disable_warnings")
    check_warnings("warning_error")
 
-   return config as TlConfig, errs, warnings
+   return normalized, errs, warnings
 end
 
 function configuration.get(): TlConfig, {string}

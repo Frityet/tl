@@ -29,6 +29,8 @@ return {
 | `-p --pretend`       |                            |            | `gen`                | Don't compile/write to any files, but type check and log what files would be written to.
 | `--wdisable`         | `disable_warnings`         | `{string}` | `check` `run`        | Disable the given warnings.
 | `--werror`           | `warning_error`            | `{string}` | `check` `run`        | Promote the given warnings to errors.
+|                      | `teal`, `lua`, `luajit`, `luajit-ffi` | map | `check` `lsp` | Enable diagnostic rules and configure their severity. |
+|                      | `diagnostic_target`        | `string`   | `check` `lsp` | Set the analysis target independently of code generation. |
 | `--global-env-def`   | `global_env_def`           | `string`   | `check` `gen` `run`  | Specify a definition module declaring any custom globals predefined in your Lua environment. See the [declaration files](declaration_files.md#global-environment-definition) page for details. |
 | `--no-stdlib`        | `no_stdlib`                | `boolean`  | `check` `gen` `run`  | Don't include the standard library definitions in the type checker. This is useful when using a custom environment that differs from the PUC-Rio Lua standard library. |
 
@@ -36,6 +38,56 @@ When `source_dir` is set in `tlconfig.lua`, Teal also uses it when resolving
 required modules. This lets a project keep its modules under a source directory
 such as `src` without repeating that directory in `include_dir`; any explicit
 `include_dir` entries are preserved.
+
+## Diagnostics
+
+Configure opt-in diagnostics in `tlconfig.lua`. Run `tl check main.tl` to see
+findings. Editors use the same project settings and show the rule ID and
+severity. Standard type errors and warnings use their usual settings.
+
+| Pack | Examples |
+| ---- | -------- |
+| `teal` | Casts that hide nil or erase type information, redundant type tests and nil fallbacks, optional receiver types |
+| `lua` | Truthiness, discarded multiple results, numeric loop bounds, invalid library arguments, and removed Lua 5.1 APIs |
+| `luajit` | Trace-sensitive work in loops, repeated allocations and compilation, string accumulation, and JIT controls |
+| `luajit-ffi` | C declaration and type reuse, buffer lengths, pointer lifetimes, callback types, and C varargs |
+
+The Lua pack checks `.lua` and `.tl` files. The Teal pack checks Teal source.
+Enabling a LuaJIT or FFI rule in project config selects the LuaJIT diagnosis
+target by default, even if `gen_target` is `"5.1"`. Use `diagnostic_target` to
+set it explicitly. The checker and the editor analyze source in-process. They
+do not execute it or launch LuaJIT for diagnostics.
+
+```lua
+-- tlconfig.lua
+return {
+   gen_target = "5.1",
+   teal = { ["cast-can-hide-nil"] = "error" },
+   lua = { ["truthy-zero-or-empty"] = "warning" },
+   luajit = {
+      all = "hint",
+      ["hot-print"] = "off",
+   },
+   ["luajit-ffi"] = {
+      ["negative-length"] = "error",
+   },
+}
+```
+
+Use the name after the slash in a diagnostic ID as the key in its pack
+table. `all` sets a default for that pack. An explicit rule setting takes
+precedence. `true` uses a rule's default severity. `false` and `"off"`
+disable it. Other levels are `"error"`, `"warning"`, `"info"`, and `"hint"`.
+An `"error"` finding makes `tl check` exit with status 1.
+
+API callers can pass qualified IDs such as `diagnostics = { ["teal/cast-can-hide-nil"] = "error" }`
+and an analysis target to `teal.compiler`.
+`Input:check()` returns findings in `CheckError.diagnostics`, with `code`,
+`severity`, `msg`, `filename`, `y`, `x`, and an exclusive `end_y` and `end_x`
+when available. `teal.diagnostic_catalog(opts)` returns the catalog as data.
+The optional suite skips declaration files and files with syntax errors.
+
+The LuaJIT rule guidance follows the [JIT library reference](https://luajit.org/ext_jit.html) and the [FFI semantics reference](https://luajit.org/ext_ffi_semantics.html).
 
 ### Generated code
 

@@ -11,7 +11,7 @@ local type Args = require("tlcli.args")
 local type TlConfig = require("tlcli.tlconfig")
 
 return function(tlconfig: TlConfig, args: Args)
-   local compiler = driver.setup_compiler(tlconfig)
+   local compiler = driver.setup_compiler(tlconfig, true)
    for _, input_file in ipairs(args["file"]) do
       local _, _, err = driver.process_module(compiler, input_file)
       if err then
@@ -20,7 +20,7 @@ return function(tlconfig: TlConfig, args: Args)
 
    end
 
-   local ok = report.report_all_errors(tlconfig, compiler)
+   local ok = report.report_all_errors(tlconfig, compiler, false, true)
 
    if ok and tlconfig["quiet"] == false and #args["file"] == 1 then
       local file_name = args["file"][1]

@@ -31,7 +31,7 @@ local function filename_to_module_name(filename)
    return (filename:gsub("%.lua$", ""):gsub("%.d%.tl$", ""):gsub("%.tl$", ""):gsub("[/\\]", "."))
 end
 
-function driver.setup_compiler(tlconfig)
+function driver.setup_compiler(tlconfig, check_diagnostics)
    tlconfig._init_env_modules = tlconfig._init_env_modules or {}
    if tlconfig.global_env_def then
       table.insert(tlconfig._init_env_modules, 1, tlconfig.global_env_def)
@@ -42,6 +42,8 @@ function driver.setup_compiler(tlconfig)
       gen_compat = tlconfig["gen_compat"],
       gen_target = tlconfig["gen_target"],
       no_stdlib = tlconfig["no_stdlib"] == true,
+      diagnostics = check_diagnostics and tlconfig._diagnostics or nil,
+      diagnostic_target = check_diagnostics and tlconfig._diagnostic_target or nil,
    }
 
    if (opts.gen_target == "5.4" or opts.gen_target == "5.5") and opts.gen_compat ~= "off" then

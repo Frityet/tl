@@ -105,7 +105,7 @@ local fields_of = traversal.fields_of
 local type_reporter = require("teal.type_reporter")
 
 
-local type_errors = require("teal.type_errors")
+local type_errors = require("teal.diagnostics.type_errors")
 local Errors = type_errors.Errors
 local ensure_not_abstract = type_errors.ensure_not_abstract
 

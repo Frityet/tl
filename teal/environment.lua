@@ -31,7 +31,12 @@ local a_type = types.a_type
 
 
 
+
 local environment = { EnvOptions = {}, Env = {}, Result = {} }
+
+
+
+
 
 
 
@@ -143,6 +148,11 @@ end
 function environment.new(opts)
    local env = empty_environment()
    env.opts = opts or env.opts
+   if env.opts.diagnostics ~= nil then
+      local registry = require("teal.diagnostics.registry")
+      local target = env.opts.diagnostic_target or env.opts.gen_target or environment.DEFAULT_GEN_TARGET
+      env.diagnostics_plan = registry.plan(env.opts.diagnostics, target)
+   end
    if not env.opts.no_stdlib then
       load_precompiled_default_env(env)
    else

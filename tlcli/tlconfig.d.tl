@@ -1,4 +1,13 @@
+local type teal = require("teal.init")
+
 local record TlConfig
+   type DiagnosticPack = {string: boolean | teal.DiagnosticLevel}
+
+   teal: DiagnosticPack
+   lua: DiagnosticPack
+   luajit: DiagnosticPack
+   ["luajit-ffi"]: DiagnosticPack
+   diagnostic_target: teal.GenTarget
    disable_warnings: {string}
    include_dir: {string}
    source_dir: string
@@ -12,6 +21,8 @@ local record TlConfig
    quiet: boolean
    skip_compat53: boolean
    warning_error: {string}
+   _diagnostics: teal.DiagnosticOptions
+   _diagnostic_target: teal.GenTarget
    _init_env_modules: {string}
    _disabled_warnings_set: {string:boolean}
    _warning_errors_set: {string:boolean}

@@ -1,4 +1,4 @@
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 local context = require("teal.check.context")
 local Context = context.Context
 
@@ -7,6 +7,8 @@ tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")
+
+
 
 
 
@@ -149,6 +151,14 @@ function check.check(ast, env, filename, syntax_errors)
 
    end
 
+   local state
+   local runner
+   local plan = env.diagnostics_plan
+   if plan and not self.has_syntax_errors and not filename:match("%.d%.tl$") and not (plan.teal_only and self.feat_lax) then
+      runner = require("teal.diagnostics.runner")
+      visit_node, state = runner.attach(self, visit_node)
+   end
+
    assert(ast.kind == "statements")
    traverse_nodes(self, ast, visit_node, visit_type)
 
@@ -165,6 +175,7 @@ function check.check(ast, env, filename, syntax_errors)
       filename = filename,
       syntax_errors = syntax_errors,
       warnings = self.errs.warnings,
+      diagnostics = runner and runner.finish(state),
       type_errors = self.errs.errors,
       dependencies = self.dependencies,
       needs_compat = self.needs_compat,

@@ -18,6 +18,13 @@ local record errors
    end
    warning_kinds: {WarningKind:boolean}
 
+   enum Severity
+      "error"
+      "warning"
+      "info"
+      "hint"
+   end
+
    record Error
       y: integer
       x: integer
@@ -25,6 +32,10 @@ local record errors
       filename: string
 
       tag: WarningKind
+      code: string
+      severity: Severity
+      end_y: integer
+      end_x: integer
 
       -- used temporarily for stable-sorting
       i: integer

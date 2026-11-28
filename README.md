@@ -122,6 +122,7 @@ Once `tl` is in your path, there are a few subcommands:
   generate a `module.lua` file in plain Lua with all type annotations
   stripped.
 * `tl warnings` will list all warnings the compiler can generate.
+* `tl check` reports type errors and the [diagnostics enabled in `tlconfig.lua`](docs/src/compiler_options.md#diagnostics).
 * `tl lsp [--stdio]` runs Teal's Language Server Protocol server over standard
   input and output. It provides compiler-backed push and pull diagnostics,
   macro-aware completion and hover, resolved definitions, references and rename,

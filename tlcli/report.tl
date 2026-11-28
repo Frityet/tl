@@ -10,7 +10,18 @@ local record report
       any_syntax_err: boolean
       any_type_err: boolean
       any_warning: boolean
+      any_diagnostic_err: boolean
    end
+end
+
+local function report_diagnostics(findings: {Error}): boolean
+   local failed = false
+   for _, finding in ipairs(findings) do
+      common.printerr(("%s:%d:%d: %s [%s] %s"):format(
+         finding.filename, finding.y, finding.x, finding.severity, finding.code, finding.msg))
+      failed = failed or finding.severity == "error"
+   end
+   return failed
 end
 
 local function report_errors(category: string, errors: {Error}): boolean
@@ -46,7 +57,7 @@ local function filter_warnings(tlconfig: TlConfig, errs: teal.CheckError)
    end
 end
 
-function report.report_all_errors(tlconfig: TlConfig, compiler: Compiler, syntax_only?: boolean): boolean, report.ErrorSummary
+function report.report_all_errors(tlconfig: TlConfig, compiler: Compiler, syntax_only?: boolean, include_diagnostics?: boolean): boolean, report.ErrorSummary
    local summary: report.ErrorSummary = {}
    for name in compiler:loaded_files() do
       local _, errs = compiler:recall(name)
@@ -54,13 +65,18 @@ function report.report_all_errors(tlconfig: TlConfig, compiler: Compiler, syntax
       local syntax_err = report_errors("syntax error", errs.syntax_errors)
       if syntax_err then
          summary.any_syntax_err = true
-      elseif not syntax_only then
-         filter_warnings(tlconfig, errs)
-         summary.any_warning = report_errors("warning", errs.warnings) or summary.any_warning
-         summary.any_type_err = report_errors("error", errs.type_errors) or summary.any_type_err
+      else
+         if not syntax_only then
+            filter_warnings(tlconfig, errs)
+            summary.any_warning = report_errors("warning", errs.warnings) or summary.any_warning
+            summary.any_type_err = report_errors("error", errs.type_errors) or summary.any_type_err
+         end
+         if include_diagnostics then
+            summary.any_diagnostic_err = report_diagnostics(errs.diagnostics) or summary.any_diagnostic_err
+         end
       end
    end
-   local ok = not (summary.any_syntax_err or summary.any_type_err)
+   local ok = not (summary.any_syntax_err or summary.any_type_err or summary.any_diagnostic_err)
    return ok, summary
 end
 

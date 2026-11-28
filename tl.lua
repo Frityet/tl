@@ -16,6 +16,7 @@ local require_file = require("teal.check.require_file")
 local input = require("teal.input")
 local targets = require("teal.gen.targets")
 
+
 local type_reporter = require("teal.type_reporter")
 
 
@@ -23,6 +24,8 @@ local type_reporter = require("teal.type_reporter")
 
 
 local v2 = { CheckOptions = {}, EnvOptions = {} }
+
+
 
 
 
@@ -107,6 +110,8 @@ local function env_from_check_options(opts)
       feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
+      diagnostics = opts.diagnostics,
+      diagnostic_target = opts.diagnostic_target,
    })
 end
 
@@ -3218,7 +3223,7 @@ end
 
 -- module teal.check.check from teal/check/check.lua
 package.preload["teal.check.check"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string
 local context = require("teal.check.context")
 local Context = context.Context
 
@@ -3227,6 +3232,8 @@ tldebug.stop_tracing(true, true)
 local TL_DEBUG = tldebug.TL_DEBUG
 
 local environment = require("teal.environment")
+
+
 
 
 
@@ -3369,6 +3376,14 @@ function check.check(ast, env, filename, syntax_errors)
 
    end
 
+   local state
+   local runner
+   local plan = env.diagnostics_plan
+   if plan and not self.has_syntax_errors and not filename:match("%.d%.tl$") and not (plan.teal_only and self.feat_lax) then
+      runner = require("teal.diagnostics.runner")
+      visit_node, state = runner.attach(self, visit_node)
+   end
+
    assert(ast.kind == "statements")
    traverse_nodes(self, ast, visit_node, visit_type)
 
@@ -3385,6 +3400,7 @@ function check.check(ast, env, filename, syntax_errors)
       filename = filename,
       syntax_errors = syntax_errors,
       warnings = self.errs.warnings,
+      diagnostics = runner and runner.finish(state),
       type_errors = self.errs.errors,
       dependencies = self.dependencies,
       needs_compat = self.needs_compat,
@@ -3512,7 +3528,7 @@ local fields_of = traversal.fields_of
 local type_reporter = require("teal.type_reporter")
 
 
-local type_errors = require("teal.type_errors")
+local type_errors = require("teal.diagnostics.type_errors")
 local Errors = type_errors.Errors
 local ensure_not_abstract = type_errors.ensure_not_abstract
 
@@ -8193,7 +8209,7 @@ local traversal = require("teal.traversal")
 local traverse_nodes = traversal.traverse_nodes
 local fields_of = traversal.fields_of
 
-local type_errors = require("teal.type_errors")
+local type_errors = require("teal.diagnostics.type_errors")
 
 local ensure_not_abstract = type_errors.ensure_not_abstract
 
@@ -11503,6 +11519,2020 @@ return tldebug
 
 end
 
+-- module teal.diagnostics.lua from teal/diagnostics/lua.lua
+package.preload["teal.diagnostics.lua"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+
+local model = require("teal.diagnostics.model")
+local types = require("teal.types")
+
+
+
+
+
+local function call_is(s, n, name)
+   local args = model.call_args(n)
+   if args and s:path(n.e1) == name then
+      return args
+   end
+end
+
+local function condition(s, n)
+   local e = model.unwrap(n.exp)
+   if e and ((e.kind == "number" or e.kind == "integer") and model.number(e) == 0 or
+      e.kind == "string" and e.conststr == "") then
+      s:emit(e, "This value is truthy in Lua. Use an explicit comparison if you meant to test for zero or an empty string.")
+   end
+end
+
+local rules = {
+   {
+      id = "lua/truthy-zero-or-empty",
+      severity = "warning",
+      description = "Flag zero or empty string used directly as a condition.",
+      kinds = { "if_block", "while", "repeat" },
+      check = function(s, n, _t, _children)
+         condition(s, n)
+      end,
+   },
+   {
+      id = "lua/falsey-ternary",
+      severity = "warning",
+      description = "Flag an and-or selection whose middle value is always falsey.",
+      kinds = { "op" }, operators = { "or" },
+      check = function(s, n, _t, _children)
+         if n.op.op ~= "or" then return end
+         local left = model.unwrap(n.e1)
+         if not left or left.kind ~= "op" or left.op.op ~= "and" then return end
+         local middle = model.unwrap(left.e2)
+         if middle and (middle.kind == "nil" or (middle.kind == "boolean" and middle.tk == "false")) then
+            s:emit(left.e2, "The middle value is falsey, so this and-or expression always selects the fallback.")
+         end
+      end,
+   },
+   {
+      id = "lua/zero-for-step",
+      severity = "error",
+      description = "Flag a numeric for loop with a literal zero step.",
+      kinds = { "fornum" },
+      check = function(s, n, _t, _children)
+         if n.step and model.number(n.step) == 0 then
+            s:emit(n.step, "A zero numeric-for step can error or prevent the loop from progressing")
+         end
+      end,
+   },
+   {
+      id = "lua/empty-numeric-for",
+      severity = "warning",
+      description = "Flag numeric for loops with literal bounds and a step pointing away from the limit.",
+      kinds = { "fornum" },
+      check = function(s, n, _t, _children)
+         local first, last = model.number(n.from), model.number(n.to)
+         local step = n.step and model.number(n.step) or (not n.step and 1 or nil)
+         if first and last and step and ((step > 0 and first > last) or (step < 0 and first < last)) then
+            s:emit(n, "This numeric for loop never runs: its step points away from the limit")
+         end
+      end,
+   },
+   {
+      id = "lua/zero-divisor",
+      severity = "warning",
+      description = "Flag division, floor division, or modulo by a literal zero.",
+      kinds = { "op" }, operators = { "/", "//", "%" },
+      check = function(s, n, _t, children)
+         local left = children[1] and types.untuple(children[1])
+         if is_numeric_type(left) and not n.op.meta_on_operand and model.number(n.e2) == 0 then
+            s:emit(n.e2, "Division or modulo by zero can raise an error or produce a non-finite value depending on the operation and runtime")
+         end
+      end,
+   },
+   {
+      id = "lua/nil-table-key",
+      severity = "error",
+      description = "Flag a table constructor with a literal nil key.",
+      kinds = { "literal_table_item" },
+      check = function(s, n, _t, _children)
+         local key = model.unwrap(n.key)
+         if n.key_parsed == "long" and key and key.kind == "nil" then
+            s:emit(key, "A table key cannot be nil")
+         end
+      end,
+   },
+   {
+      id = "lua/discarded-multiple-results",
+      severity = "hint",
+      description = "Find non-final expressions that return multiple values in an expression list.",
+      kinds = { "expression_list" },
+      check = function(s, n, _t, children)
+         for i = 1, #n - 1 do
+            local result = children[i]
+            if result.typename == "tuple" and #result.tuple > 1 then
+               s:emit(n[i], "Only the first result is used in this position. Use parentheses to make the truncation explicit.")
+            end
+         end
+      end,
+   },
+   {
+      id = "lua/constant-false-condition",
+      severity = "warning",
+      description = "Find if and while bodies guarded by literal false or nil.",
+      kinds = { "if_block", "while" },
+      check = function(s, n, _t, _children)
+         local test = model.unwrap(n.exp)
+         if test and (test.kind == "nil" or (test.kind == "boolean" and test.tk == "false")) then
+            s:emit(n.exp, "This condition is always falsey, so its body is unreachable.")
+         end
+      end,
+   },
+   {
+      id = "lua/random-empty-interval",
+      severity = "error",
+      description = "Flag math.random with literal bounds forming an empty interval.",
+      kinds = { "op" }, calls = { "math.random" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "math.random")
+         if not args then return end
+         local a = model.number(args[1])
+         local b = model.number(args[2])
+         if a and a % 1 == 0 and ((#args == 1 and a < 0) or (#args == 2 and b and b % 1 == 0 and a > b)) then
+            s:emit(n, "math.random receives an empty interval")
+         end
+      end,
+   },
+   {
+      id = "lua/random-zero-portability",
+      severity = "warning",
+      description = "Flag math.random(0), whose behavior differs across Lua versions.",
+      kinds = { "op" }, calls = { "math.random" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "math.random")
+         if args and #args == 1 and model.number(args[1]) == 0 then
+            s:emit(args[1], "math.random(0) has different behavior across Lua versions")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-tonumber-base",
+      severity = "warning",
+      description = "Flag a literal tonumber base outside the supported range.",
+      kinds = { "op" }, calls = { "tonumber" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "tonumber")
+         local base = args and model.number(args[2])
+         if base and (base < 2 or base > 36 or base % 1 ~= 0) then
+            s:emit(args[2], "Use an integer base from 2 through 36. Fractional bases are handled differently across Lua versions.")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-select-index",
+      severity = "error",
+      description = "Flag select with a literal zero index.",
+      kinds = { "op" }, calls = { "select" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "select")
+         if args and model.number(args[1]) == 0 then
+            s:emit(args[1], "select accepts a nonzero index or '#'. Zero is invalid.")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-string-char",
+      severity = "warning",
+      description = "Flag literal byte values outside the range accepted by string.char.",
+      kinds = { "op" }, calls = { "string.char" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "string.char")
+         if not args then return end
+         for _, argument in ipairs(args) do
+            local value = model.number(argument)
+            if value and (value < 0 or value > 255 or value % 1 ~= 0) then
+               s:emit(argument, "Use integer byte values from 0 through 255. Fractional values are handled differently across Lua versions.")
+            end
+         end
+      end,
+   },
+   {
+      id = "lua/negative-string-rep",
+      severity = "hint",
+      description = "Flag a negative literal repetition count in string.rep.",
+      kinds = { "op" }, calls = { "string.rep" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "string.rep")
+         local count = args and model.number(args[2])
+         if count and count < 0 then
+            s:emit(args[2], "A negative repetition count produces an empty string")
+         end
+      end,
+   },
+   {
+      id = "lua/reversed-string-sub",
+      severity = "hint",
+      description = "Flag positive literal string.sub bounds in reverse order.",
+      kinds = { "op" }, calls = { "string.sub" }, bindings = true,
+      check = function(s, n, _t, _children)
+         local args = call_is(s, n, "string.sub")
+         local first = args and model.number(args[2])
+         local last = args and model.number(args[3])
+         if first and last and first > 0 and last > 0 and first % 1 == 0 and last % 1 == 0 and first > last then
+            s:emit(args[2], "These string.sub bounds always produce an empty string")
+         end
+      end,
+   },
+   {
+      id = "lua/invalid-type-name",
+      severity = "warning",
+      description = "Flag comparisons between type() and a string that Lua's type function cannot return.",
+      kinds = { "op" }, operators = { "==", "~=" }, bindings = true,
+      check = function(s, n, _t, _children)
+         if n.op.op ~= "==" and n.op.op ~= "~=" then return end
+         local call, literal = model.unwrap(n.e1), model.unwrap(n.e2)
+         if call and literal and literal.kind ~= "string" then call, literal = literal, call end
+         if not call or not literal or literal.kind ~= "string" or not call_is(s, call, "type") then return end
+         local name = literal.conststr
+         if name == "cdata" and s.target == "luajit" then return end
+         if name ~= "nil" and name ~= "boolean" and name ~= "number" and name ~= "string" and
+            name ~= "function" and name ~= "userdata" and name ~= "thread" and name ~= "table" then
+            local message = "This runtime's type() never returns this name."
+            if name == "integer" and s.target ~= "5.1" and s.target ~= "luajit" then
+               message = message .. " Use math.type to distinguish integers from floats."
+            end
+            s:emit(literal, message)
+         end
+      end,
+   },
+   {
+      id = "lua/legacy-environment-api",
+      severity = "warning",
+      description = "Find Lua 5.1 environment APIs on standard Lua 5.3 and later targets.",
+      kinds = { "op" }, calls = { "getfenv", "setfenv" },
+      check = function(s, n, _t, _children)
+         if s.is_lua and s.target ~= "5.1" and s.target ~= "luajit" then
+            s:emit(n, "Standard Lua 5.3 and later use lexical _ENV. For a loaded chunk, pass the environment to load.")
+         end
+      end,
+   },
+   {
+      id = "lua/legacy-loadstring",
+      severity = "warning",
+      description = "Find loadstring calls on standard Lua 5.3 and later targets.",
+      kinds = { "op" }, calls = { "loadstring" },
+      check = function(s, n, _t, _children)
+         if s.is_lua and s.target ~= "5.1" and s.target ~= "luajit" then
+            s:emit(n, "Use load to compile a string on this Lua target.")
+         end
+      end,
+   },
+   {
+      id = "lua/legacy-unpack",
+      severity = "warning",
+      description = "Find global unpack calls on standard Lua 5.3 and later targets.",
+      kinds = { "op" }, calls = { "unpack" },
+      check = function(s, n, _t, _children)
+         if s.is_lua and s.target ~= "5.1" and s.target ~= "luajit" then
+            s:emit(n, "Use table.unpack on this Lua target.")
+         end
+      end,
+   },
+}
+
+return rules
+
+end
+
+-- module teal.diagnostics.luajit from teal/diagnostics/luajit.lua
+package.preload["teal.diagnostics.luajit"] = function(...)
+
+
+
+local model = require("teal.diagnostics.model")
+
+
+
+
+
+local function hot_call(id, name, description, message)
+   return {
+      id = id, severity = "hint", description = description,
+      kinds = { "op" }, bindings = true, calls = { name },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            s:emit(n, message)
+         end
+      end,
+   }
+end
+
+local rules = {
+   hot_call("luajit/hot-string-match", "string.match",
+   "Find pattern matching inside loops that may cross a trace boundary.",
+   "string.match is not recorded by LuaJIT's fast-function recorder; the trace can stitch across the call. If only literal presence is needed, try string.find(s, needle, 1, true), then check traces and benchmark"),
+   hot_call("luajit/hot-string-gmatch", "string.gmatch",
+   "Find repeated pattern iterator creation inside loops.",
+   "string.gmatch creates a pattern iterator. Consider moving creation out of the loop when iteration semantics permit"),
+   hot_call("luajit/hot-string-gsub", "string.gsub",
+   "Find substitutions inside loops that may be expensive.",
+   "string.gsub in a loop performs pattern substitution and creates a result string. Profile before restructuring"),
+   hot_call("luajit/hot-string-dump", "string.dump",
+   "Find repeated function serialization inside loops.",
+   "string.dump serializes a function and is unlikely to belong in a hot loop. Cache the result if it remains valid"),
+   hot_call("luajit/hot-load", "load",
+   "Find repeated compilation of source inside loops.",
+   "load compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+   hot_call("luajit/hot-loadstring", "loadstring",
+   "Find repeated compilation of strings inside loops.",
+   "loadstring compiles a chunk at runtime. If the source is invariant, compile it outside the loop"),
+   hot_call("luajit/hot-loadfile", "loadfile",
+   "Find repeated loading and compilation of files inside loops.",
+   "loadfile reads and compiles a chunk. If the file is invariant, load it outside the loop"),
+   hot_call("luajit/hot-dofile", "dofile",
+   "Find repeated loading and execution of files inside loops.",
+   "dofile loads and executes a file on each iteration. Check whether that repeated work is needed"),
+   hot_call("luajit/hot-collectgarbage", "collectgarbage",
+   "Find explicit garbage collector operations inside loops.",
+   "collectgarbage in a loop may disrupt normal GC scheduling. Measure the effect before forcing collection or changing GC settings"),
+   hot_call("luajit/hot-setfenv", "setfenv",
+   "Find environment mutation inside loops.",
+   "setfenv changes a function environment and can interrupt a trace. Move invariant setup out of the loop when possible."),
+   hot_call("luajit/hot-newproxy", "newproxy",
+   "Find repeated proxy allocations inside loops.",
+   "newproxy allocates userdata. Repeated allocations can increase GC pressure in a hot loop"),
+   hot_call("luajit/hot-print", "print",
+   "Find console output inside loops.",
+   "print performs output on every iteration. Buffer or sample logging if profiling shows it dominates the loop"),
+   hot_call("luajit/hot-coroutine-create", "coroutine.create",
+   "Find repeated coroutine creation inside loops.",
+   "coroutine.create allocates a coroutine. Consider reusing workers when its lifecycle permits"),
+   hot_call("luajit/hot-coroutine-wrap", "coroutine.wrap",
+   "Find repeated wrapped coroutine creation inside loops.",
+   "coroutine.wrap creates a coroutine and wrapper. Consider reusing workers when its lifecycle permits"),
+   {
+      id = "luajit/unrecorded-library-call", severity = "hint",
+      description = "Find library calls that LuaJIT does not record as fast functions.",
+      kinds = { "op" }, bindings = true,
+      calls = { "table.sort", "table.maxn", "coroutine.status", "coroutine.running", "coroutine.resume", "coroutine.yield",
+      "debug.getregistry", "debug.setmetatable", "debug.getfenv", "debug.setfenv", "debug.getinfo", "debug.getlocal",
+      "debug.setlocal", "debug.getupvalue", "debug.setupvalue", "debug.sethook", "debug.gethook", "debug.traceback",
+      "jit.on", "jit.status", "jit.attach", "jit.opt.start", "gcinfo", },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            s:emit(n, "This LuaJIT library call has no fast-function recorder. The current trace may stitch across it or return to the interpreter; move invariant inspection or setup out of the loop, and use -jv to check the actual path")
+         end
+      end,
+   },
+   {
+      id = "luajit/table-insert-position", severity = "hint",
+      description = "Find positioned inserts that the LuaJIT table.insert recorder cannot handle.",
+      kinds = { "op" }, bindings = true, calls = { "table.insert" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 and #n.e2 == 3 then
+            s:emit(n, "LuaJIT's table.insert recorder handles the two-argument append, but not a positioned insert. If the operation is an append, use table.insert(t, value) or t[#t + 1] = value; preserve insertion semantics otherwise")
+         end
+      end,
+   },
+   {
+      id = "luajit/tonumber-base", severity = "hint",
+      description = "Find explicit tonumber bases unsupported by the LuaJIT recorder.",
+      kinds = { "op" }, bindings = true, calls = { "tonumber" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 and #n.e2 >= 2 then
+            local base = model.number(n.e2[2])
+            if base and base ~= 10 then
+               s:emit(n, "LuaJIT does not record tonumber with this base. If input is invariant, convert it before the loop; otherwise profile the interpreter or stitched call")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit/jit-off-in-loop", severity = "warning",
+      description = "Find repeated JIT disabling in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.off" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            s:emit(n, "jit.off inside a loop repeatedly changes JIT state. Configure it outside the loop when possible.")
+         end
+      end,
+   },
+   {
+      id = "luajit/jit-flush-in-loop", severity = "warning",
+      description = "Find repeated trace flushing in a loop.", kinds = { "op" }, bindings = true, calls = { "jit.flush" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            s:emit(n, "jit.flush discards compiled traces. Repeated flushing can prevent useful compilation.")
+         end
+      end,
+   },
+   {
+      id = "luajit/table-insert-front", severity = "hint",
+      description = "Find insertions at the front of a table inside loops.", kinds = { "op" }, bindings = true, calls = { "table.insert" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            local args = n.e2
+            if #args == 3 and model.number(args[2]) == 1 then
+               s:emit(n, "Inserting at index 1 shifts existing array elements. For large sequences, consider appending and reversing or using a deque.")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit/table-remove-front", severity = "hint",
+      description = "Find removals from the front of a table inside loops.", kinds = { "op" }, bindings = true, calls = { "table.remove" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            local args = n.e2
+            if #args == 2 and model.number(args[2]) == 1 then
+               s:emit(n, "Removing index 1 shifts following array elements. For a queue, consider tracking a head index.")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit/string-accumulation-in-loop", severity = "hint",
+      description = "Find string accumulators that copy the growing prefix on each iteration.", kinds = { "assignment" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth == 0 or #n.vars ~= 1 or #n.exps ~= 1 then return end
+         local dst, value = n.vars[1], model.unwrap(n.exps[1])
+         if dst.kind ~= "variable" or not value.op or value.op.op ~= ".." or value.op.meta_on_operand then return end
+         local left = model.unwrap(value.e1)
+         if left.kind == "variable" and left.tk == dst.tk then
+            s:emit(value, "Appending to a growing string repeatedly copies the prefix. Collect fragments and join them once with table.concat.")
+         end
+      end,
+   },
+   {
+      id = "luajit/hot-string-pattern-method", severity = "hint",
+      description = "Find repeated pattern operations written as string method calls.", kinds = { "op" }, operators = { "@funcall" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth == 0 then return end
+         local callee = n.e1
+         if callee.op and callee.op.op == ":" and callee.receiver and
+            (callee.receiver.typename == "string" or callee.receiver.typename == "enum") then
+            local member = callee.e2.tk
+            if member == "match" or member == "gmatch" or member == "gsub" then
+               s:emit(callee.e2, "This string pattern operation runs inside a loop. Profile it and hoist invariant work where possible.")
+            end
+         end
+      end,
+   },
+}
+
+return rules
+
+end
+
+-- module teal.diagnostics.luajit_ffi from teal/diagnostics/luajit_ffi.lua
+package.preload["teal.diagnostics.luajit_ffi"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+
+
+local model = require("teal.diagnostics.model")
+
+
+
+
+
+local function call(n)
+   return model.call_args(model.unwrap(n))
+end
+
+local function path(s, n)
+   n = model.unwrap(n)
+   return n and s:path(n)
+end
+
+local function call_path(s, n)
+   n = model.unwrap(n)
+   if call(n) then return path(s, n.e1) end
+end
+
+local function literal(n)
+   n = model.unwrap(n)
+   if n and n.kind == "string" then return n.conststr end
+end
+
+
+
+local function c_declaration(n)
+   local text = literal(n)
+   if text then
+      text = text:gsub("/%*.-%*/", " "):gsub("//[^\n]*", " ")
+   end
+   return text
+end
+
+local routes = {
+   ["cdef-in-loop"] = { "ffi.cdef" },
+   ["load-in-loop"] = { "ffi.load" },
+   ["metatype-in-loop"] = { "ffi.metatype" },
+   ["new-cdecl-in-loop"] = { "ffi.new" },
+   ["vla-initializer-in-loop"] = { "ffi.new" },
+   ["string-in-loop"] = { "ffi.string" },
+   ["gc-in-loop"] = { "ffi.gc" },
+   ["typeof-in-loop"] = { "ffi.typeof" },
+   ["anonymous-aggregate"] = { "ffi.new" },
+   ["cdef-preprocessor"] = { "ffi.cdef" },
+   ["cdef-volatile"] = { "ffi.cdef" },
+   ["cdef-long-double"] = { "ffi.cdef" },
+   ["negative-length"] = { "ffi.copy", "ffi.fill", "ffi.string" },
+   ["copy-string-overread"] = { "ffi.copy" },
+   ["copy-missing-length"] = { "ffi.copy" },
+   ["temporary-array-pointer"] = { "ffi.cast" },
+   ["temporary-array-initializer"] = { "ffi.new" },
+   ["callback-vararg"] = { "ffi.cast" },
+   ["unknown-abi"] = { "ffi.abi" },
+   ["printf-integer-vararg"] = { "ffi.C.printf", "ffi.C.fprintf", "ffi.C.sprintf", "ffi.C.snprintf" },
+}
+local rules = {}
+local function add(id, severity, description,
+   fn)
+   local r = {
+      id = "luajit-ffi/" .. id,
+      severity = severity,
+      description = description,
+      kinds = { "op" },
+      calls = routes[id],
+      bindings = true,
+      check = function(s, n, _t, _children)
+         fn(s, n, n.e2)
+      end,
+   }
+   if not r.calls then r.operators = { "@funcall" } end
+   table.insert(rules, r)
+end
+
+local function in_loop(s, n, name, advice)
+   if s.loop_depth > 0 then
+      s:emit(n, "ffi." .. name .. " runs in a loop. " .. advice)
+   end
+end
+
+add("cdef-in-loop", "warning", "Avoid parsing C declarations repeatedly in loops.", function(s, n, _a)
+   in_loop(s, n, "cdef", "Move fixed declarations outside the loop.")
+end)
+add("load-in-loop", "warning", "Avoid repeatedly loading C libraries in loops.", function(s, n, _a)
+   in_loop(s, n, "load", "Load the library once and reuse its namespace; access functions through that namespace instead of caching individual function cdata.")
+end)
+add("metatype-in-loop", "warning", "Avoid creating C metatypes repeatedly in loops.", function(s, n, _a)
+   in_loop(s, n, "metatype", "Create the metatype once and reuse it.")
+end)
+add("new-cdecl-in-loop", "hint", "Cache C types used repeatedly in loops.", function(s, n, a)
+   if s.loop_depth > 0 and literal(a[1]) then
+      s:emit(n, "ffi.new parses this C declaration in a loop. Cache ffi.typeof(...) and call the resulting ctype; stable ctypes also avoid type guards changing across iterations")
+   end
+end)
+
+
+
+add("vla-initializer-in-loop", "warning", "Avoid initialized variable-length FFI arrays in hot loops.", function(s, n, a)
+   local decl = literal(a[1])
+   if s.loop_depth > 0 and decl and decl:match("%[%s*%?%s*%]") and a[3] then
+      s:emit(n, "LuaJIT cannot record this variable-length array initializer. Allocate the array with its length only and fill it separately, or reuse a typed buffer outside the loop")
+   end
+end)
+add("string-in-loop", "hint", "Avoid unnecessary C-to-Lua string copies in hot loops.", function(s, n, _a)
+   if s.loop_depth > 0 then
+      s:emit(n, "ffi.string copies bytes into a Lua string. If possible, process the buffer directly or convert once outside the loop; keep its owner alive while using it")
+   end
+end)
+add("gc-in-loop", "hint", "Avoid repeatedly attaching FFI finalizers in hot loops.", function(s, n, _a)
+   if s.loop_depth > 0 then
+      s:emit(n, "ffi.gc attaches or changes a finalizer. Consider reusing an owned buffer outside the loop and release it only after its last use")
+   end
+end)
+add("typeof-in-loop", "hint", "Avoid repeatedly parsing fixed C type declarations.", function(s, n, a)
+   if s.loop_depth > 0 and literal(a[1]) and #a == 1 then
+      s:emit(n, "ffi.typeof parses this fixed declaration in a loop. Cache the ctype outside the loop")
+   end
+end)
+add("anonymous-aggregate", "warning", "Avoid creating distinct anonymous C types on each allocation.", function(s, n, a)
+   local decl = literal(a[1])
+   if decl and (decl:match("%f[%w_]struct%s*{") or decl:match("%f[%w_]union%s*{")) then
+      s:emit(n, "each ffi.new of an anonymous aggregate creates a distinct C type. Define a named type or reuse one ffi.typeof result")
+   end
+end)
+add("cdef-preprocessor", "warning", "C declarations are not passed through a C preprocessor.", function(s, n, a)
+   local decl = c_declaration(a[1])
+   if not decl then return end
+   for directive in ("\n" .. decl):gmatch("\n[ \t]*#[ \t]*([^\n]+)") do
+      if not directive:match("^pragma[ \t]+pack[ \t]*%(") then
+         s:emit(n, "Resolve C preprocessor directives and macros before passing the declarations to ffi.cdef.")
+         return
+      end
+   end
+end)
+add("cdef-volatile", "warning", "LuaJIT compiled code ignores volatile qualifiers.", function(s, n, a)
+   local decl = c_declaration(a[1])
+   if decl and decl:match("%f[%w_]volatile%f[^%w_]") then
+      s:emit(n, "LuaJIT compiled code ignores volatile qualifiers. Use a C wrapper when accesses must be volatile.")
+   end
+end)
+add("cdef-long-double", "warning", "LuaJIT does not support long double operations.", function(s, n, a)
+   local decl = c_declaration(a[1])
+   if decl and decl:match("%f[%w_]long%s+double%f[^%w_]") then
+      s:emit(n, "LuaJIT parses long double but does not support its conversions, accesses or arithmetic. Use a C wrapper")
+   end
+end)
+add("negative-length", "error", "Reject negative literal FFI memory lengths.", function(s, n, a)
+   local p = path(s, n.e1)
+   local len
+   if p == "ffi.copy" then len = a[3]
+   elseif p == "ffi.fill" or p == "ffi.string" then len = a[2] end
+   local value = len and model.number(len)
+   if value and value < 0 then
+      s:emit(len, p .. " requires a nonnegative byte length")
+   end
+end)
+add("copy-string-overread", "error", "Detect literal string copies that exceed the source buffer.", function(s, n, a)
+   if path(s, n.e1) == "ffi.copy" then
+      local str, len = literal(a[2]), a[3] and model.number(a[3])
+      if str and len and len > #str + 1 then
+         s:emit(a[3], "ffi.copy length exceeds the literal string and its terminating zero byte")
+      end
+   end
+end)
+add("copy-missing-length", "error", "Require a length when copying a non-string literal source.", function(s, n, a)
+   if path(s, n.e1) == "ffi.copy" and #a == 2 then
+      local src = model.unwrap(a[2])
+      if src and (src.kind == "number" or src.kind == "integer" or src.kind == "boolean" or src.kind == "nil" or src.kind == "literal_table") then
+         s:emit(src, "the two-argument ffi.copy form requires a Lua string source. Pass a valid source and byte length")
+      end
+   end
+end)
+add("temporary-array-pointer", "warning", "Keep the owner of a pointer cast from a temporary C array alive.", function(s, n, a)
+   local decl, value = literal(a[1]), model.unwrap(a[2])
+   if path(s, n.e1) == "ffi.cast" and decl and decl:find("%*") and call_path(s, value) == "ffi.new" then
+      local inner = call(value)
+      local innerdecl = inner and literal(inner[1])
+      if innerdecl and innerdecl:find("%[") then
+         s:emit(n, "this pointer does not keep the temporary array alive. Retain the array separately for the entire pointer lifetime")
+      end
+   end
+end)
+add("temporary-array-initializer", "hint", "Check temporary C array ownership when initializing named C aggregates.", function(s, _n, a)
+   local decl = literal(a[1])
+   if decl and decl:match("^%s*%a+%s+[%w_]+%s*$") and (decl:match("^%s*struct%s") or decl:match("^%s*union%s")) then
+      for i = 2, #a do
+         local value = model.unwrap(a[i])
+         if call_path(s, value) == "ffi.new" then
+            local inner = call(value)
+            local innerdecl = inner and literal(inner[1])
+            if innerdecl and innerdecl:find("%[") then
+               s:emit(value, "If this initializes a pointer field, keep the array alive for as long as the field is used.")
+            end
+         end
+      end
+   end
+end)
+add("implicit-callback", "warning", "Avoid permanent implicit Lua-to-C callback conversions.", function(s, n, a)
+   local p = path(s, n.e1)
+   if p and p:match("^ffi%.C%.") then
+      for _, argument in ipairs(a) do
+         local value = model.unwrap(argument)
+         if value and value.kind == "function" then
+            s:emit(value, "an implicit FFI callback is permanent. Explicitly ffi.cast the callback and free it once C no longer uses it; for hot paths, batch work to reduce C-to-Lua crossings")
+         end
+      end
+   end
+end)
+add("callback-vararg", "error", "Require fixed signatures for LuaJIT callbacks.", function(s, n, a)
+   local decl, value = c_declaration(a[1]), model.unwrap(a[2])
+   if path(s, n.e1) == "ffi.cast" and decl and decl:find("...", 1, true) and value and value.kind == "function" then
+      s:emit(n, "LuaJIT does not support callbacks with C vararg function types. Use a fixed-signature C wrapper")
+   end
+end)
+local known_abi = {
+   ["32bit"] = true, ["64bit"] = true, le = true, be = true, fpu = true,
+   softfp = true, hardfp = true, eabi = true, win = true, pauth = true,
+   uwp = true, gc64 = true, dualnum = true,
+}
+add("unknown-abi", "warning", "Detect unrecognized literal ffi.abi queries.", function(s, _n, a)
+   local name = literal(a[1])
+   if name and not known_abi[name] then
+      s:emit(a[1], "Unrecognized ffi.abi parameter '" .. name .. "'. Check the target ABI name.")
+   end
+end)
+add("printf-integer-vararg", "warning", "Pass explicitly typed integers to printf-family C varargs.", function(s, n, a)
+   local p = path(s, n.e1)
+   local format_index = p == "ffi.C.printf" and 1 or (p == "ffi.C.snprintf" and 3 or 2)
+   local format = literal(a[format_index])
+   if not format then return end
+   local pos, arg_index = 1, format_index + 1
+   while true do
+      local start = format:find("%", pos, true)
+      if not start then break end
+      if format:sub(start + 1, start + 1) == "%" then
+         pos = start + 2
+      else
+
+
+         local tail = format:sub(start)
+         local full, conversion = tail:match("^(%%[-+ #0]*%d*%.?%d*[hljztL]*([diouxXcfeEgGaAspn]))")
+         if not full then break end
+         local value = model.unwrap(a[arg_index])
+         if conversion:match("[diouxXc]") and model.number(value) then
+            s:emit(value, "Lua numbers become double in C varargs. Use ffi.cast or ffi.new with the integer type required by this format")
+         end
+         arg_index = arg_index + 1
+         pos = start + #full
+      end
+   end
+end)
+return rules
+
+end
+
+-- module teal.diagnostics.luajit_loops from teal/diagnostics/luajit_loops.lua
+package.preload["teal.diagnostics.luajit_loops"] = function(...)
+
+
+
+local model = require("teal.diagnostics.model")
+
+
+
+
+
+local function is_call(s, n, name)
+   n = model.unwrap(n)
+   return n and n.op and n.op.op == "@funcall" and s:path(n.e1) == name
+end
+
+local function type_test(s, n)
+   n = model.unwrap(n)
+   if not n or not n.op or (n.op.op ~= "==" and n.op.op ~= "~=") then return false end
+   local a, b = model.unwrap(n.e1), model.unwrap(n.e2)
+   return (a and b and a.kind == "string" and is_call(s, b, "type")) or
+   (a and b and b.kind == "string" and is_call(s, a, "type")) or false
+end
+
+local function parity_test(n)
+   n = model.unwrap(n)
+   if not n or not n.op or (n.op.op ~= "==" and n.op.op ~= "~=") then return false end
+   local a, b = model.unwrap(n.e1), model.unwrap(n.e2)
+   if model.number(a) ~= 0 then a, b = b, a end
+   return model.number(a) == 0 and b and b.op and b.op.op == "%" and model.number(b.e2) == 2 or false
+end
+
+local rules = {
+   {
+      id = "luajit/loop-type-dispatch", severity = "hint",
+      description = "Find runtime type dispatch inside loops.", kinds = { "if_block" }, bindings = true,
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 and type_test(s, n.exp) then
+            s:emit(n.exp, "A type-dependent branch in a hot loop can take different guarded paths as values change. Profile exits with LuaJIT -jv; if this branch is costly, group values by type or move dispatch outside the loop.")
+         end
+      end,
+   },
+   {
+      id = "luajit/loop-alternating-branch", severity = "hint",
+      description = "Find parity branches that may alternate on successive iterations.", kinds = { "if_block" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 and parity_test(n.exp) then
+            s:emit(n.exp, "This parity branch may alternate between paths in the loop. LuaJIT records guarded paths and may compile side traces; inspect -jv before considering processing pairs of items together.")
+         end
+      end,
+   },
+   {
+      id = "luajit/loop-indexed-dispatch", severity = "hint",
+      description = "Find dynamically indexed function calls inside loops.", kinds = { "op" }, operators = { "@funcall" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth == 0 then return end
+         local callee = model.unwrap(n.e1)
+         if callee and callee.op and callee.op.op == "@index" then
+            local key = model.unwrap(callee.e2)
+            if key and key.kind ~= "string" and key.kind ~= "number" and key.kind ~= "integer" then
+               s:emit(callee, "The indexed call target may vary between iterations, causing function guards to fail. If profiling shows frequent exits, group work by target or select a stable function outside the loop.")
+            end
+         end
+      end,
+   },
+   {
+      id = "luajit/loop-array-hole", severity = "hint",
+      description = "Find explicit deletion of indexed entries in loops.", kinds = { "assignment" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth == 0 or #n.vars ~= 1 or #n.exps ~= 1 then return end
+         local dst, value = model.unwrap(n.vars[1]), model.unwrap(n.exps[1])
+         if dst and dst.op and dst.op.op == "@index" and value and value.kind == "nil" then
+            s:emit(dst, "Deleting an indexed entry can create holes if this table is used as a sequence. If profiling shows unstable lookups or iteration, consider a dense array with a separate count or a swap-remove scheme when order permits.")
+         end
+      end,
+   },
+   {
+      id = "luajit/loop-table-allocation", severity = "hint",
+      description = "Find table constructors inside loops.", kinds = { "literal_table" },
+      check = function(s, n, _t, _children)
+         if s.loop_depth > 0 then
+            s:emit(n, "This table is constructed on each iteration. LuaJIT may eliminate some allocations; if GC profiling shows pressure, reuse storage when its lifetime and aliasing permit.")
+         end
+      end,
+   },
+}
+
+return rules
+
+end
+
+-- module teal.diagnostics.model from teal/diagnostics/model.lua
+package.preload["teal.diagnostics.model"] = function(...)
+
+
+
+
+
+
+local model = { Rule = {}, RuleInfo = {}, EnabledRule = {}, Plan = {}, State = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function model.unwrap(n)
+   while n and (n.kind == "paren" or (n.op and n.op.op == "as")) do
+      n = n.e1
+   end
+   return n
+end
+
+function model.number(n)
+   n = model.unwrap(n)
+   if not n then return nil end
+   if n.kind == "number" or n.kind == "integer" then
+      return n.constnum
+   end
+   if n.op and n.op.op == "-" and n.op.arity == 1 then
+      local value = model.number(n.e1)
+      return value and -value
+   end
+end
+
+function model.call_args(n)
+   n = model.unwrap(n)
+   if n and n.op and n.op.op == "@funcall" then
+      return n.e2
+   end
+end
+
+return model
+
+end
+
+-- module teal.diagnostics.registry from teal/diagnostics/registry.lua
+package.preload["teal.diagnostics.registry"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+
+
+
+
+
+
+
+
+local registry = {}
+
+
+
+
+
+
+
+local packs = { "teal", "lua", "luajit", "luajit-ffi" }
+
+local loaders = {
+   ["teal"] = function() return require("teal.diagnostics.teal") end,
+   ["lua"] = function() return require("teal.diagnostics.lua") end,
+   ["luajit"] = function()
+      local trace_calls = require("teal.diagnostics.luajit")
+      local loop_rules = require("teal.diagnostics.luajit_loops")
+      local combined = {}
+      for _, rule in ipairs(trace_calls) do combined[#combined + 1] = rule end
+      for _, rule in ipairs(loop_rules) do combined[#combined + 1] = rule end
+      return combined
+   end,
+   ["luajit-ffi"] = function() return require("teal.diagnostics.luajit_ffi") end,
+}
+
+local levels = {
+   ["off"] = true,
+   ["error"] = true,
+   ["warning"] = true,
+   ["info"] = true,
+   ["hint"] = true,
+}
+
+local pack_names = loaders
+local level_names = levels
+local entries = {}
+local rules_by_id = {}
+
+local function load_pack(pack)
+   if entries[pack] then return entries[pack] end
+   local found = {}
+   for _, rule in ipairs(loaders[pack]()) do
+      assert(rule.id:sub(1, #pack + 1) == pack .. "/" and not rules_by_id[rule.id], rule.id)
+      local entry = { rule = rule, pack = pack }
+      rules_by_id[rule.id] = entry
+      found[#found + 1] = entry
+   end
+   table.sort(found, function(a, b) return a.rule.id < b.rule.id end)
+   entries[pack] = found
+   return found
+end
+
+function registry.validate(options)
+   local problems = {}
+   if options == nil then return problems end
+   if not (type(options) == "table") then
+      return { "expected a table of diagnostic settings" }
+   end
+   for selector, level in pairs(options) do
+      if not (type(selector) == "string") then
+         problems[#problems + 1] = "expected string keys in diagnostic settings"
+      else
+         if selector ~= "all" and not pack_names[selector] then
+            local pack = selector:match("^([^/]+)/")
+            if pack and pack_names[pack] then load_pack(pack) end
+            if not rules_by_id[selector] then
+               problems[#problems + 1] = ("unknown diagnostic selector %q"):format(selector)
+            end
+         end
+         if not (type(level) == "boolean") and not (type(level) == "string" and level_names[level]) then
+            problems[#problems + 1] = ("invalid level for %q (expected true, false, off, error, warning, info, or hint)"):format(selector)
+         end
+      end
+   end
+   table.sort(problems)
+   return problems
+end
+
+local function validate(options)
+   local problems = registry.validate(options)
+   if #problems > 0 then
+      error("invalid diagnostics configuration:\n" .. table.concat(problems, "\n"), 3)
+   end
+end
+
+local function available(pack, target)
+   return (pack ~= "luajit" and pack ~= "luajit-ffi") or target == "luajit"
+end
+
+local function configured_level(options, pack, rule)
+   local setting = options[rule.id]
+   if setting == nil then setting = options[pack] end
+   if setting == nil then setting = options["all"] end
+   if setting == true then return rule.severity end
+   if not setting then return "off" end
+   return setting
+end
+
+function registry.catalog(options, target)
+   validate(options)
+   options = options or {}
+   local catalog = {}
+   for _, pack in ipairs(packs) do
+      local compatible = available(pack, target)
+      for _, entry in ipairs(load_pack(pack)) do
+         local rule = entry.rule
+         catalog[#catalog + 1] = {
+            id = rule.id,
+            pack = pack,
+            description = rule.description,
+            default_severity = rule.severity,
+            available = compatible,
+            level = compatible and configured_level(options, pack, rule) or "off",
+         }
+      end
+   end
+   return catalog
+end
+
+local function register(routes, key, rule)
+   local list = routes[key]
+   if not list then
+      list = {}
+      routes[key] = list
+   end
+   list[#list + 1] = rule
+end
+
+function registry.plan(options, target)
+   if options == nil then return nil end
+   validate(options)
+
+   local selected_packs = {}
+   local all = options["all"]
+   for selector, setting in pairs(options) do
+      if setting and setting ~= "off" and selector ~= "all" then
+         local entry = rules_by_id[selector]
+         local pack = entry and entry.pack or selector
+         selected_packs[pack] = true
+      end
+   end
+
+   local plan
+   for _, pack in ipairs(packs) do
+      if available(pack, target) and (selected_packs[pack] or (all and all ~= "off")) then
+         for _, entry in ipairs(load_pack(pack)) do
+            local rule = entry.rule
+            local level = configured_level(options, pack, rule)
+            if level ~= "off" then
+               plan = plan or { by_kind = {}, by_operator = {}, by_call = {}, teal_only = true }
+               local enabled = {
+                  id = rule.id, severity = level, check = rule.check, teal_only = pack == "teal",
+               }
+               plan.bindings = plan.bindings or rule.bindings or rule.calls ~= nil
+               plan.teal_only = plan.teal_only and enabled.teal_only
+               plan.track_loops = plan.track_loops or pack == "luajit" or pack == "luajit-ffi"
+               for _, kind in ipairs(rule.kinds) do
+                  if kind == "op" and rule.calls then
+                     for _, call in ipairs(rule.calls) do register(plan.by_call, call, enabled) end
+                  elseif kind == "op" and rule.operators then
+                     for _, op in ipairs(rule.operators) do register(plan.by_operator, op, enabled) end
+                  else
+                     register(plan.by_kind, kind, enabled)
+                  end
+               end
+            end
+         end
+      end
+   end
+   return plan
+end
+
+return registry
+
+end
+
+-- module teal.diagnostics.runner from teal/diagnostics/runner.lua
+package.preload["teal.diagnostics.runner"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
+local model = require("teal.diagnostics.model")
+local environment = require("teal.environment")
+local util = require("teal.util")
+
+
+
+
+
+
+
+
+
+
+
+
+local State = model.State
+
+local runner = {}
+
+
+local runtime_globals = {
+   bit = true, jit = true, newproxy = true,
+}
+local legacy_globals = { setfenv = true, getfenv = true, loadstring = true, unpack = true }
+
+local required_modules = {
+   ffi = true, bit = true, jit = true, ["jit.opt"] = true,
+   coroutine = true, debug = true, io = true, math = true, os = true,
+   package = true, string = true, table = true, utf8 = true,
+}
+
+local function member_name(node)
+   if node.op.op == "." then return node.e2.tk end
+   if node.op.op == "@index" then
+      local key = model.unwrap(node.e2)
+      if key and key.kind == "string" and not key.conststr:find(".", 1, true) then
+         return key.conststr
+      end
+   end
+end
+
+local function required_module(state, n)
+   local args = n.e2
+   local name = #args == 1 and model.unwrap(args[1])
+   if name and name.kind == "string" and required_modules[name.conststr] and state:path(n.e1) == "require" then
+      return name.conststr
+   end
+end
+
+function State:path(node)
+   node = model.unwrap(node)
+   if not node then return nil end
+   local path = self.paths[node]
+   if not path and node.op then
+      if node.op.op == "@funcall" then
+         path = required_module(self, node)
+      else
+         local field = member_name(node)
+         if field then
+            local owner = self:path(node.e1)
+            path = owner and (owner .. "." .. field)
+         end
+      end
+   end
+   if path and not self.modified_paths[path] then return path end
+end
+
+local function source_site(node)
+   if not node.op or node.op.op ~= "@funcall" then return node end
+   local callee = model.unwrap(node.e1)
+   if callee and callee.op then
+      local op = callee.op.op
+      if op == "." or op == ":" or op == "@index" then return callee.e2 end
+   end
+   return callee or node
+end
+
+function State:emit(node, message)
+   node = source_site(node)
+   if node.f ~= self.filename or not node.y or not node.x then return end
+   local finding = {
+      filename = node.f,
+      y = node.y,
+      x = node.x,
+      msg = message,
+      code = self.current_rule.id,
+      severity = self.current_rule.severity,
+   }
+   if node.kind == "string" and node.tk and node.tk:find("\n", 1, true) then
+      local line, last = node.y, 0
+      for pos in node.tk:gmatch("()\n") do
+         line, last = line + 1, pos
+      end
+      finding.end_y, finding.end_x = line, #node.tk - last + 1
+   elseif node.yend and node.xend and (node.yend > node.y or (node.yend == node.y and node.xend >= node.x)) then
+      finding.end_y, finding.end_x = node.yend, node.xend + 1
+   elseif node.op and node.op.op:sub(1, 1) ~= "@" then
+      finding.end_y, finding.end_x = node.y, node.x + #node.op.op + (node.safe_navigation and 1 or 0)
+   end
+   self.results[#self.results + 1] = finding
+end
+
+local state_mt = { __index = State }
+
+local function lexical_binding(ctx, name)
+   for i = #ctx.st, 1, -1 do
+      local var = ctx.st[i].vars[name]
+      if var and (not var.is_specialized or var.is_specialized == "localizing") then return var end
+   end
+end
+
+local function has_local_environment(ctx, state)
+   if state.target == "5.1" or state.target == "luajit" then return false end
+   return lexical_binding(ctx, "_ENV") ~= nil
+end
+
+local function bind_paths(ctx, state, hooks)
+   local aliases = {}
+   local alias_names = {}
+   local writes = {}
+   local stdlib = not ctx.env.opts.no_stdlib and environment.stdlib_globals or {}
+
+   local variable = hooks["variable"]
+   local after_variable = variable.after
+   variable.after = function(c, n, children)
+      local t = after_variable(c, n, children)
+      local name = n.tk
+      local builtin = stdlib[name]
+      local runtime_global = (state.target == "luajit" and runtime_globals[name]) or
+      ((state.is_lua or state.target == "luajit") and legacy_globals[name])
+      if builtin or runtime_global or alias_names[name] then
+         local var = lexical_binding(c, name)
+         local declared = var and var.declared_at
+         if declared and aliases[declared] then
+            state.paths[n] = aliases[declared]
+            if n.is_lvalue then writes[n] = declared end
+         elseif ((builtin and var == builtin) or (runtime_global and not var)) and not has_local_environment(c, state) then
+            state.paths[n] = name
+         end
+      end
+      return t
+   end
+
+   local declaration = hooks["local_declaration"]
+   local after_declaration = declaration.after
+   declaration.after = function(c, n, children)
+      local t = after_declaration(c, n, children)
+      for i, value in ipairs(n.exps or {}) do
+         local var = n.vars[i]
+         if not var then break end
+         if var.kind == "identifier" then
+            local path = state:path(value)
+            if path then
+               aliases[var] = path
+               alias_names[var.tk] = true
+            end
+         end
+      end
+      return t
+   end
+
+   local assignment = hooks["assignment"]
+   local after_assignment = assignment.after
+   assignment.after = function(c, n, children)
+      local t = after_assignment(c, n, children)
+      for _, dest in ipairs(n.vars) do
+         local declared = writes[dest]
+         if declared then
+            aliases[declared], writes[dest] = nil, nil
+         else
+            local path = state:path(dest)
+            if path then state.modified_paths[path] = true end
+         end
+      end
+      return t
+   end
+end
+
+local function run_rules(state, rules, n, t, children)
+   for _, rule in ipairs(rules) do
+      if not (state.is_lua and rule.teal_only) then
+         state.current_rule = rule
+         rule.check(state, n, t, children)
+      end
+   end
+end
+
+local function patch_rule_hook(callbacks, kind, plan, state)
+   local by_kind = plan.by_kind[kind]
+   local by_call = next(plan.by_call) and plan.by_call
+   local after = callbacks.after
+   callbacks.after = function(c, n, children)
+      local t = after and after(c, n, children)
+      state.strict_nil = c.feat_strict_nil
+      if by_kind then run_rules(state, by_kind, n, t, children) end
+      if kind == "op" and n.op then
+         local op = n.op.op
+         local operators = plan.by_operator[op]
+         if operators then run_rules(state, operators, n, t, children) end
+         if by_call and op == "@funcall" then
+            local calls = by_call[state:path(n.e1)]
+            if calls then run_rules(state, calls, n, t, children) end
+         end
+      end
+      return t
+   end
+end
+
+local whole_loop = { ["while"] = true, ["repeat"] = true }
+local loop_body = { ["forin"] = true, ["fornum"] = true }
+local function_body = {
+   ["function"] = true, ["local_function"] = true, ["global_function"] = true, ["record_function"] = true,
+}
+
+local function track_scopes(hooks, state)
+   local loop_stack = {}
+   for kind in pairs(whole_loop) do
+      local callbacks = hooks[kind]
+      local before = callbacks.before
+      callbacks.before = function(c, n)
+         state.loop_depth = state.loop_depth + 1
+         if before then before(c, n) end
+      end
+   end
+   for kind in pairs(loop_body) do
+      local callbacks = hooks[kind]
+      local before_statements = callbacks.before_statements
+      callbacks.before_statements = function(c, n, children)
+         state.loop_depth = state.loop_depth + 1
+         before_statements(c, n, children)
+      end
+   end
+   for kind in pairs(function_body) do
+      local callbacks = hooks[kind]
+      local before_statements = callbacks.before_statements
+      callbacks.before_statements = function(c, n, children)
+         local depth = state.function_depth + 1
+         loop_stack[depth] = state.loop_depth
+         state.function_depth, state.loop_depth = depth, 0
+         if before_statements then before_statements(c, n, children) end
+      end
+   end
+   for kind, callbacks in pairs(hooks) do
+      local after = callbacks.after
+      if whole_loop[kind] or loop_body[kind] then
+         callbacks.after = function(c, n, children)
+            state.loop_depth = state.loop_depth - 1
+            return after(c, n, children)
+         end
+      elseif function_body[kind] then
+         callbacks.after = function(c, n, children)
+            local depth = state.function_depth
+            state.loop_depth, state.function_depth = loop_stack[depth], depth - 1
+            return after(c, n, children)
+         end
+      end
+   end
+end
+
+function runner.attach(ctx, visitor)
+   local plan = ctx.env.diagnostics_plan
+   local opts = ctx.env.opts
+   local gen_target = opts.gen_target or environment.DEFAULT_GEN_TARGET
+   local state = setmetatable({
+      target = opts.diagnostic_target or gen_target,
+      is_lua = ctx.feat_lax,
+      strict_nil = ctx.feat_strict_nil,
+      loop_depth = 0,
+      function_depth = 0,
+      filename = ctx.filename,
+      results = {},
+      paths = {},
+      modified_paths = {},
+   }, state_mt)
+
+   local cbs = util.shallow_copy_table(visitor.cbs)
+   local hooks = {}
+   local uses_operators = next(plan.by_operator) ~= nil or next(plan.by_call) ~= nil
+   for kind, callbacks in pairs(cbs) do
+      local has_rules = plan.by_kind[kind] ~= nil or (kind == "op" and uses_operators)
+      local has_binding = plan.bindings and (kind == "variable" or kind == "local_declaration" or kind == "assignment")
+      local tracks_scope = plan.track_loops and (whole_loop[kind] or loop_body[kind] or function_body[kind])
+      if has_rules or has_binding or tracks_scope then
+         local hook = util.shallow_copy_table(callbacks)
+         hooks[kind], cbs[kind] = hook, hook
+         if has_rules then patch_rule_hook(hook, kind, plan, state) end
+      end
+   end
+   if plan.bindings then bind_paths(ctx, state, hooks) end
+   if plan.track_loops then track_scopes(hooks, state) end
+
+   local patched = util.shallow_copy_table(visitor)
+   patched.cbs = cbs
+   return patched, state
+end
+
+local function compare(a, b)
+   if a.y ~= b.y then return a.y < b.y end
+   if a.x ~= b.x then return a.x < b.x end
+   if a.code ~= b.code then return a.code < b.code end
+   return a.msg < b.msg
+end
+
+function runner.finish(state)
+   local results = state.results
+   if #results > 1 then
+      table.sort(results, compare)
+      local count = 1
+      for i = 2, #results do
+         if compare(results[count], results[i]) then
+            count = count + 1
+            results[count] = results[i]
+         end
+      end
+      for i = #results, count + 1, -1 do results[i] = nil end
+   end
+   return results
+end
+
+return runner
+
+end
+
+-- module teal.diagnostics.teal from teal/diagnostics/teal.lua
+package.preload["teal.diagnostics.teal"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs
+local model = require("teal.diagnostics.model")
+local types = require("teal.types")
+
+
+
+
+
+
+
+local primitive = {
+   ["boolean"] = true, ["integer"] = true, ["number"] = true, ["string"] = true,
+   ["nil"] = true, ["thread"] = true, ["userdata"] = true,
+}
+
+local known_non_nil = {
+   ["boolean"] = true, ["integer"] = true, ["number"] = true, ["string"] = true,
+   ["thread"] = true, ["userdata"] = true, ["enum"] = true, ["function"] = true,
+   ["array"] = true, ["map"] = true, ["record"] = true, ["tupletable"] = true, ["emptytable"] = true,
+}
+
+local function single(t)
+   return t and types.untuple(t)
+end
+
+local function cannot_be_nil(t)
+   if not t then return false end
+   if t.typename == "union" then
+      for _, member in ipairs(t.types) do
+         if not cannot_be_nil(member) then return false end
+      end
+      return #t.types > 0
+   end
+   return known_non_nil[t.typename] or false
+end
+
+local function can_be_nil(t)
+   if not t then return false end
+   if t.typename == "union" then
+      for _, member in ipairs(t.types) do
+         if can_be_nil(member) then return true end
+      end
+   end
+   return t.typename == "nil"
+end
+
+local function boolean_or_nil(t)
+   if not t then return false, false end
+   if t.typename == "nil" then return true, false end
+   if t.typename == "boolean" then return true, t.literal ~= true end
+   if t.typename == "union" then
+      local can_be_false = false
+      for _, member in ipairs(t.types) do
+         local valid, admits_false = boolean_or_nil(member)
+         if not valid then return false, false end
+         can_be_false = can_be_false or admits_false
+      end
+      return true, can_be_false
+   end
+   return false, false
+end
+
+local function op(id, severity, description, operators, check)
+   return {
+      id = "teal/" .. id, severity = severity, description = description,
+      kinds = { "op" }, operators = operators, check = check,
+   }
+end
+
+local rules = {
+   op("cast-to-any", "info", "Find casts that explicitly discard type information.", { "as" },
+   function(s, n, _t, children)
+      local original, cast = single(children[1]), children[3]
+      if original and cast and original.typename ~= "any" and original.typename ~= "invalid" and cast.typename == "any" then
+         s:emit(n.e2, "Casting to any discards static type checks for this value. Keep a specific type if possible.")
+      end
+   end),
+   op("cast-from-any", "warning", "Find assertions of a concrete type on values typed as any.", { "as" },
+   function(s, n, _t, children)
+      local original, cast = single(children[1]), children[3]
+      if original and cast and original.typename == "any" and cast.typename ~= "any" and cast.typename ~= "invalid" then
+         s:emit(n.e2, "This cast asserts a type without checking the value at runtime. Validate untyped input before using it.")
+      end
+   end),
+   op("cast-can-hide-nil", "warning", "Find casts from a nullable value to a non-nil type.", { "as" },
+   function(s, n, _t, children)
+      if can_be_nil(single(children[1])) and cannot_be_nil(children[3]) then
+         s:emit(n.e2, "This cast can hide nil from the checker. Guard against nil or provide a fallback before casting.")
+      end
+   end),
+   op("redundant-primitive-cast", "hint", "Find variable casts to their existing primitive type.", { "as" },
+   function(s, n, _t, children)
+      local original, cast = single(children[1]), children[3]
+      if n.e1.kind == "variable" and original and cast and primitive[cast.typename] and original.typename == cast.typename then
+         s:emit(n.e2, "The variable already has this primitive type.")
+      end
+   end),
+   op("redundant-type-test", "hint", "Find primitive type tests implied by the operand's static type.", { "is" },
+   function(s, n, _t, children)
+      local original, test = single(children[1]), children[3]
+      if s.strict_nil and n.e1.kind == "variable" and original and test and primitive[test.typename] and
+         (original.typename == test.typename or (original.typename == "integer" and test.typename == "number")) then
+         s:emit(n.e2, "The variable's static type already satisfies this test.")
+      end
+   end),
+   op("nil-coalescing-always-falls-back", "info", "Find nil-coalescing expressions whose left side is always nil.", { "??" },
+   function(s, n, _t, children)
+      local left = single(children[1])
+      if left and left.typename == "nil" then
+         s:emit(n.e1, "The left operand has type nil, so this expression always uses its fallback.")
+      end
+   end),
+   op("nil-coalescing-unreachable-fallback", "hint", "Find fallback expressions for values with non-nil types.", { "??" },
+   function(s, n, _t, children)
+      if s.strict_nil and cannot_be_nil(single(children[1])) then
+         s:emit(n.e2, "The left operand has a non-nil type, so this fallback is unreachable under the declared types.")
+      end
+   end),
+   op("optional-chain-always-nil", "warning", "Find optional accesses that always stop at a nil receiver.", { ".", ":", "@index", "@funcall" },
+   function(s, n, _t, _children)
+      if n.safe_navigation and n.chain_always_nil and not n.e1.chain_always_nil then
+         s:emit(n, "This optional access stops at a nil receiver, so the rest of the chain is skipped.")
+      end
+   end),
+   op("optional-chain-non-nil-receiver", "hint", "Find optional accesses on non-nil receiver types.", { ".", ":", "@index", "@funcall" },
+   function(s, n, _t, children)
+      if s.strict_nil and n.safe_navigation and not n.e1.optional_chain and cannot_be_nil(single(children[1])) then
+         s:emit(n, "This receiver has a non-nil type, so optional access is unnecessary under the declared types.")
+      end
+   end),
+   op("boolean-default-masks-false", "warning", "Find boolean defaults that replace false with true.", { "or" },
+   function(s, n, _t, children)
+      local right = model.unwrap(n.e2)
+      if right and right.kind == "boolean" and right.tk == "true" then
+         local valid, can_be_false = boolean_or_nil(single(children[1]))
+         if valid and can_be_false then
+            s:emit(n, "This default replaces false with true. Use ?? true to default only when the value is nil.")
+         end
+      end
+   end),
+   {
+      id = "teal/strict-nil-disabled", severity = "info",
+      description = "Find pragmas that disable strict nil checking.", kinds = { "pragma" },
+      check = function(s, n, _t, _children)
+         if n.pkey == "strict_nil" and n.pvalue == "off" then
+            s:emit(n, "This pragma disables strict nil checking. Use explicit optional types where the affected code permits it.")
+         end
+      end,
+   },
+   {
+      id = "teal/arity-disabled", severity = "info",
+      description = "Find pragmas that disable minimum argument counts.", kinds = { "pragma" },
+      check = function(s, n, _t, _children)
+         if n.pkey == "arity" and n.pvalue == "off" then
+            s:emit(n, "This pragma disables minimum argument checks. Mark optional parameters explicitly where possible.")
+         end
+      end,
+   },
+   {
+      id = "teal/any-parameter", severity = "info",
+      description = "Find parameters explicitly annotated as any.", kinds = { "argument" },
+      check = function(s, n, _t, _children)
+         if n.argtype and n.argtype.typename == "any" then
+            s:emit(n, "This parameter accepts any value. A type parameter or a more specific type can preserve type checks for callers.")
+         end
+      end,
+   },
+   {
+      id = "teal/any-return", severity = "info",
+      description = "Find return annotations that expose any to callers.",
+      kinds = { "local_function", "global_function", "record_function", "function" },
+      check = function(s, n, _t, _children)
+         if n.has_return_annotation then
+            for i, ret in ipairs(n.rets.tuple) do
+               if ret.typename == "any" then
+                  s:emit(n.name or n, "Return value " .. i .. " is annotated as any. Give it a type that callers can check.")
+               end
+            end
+         end
+      end,
+   },
+   {
+      id = "teal/any-variable", severity = "info",
+      description = "Find variables explicitly annotated as any.", kinds = { "local_declaration", "global_declaration" },
+      check = function(s, n, _t, _children)
+         if n.decltuple then
+            for i, var in ipairs(n.vars) do
+               local annotation = n.decltuple.tuple[i]
+               if annotation and annotation.typename == "any" then
+                  s:emit(var, "This variable is annotated as any, which disables many checks on its uses.")
+               end
+            end
+         end
+      end,
+   },
+}
+
+return rules
+
+end
+
+-- module teal.diagnostics.type_errors from teal/diagnostics/type_errors.lua
+package.preload["teal.diagnostics.type_errors"] = function(...)
+local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
+local tldebug = require("teal.debug")
+local TL_DEBUG = tldebug.TL_DEBUG
+
+local types = require("teal.types")
+
+
+
+
+
+
+
+local a_type = types.a_type
+
+local parser = require("teal.parser")
+
+
+
+
+
+
+
+
+
+local variables = require("teal.variables")
+
+
+local has_var_been_used = variables.has_var_been_used
+
+local type_errors = { Errors = {} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+local Errors = type_errors.Errors
+
+function Errors.new(filename)
+   local self = {
+      errors = {},
+      warnings = {},
+      unknown_dots = {},
+      filename = filename,
+   }
+   return setmetatable(self, { __index = Errors })
+end
+
+local function insert_error(self, y, x, f, err)
+   err.y = assert(y)
+   err.x = assert(x)
+   err.filename = assert(f)
+
+   if TL_DEBUG then
+      tldebug.write("ERROR:" .. err.y .. ":" .. err.x .. ": " .. err.msg .. "\n")
+   end
+
+   table.insert(self.errors, err)
+end
+
+function Errors:add(w, msg, t, ...)
+   local e
+   if t then
+      e = types.error(msg, t, ...)
+   else
+      e = { msg = msg }
+   end
+   if e then
+      insert_error(self, w.y, w.x, w.f, e)
+   end
+end
+
+type_errors.context_name = {
+   ["local_declaration"] = "in local declaration",
+   ["global_declaration"] = "in global declaration",
+   ["assignment"] = "in assignment",
+   ["literal_table_item"] = "in table item",
+}
+
+function Errors:node_context(ctx, name)
+   assert(ctx)
+   local ec = ctx.expected_context
+   local cn = type_errors.context_name[ec and ec.kind or ctx.kind]
+   return (cn and cn .. ": " or "") .. (ec and ec.name and ec.name .. ": " or "") .. (name and name .. ": " or "")
+end
+
+function Errors:string_context(ctx, name)
+   assert(ctx)
+   local cn = ctx
+   return (cn .. ": " or "") .. (name and name .. ": " or "")
+end
+
+function Errors:get_context(ctx, name)
+   assert(ctx)
+   local ec = (ctx.kind ~= nil) and ctx.expected_context
+   local cn = (type(ctx) == "string") and ctx or
+   (ctx.kind ~= nil) and type_errors.context_name[ec and ec.kind or ctx.kind]
+   return (cn and cn .. ": " or "") .. (ec and ec.name and ec.name .. ": " or "") .. (name and name .. ": " or "")
+end
+
+function Errors:add_in_context(w, ctx, msg, ...)
+   if ctx then
+      local prefix = self:get_context(ctx)
+      msg = prefix .. msg
+   end
+   return self:add(w, msg, ...)
+end
+
+
+function Errors:collect(errs)
+   for _, e in ipairs(errs) do
+      insert_error(self, e.y, e.x, e.filename, e)
+   end
+end
+
+function Errors:add_warning(tag, w, fmt, ...)
+   assert(w.y)
+   table.insert(self.warnings, {
+      y = w.y,
+      x = w.x,
+      msg = fmt:format(...),
+      filename = assert(w.f),
+      tag = tag,
+   })
+end
+
+function Errors:invalid_at(w, msg, ...)
+   self:add(w, msg, ...)
+   return a_type(w, "invalid", {})
+end
+
+function Errors:add_unknown(w, name)
+   self:add_warning("unknown", w, "unknown variable: %s", name)
+end
+
+function Errors:redeclaration_warning(at, var_name, var_kind, old_var)
+   if var_name:sub(1, 1) == "_" then return end
+
+   local short_error = var_kind .. " shadows previous declaration of '%s'"
+   if old_var and old_var.declared_at and (not old_var.is_global) then
+      self:add_warning("redeclaration", at, short_error .. " (originally declared at %d:%d)", var_name, old_var.declared_at.y, old_var.declared_at.x)
+   else
+      self:add_warning("redeclaration", at, short_error, var_name)
+   end
+end
+
+local function var_should_be_ignored_for_warnings(name, var)
+   local prefix = name:sub(1, 1)
+   return (not var.declared_at) or
+   var.is_global or
+   var.is_specialized == "narrow" or
+   prefix == "_" or
+   prefix == "@"
+end
+
+local function user_facing_variable_description(var)
+   local t = var.t
+   return var.is_func_arg and "argument" or
+   t.typename == "function" and "function" or
+   t.typename == "typedecl" and "type" or
+   "variable"
+end
+
+function Errors:unused_warning(name, var)
+   if var_should_be_ignored_for_warnings(name, var) then
+      return
+   end
+   self:add_warning(
+   "unused",
+   var.declared_at,
+   "unused %s %s: %s",
+   user_facing_variable_description(var),
+   name,
+   types.show_type(var.t))
+
+end
+
+function Errors:add_prefixing(w, src, prefix, dst)
+   if not src then
+      return
+   end
+
+   for _, err in ipairs(src) do
+      err.msg = prefix .. err.msg
+      if w and (
+         (err.filename ~= w.f) or
+         (not err.y) or
+         (w.y > err.y or (w.y == err.y and w.x > err.x))) then
+
+         err.y = w.y
+         err.x = w.x
+         err.filename = w.f
+      end
+
+      if dst then
+         table.insert(dst, err)
+      else
+         insert_error(self, err.y, err.x, err.filename, err)
+      end
+   end
+end
+
+local function ensure_not_abstract_type(def, node)
+   if def.typename == "record" then
+      return true
+   elseif def.typename == "generic" then
+      return ensure_not_abstract_type(def.t)
+   elseif node and parser.node_is_require_call(node) then
+      return nil, "module type is abstract: " .. tostring(def)
+   elseif def.typename == "interface" then
+      return nil, "interfaces are abstract; consider using a concrete record"
+   end
+   return nil, "cannot use a type definition as a concrete value"
+end
+
+function type_errors.ensure_not_abstract(t, node)
+   if t.typename == "function" and t.macroexp then
+      return nil, "macroexps are abstract; consider using a concrete function"
+   elseif t.typename == "generic" then
+      return type_errors.ensure_not_abstract(t.t, node)
+   elseif t.typename == "typedecl" then
+      return ensure_not_abstract_type(t.def, node)
+   end
+   return true
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local function check_var_usage(scope)
+   local vars = scope.vars
+   if not next(vars) then
+      return
+   end
+   local usage_warnings
+   for name, var in pairs(vars) do
+      local t = var.t
+      if not var_should_be_ignored_for_warnings(name, var) then
+         if var.has_been_written_to and not var.has_been_read_from then
+            usage_warnings = usage_warnings or {}
+            table.insert(usage_warnings, {
+               y = var.declared_at.y,
+               x = var.declared_at.x,
+               name = name,
+               var = var,
+               kind = "written but not read",
+            })
+         end
+
+      end
+
+      if var.declared_at and not has_var_been_used(var) and not var.is_global then
+         if var.used_as_type then
+            var.declared_at.elide_type = true
+         else
+            if t.typename == "typedecl" then
+               var.declared_at.elide_type = true
+            end
+            usage_warnings = usage_warnings or {}
+            table.insert(usage_warnings, { y = var.declared_at.y, x = var.declared_at.x, name = name, var = var, kind = "unused" })
+         end
+      elseif has_var_been_used(var) and t.typename == "typedecl" and var.aliasing then
+         var.aliasing.has_been_written_to = var.has_been_written_to
+         var.aliasing.has_been_read_from = var.has_been_read_from
+         if type_errors.ensure_not_abstract(t) then
+            var.aliasing.declared_at.elide_type = false
+         end
+      end
+   end
+   if usage_warnings then
+      table.sort(usage_warnings, function(a, b)
+         return a.y < b.y or (a.y == b.y and a.x < b.x)
+      end)
+   end
+   return usage_warnings
+end
+
+function Errors:check_var_usage(scope)
+   local usage_warnings = check_var_usage(scope)
+   if usage_warnings then
+      for _, u in ipairs(usage_warnings) do
+         if u.kind == "unused" then
+            self:unused_warning(u.name, u.var)
+         elseif u.kind == "written but not read" then
+            self:add_warning(
+            "unread",
+            u.var.declared_at,
+            "%s %s (of type %s) is never read",
+            user_facing_variable_description(u.var),
+            u.name,
+            types.show_type(u.var.t))
+
+         end
+      end
+   end
+
+   if scope.labels then
+      for name, node in pairs(scope.labels) do
+         if not node.used_label then
+            self:add_warning("unused", node, "unused label ::%s::", name)
+         end
+      end
+   end
+end
+
+function Errors:add_unknown_dot(w, name)
+   if not self.unknown_dots[name] then
+      self.unknown_dots[name] = true
+      self:add_unknown(w, name)
+   end
+end
+
+function Errors:fail_unresolved_labels(scope)
+   if scope.pending_labels then
+      for name, nodes in pairs(scope.pending_labels) do
+         for _, node in ipairs(nodes) do
+            self:add(node, "no visible label '" .. name .. "' for goto")
+         end
+      end
+   end
+end
+
+function Errors:fail_unresolved_nominals(scope, global_scope)
+   if global_scope and scope.pending_nominals then
+      for name, typs in pairs(scope.pending_nominals) do
+         if not global_scope.pending_global_types[name] then
+            for _, typ in ipairs(typs) do
+               assert(typ.x)
+               assert(typ.y)
+               self:add(typ, "unknown type %s", typ)
+            end
+         end
+      end
+   end
+end
+
+function Errors:check_redeclared_key(w, ctx, seen_keys, key)
+   if key ~= nil then
+      local s = seen_keys[key]
+      if s then
+         self:add_in_context(w, ctx, "redeclared key " .. tostring(key) .. " (previously declared at " .. self.filename .. ":" .. s.y .. ":" .. s.x .. ")")
+      else
+         seen_keys[key] = w
+      end
+   end
+end
+
+return type_errors
+
+end
+
 -- module teal.environment from teal/environment.lua
 package.preload["teal.environment"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table
@@ -11538,7 +13568,12 @@ local a_type = types.a_type
 
 
 
+
 local environment = { EnvOptions = {}, Env = {}, Result = {} }
+
+
+
+
 
 
 
@@ -11650,6 +13685,11 @@ end
 function environment.new(opts)
    local env = empty_environment()
    env.opts = opts or env.opts
+   if env.opts.diagnostics ~= nil then
+      local registry = require("teal.diagnostics.registry")
+      local target = env.opts.diagnostic_target or env.opts.gen_target or environment.DEFAULT_GEN_TARGET
+      env.diagnostics_plan = registry.plan(env.opts.diagnostics, target)
+   end
    if not env.opts.no_stdlib then
       load_precompiled_default_env(env)
    else
@@ -11823,6 +13863,17 @@ end
 package.preload["teal.errors"] = function(...)
 local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local table = _tl_compat and _tl_compat.table or table
 local errors = { Error = {}, ErrorContext = {} }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -21704,376 +23755,6 @@ function traversal.traverse_nodes(s, root,
 end
 
 return traversal
-
-end
-
--- module teal.type_errors from teal/type_errors.lua
-package.preload["teal.type_errors"] = function(...)
-local _tl_compat; if (tonumber((_VERSION or ''):match('[%d.]*$')) or 0) < 5.3 then local p, m = pcall(require, 'compat53.module'); if p then _tl_compat = m end end; local assert = _tl_compat and _tl_compat.assert or assert; local ipairs = _tl_compat and _tl_compat.ipairs or ipairs; local pairs = _tl_compat and _tl_compat.pairs or pairs; local string = _tl_compat and _tl_compat.string or string; local table = _tl_compat and _tl_compat.table or table; local type = type
-local tldebug = require("teal.debug")
-local TL_DEBUG = tldebug.TL_DEBUG
-
-local types = require("teal.types")
-
-
-
-
-
-
-
-local a_type = types.a_type
-
-local parser = require("teal.parser")
-
-
-
-
-
-
-
-
-
-local variables = require("teal.variables")
-
-
-local has_var_been_used = variables.has_var_been_used
-
-local type_errors = { Errors = {} }
-
-
-
-
-
-
-
-
-
-
-
-
-
-local Errors = type_errors.Errors
-
-function Errors.new(filename)
-   local self = {
-      errors = {},
-      warnings = {},
-      unknown_dots = {},
-      filename = filename,
-   }
-   return setmetatable(self, { __index = Errors })
-end
-
-local function insert_error(self, y, x, f, err)
-   err.y = assert(y)
-   err.x = assert(x)
-   err.filename = assert(f)
-
-   if TL_DEBUG then
-      tldebug.write("ERROR:" .. err.y .. ":" .. err.x .. ": " .. err.msg .. "\n")
-   end
-
-   table.insert(self.errors, err)
-end
-
-function Errors:add(w, msg, t, ...)
-   local e
-   if t then
-      e = types.error(msg, t, ...)
-   else
-      e = { msg = msg }
-   end
-   if e then
-      insert_error(self, w.y, w.x, w.f, e)
-   end
-end
-
-type_errors.context_name = {
-   ["local_declaration"] = "in local declaration",
-   ["global_declaration"] = "in global declaration",
-   ["assignment"] = "in assignment",
-   ["literal_table_item"] = "in table item",
-}
-
-function Errors:node_context(ctx, name)
-   assert(ctx)
-   local ec = ctx.expected_context
-   local cn = type_errors.context_name[ec and ec.kind or ctx.kind]
-   return (cn and cn .. ": " or "") .. (ec and ec.name and ec.name .. ": " or "") .. (name and name .. ": " or "")
-end
-
-function Errors:string_context(ctx, name)
-   assert(ctx)
-   local cn = ctx
-   return (cn .. ": " or "") .. (name and name .. ": " or "")
-end
-
-function Errors:get_context(ctx, name)
-   assert(ctx)
-   local ec = (ctx.kind ~= nil) and ctx.expected_context
-   local cn = (type(ctx) == "string") and ctx or
-   (ctx.kind ~= nil) and type_errors.context_name[ec and ec.kind or ctx.kind]
-   return (cn and cn .. ": " or "") .. (ec and ec.name and ec.name .. ": " or "") .. (name and name .. ": " or "")
-end
-
-function Errors:add_in_context(w, ctx, msg, ...)
-   if ctx then
-      local prefix = self:get_context(ctx)
-      msg = prefix .. msg
-   end
-   return self:add(w, msg, ...)
-end
-
-
-function Errors:collect(errs)
-   for _, e in ipairs(errs) do
-      insert_error(self, e.y, e.x, e.filename, e)
-   end
-end
-
-function Errors:add_warning(tag, w, fmt, ...)
-   assert(w.y)
-   table.insert(self.warnings, {
-      y = w.y,
-      x = w.x,
-      msg = fmt:format(...),
-      filename = assert(w.f),
-      tag = tag,
-   })
-end
-
-function Errors:invalid_at(w, msg, ...)
-   self:add(w, msg, ...)
-   return a_type(w, "invalid", {})
-end
-
-function Errors:add_unknown(w, name)
-   self:add_warning("unknown", w, "unknown variable: %s", name)
-end
-
-function Errors:redeclaration_warning(at, var_name, var_kind, old_var)
-   if var_name:sub(1, 1) == "_" then return end
-
-   local short_error = var_kind .. " shadows previous declaration of '%s'"
-   if old_var and old_var.declared_at and (not old_var.is_global) then
-      self:add_warning("redeclaration", at, short_error .. " (originally declared at %d:%d)", var_name, old_var.declared_at.y, old_var.declared_at.x)
-   else
-      self:add_warning("redeclaration", at, short_error, var_name)
-   end
-end
-
-local function var_should_be_ignored_for_warnings(name, var)
-   local prefix = name:sub(1, 1)
-   return (not var.declared_at) or
-   var.is_global or
-   var.is_specialized == "narrow" or
-   prefix == "_" or
-   prefix == "@"
-end
-
-local function user_facing_variable_description(var)
-   local t = var.t
-   return var.is_func_arg and "argument" or
-   t.typename == "function" and "function" or
-   t.typename == "typedecl" and "type" or
-   "variable"
-end
-
-function Errors:unused_warning(name, var)
-   if var_should_be_ignored_for_warnings(name, var) then
-      return
-   end
-   self:add_warning(
-   "unused",
-   var.declared_at,
-   "unused %s %s: %s",
-   user_facing_variable_description(var),
-   name,
-   types.show_type(var.t))
-
-end
-
-function Errors:add_prefixing(w, src, prefix, dst)
-   if not src then
-      return
-   end
-
-   for _, err in ipairs(src) do
-      err.msg = prefix .. err.msg
-      if w and (
-         (err.filename ~= w.f) or
-         (not err.y) or
-         (w.y > err.y or (w.y == err.y and w.x > err.x))) then
-
-         err.y = w.y
-         err.x = w.x
-         err.filename = w.f
-      end
-
-      if dst then
-         table.insert(dst, err)
-      else
-         insert_error(self, err.y, err.x, err.filename, err)
-      end
-   end
-end
-
-local function ensure_not_abstract_type(def, node)
-   if def.typename == "record" then
-      return true
-   elseif def.typename == "generic" then
-      return ensure_not_abstract_type(def.t)
-   elseif node and parser.node_is_require_call(node) then
-      return nil, "module type is abstract: " .. tostring(def)
-   elseif def.typename == "interface" then
-      return nil, "interfaces are abstract; consider using a concrete record"
-   end
-   return nil, "cannot use a type definition as a concrete value"
-end
-
-function type_errors.ensure_not_abstract(t, node)
-   if t.typename == "function" and t.macroexp then
-      return nil, "macroexps are abstract; consider using a concrete function"
-   elseif t.typename == "generic" then
-      return type_errors.ensure_not_abstract(t.t, node)
-   elseif t.typename == "typedecl" then
-      return ensure_not_abstract_type(t.def, node)
-   end
-   return true
-end
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local function check_var_usage(scope)
-   local vars = scope.vars
-   if not next(vars) then
-      return
-   end
-   local usage_warnings
-   for name, var in pairs(vars) do
-      local t = var.t
-      if not var_should_be_ignored_for_warnings(name, var) then
-         if var.has_been_written_to and not var.has_been_read_from then
-            usage_warnings = usage_warnings or {}
-            table.insert(usage_warnings, {
-               y = var.declared_at.y,
-               x = var.declared_at.x,
-               name = name,
-               var = var,
-               kind = "written but not read",
-            })
-         end
-
-      end
-
-      if var.declared_at and not has_var_been_used(var) and not var.is_global then
-         if var.used_as_type then
-            var.declared_at.elide_type = true
-         else
-            if t.typename == "typedecl" then
-               var.declared_at.elide_type = true
-            end
-            usage_warnings = usage_warnings or {}
-            table.insert(usage_warnings, { y = var.declared_at.y, x = var.declared_at.x, name = name, var = var, kind = "unused" })
-         end
-      elseif has_var_been_used(var) and t.typename == "typedecl" and var.aliasing then
-         var.aliasing.has_been_written_to = var.has_been_written_to
-         var.aliasing.has_been_read_from = var.has_been_read_from
-         if type_errors.ensure_not_abstract(t) then
-            var.aliasing.declared_at.elide_type = false
-         end
-      end
-   end
-   if usage_warnings then
-      table.sort(usage_warnings, function(a, b)
-         return a.y < b.y or (a.y == b.y and a.x < b.x)
-      end)
-   end
-   return usage_warnings
-end
-
-function Errors:check_var_usage(scope)
-   local usage_warnings = check_var_usage(scope)
-   if usage_warnings then
-      for _, u in ipairs(usage_warnings) do
-         if u.kind == "unused" then
-            self:unused_warning(u.name, u.var)
-         elseif u.kind == "written but not read" then
-            self:add_warning(
-            "unread",
-            u.var.declared_at,
-            "%s %s (of type %s) is never read",
-            user_facing_variable_description(u.var),
-            u.name,
-            types.show_type(u.var.t))
-
-         end
-      end
-   end
-
-   if scope.labels then
-      for name, node in pairs(scope.labels) do
-         if not node.used_label then
-            self:add_warning("unused", node, "unused label ::%s::", name)
-         end
-      end
-   end
-end
-
-function Errors:add_unknown_dot(w, name)
-   if not self.unknown_dots[name] then
-      self.unknown_dots[name] = true
-      self:add_unknown(w, name)
-   end
-end
-
-function Errors:fail_unresolved_labels(scope)
-   if scope.pending_labels then
-      for name, nodes in pairs(scope.pending_labels) do
-         for _, node in ipairs(nodes) do
-            self:add(node, "no visible label '" .. name .. "' for goto")
-         end
-      end
-   end
-end
-
-function Errors:fail_unresolved_nominals(scope, global_scope)
-   if global_scope and scope.pending_nominals then
-      for name, typs in pairs(scope.pending_nominals) do
-         if not global_scope.pending_global_types[name] then
-            for _, typ in ipairs(typs) do
-               assert(typ.x)
-               assert(typ.y)
-               self:add(typ, "unknown type %s", typ)
-            end
-         end
-      end
-   end
-end
-
-function Errors:check_redeclared_key(w, ctx, seen_keys, key)
-   if key ~= nil then
-      local s = seen_keys[key]
-      if s then
-         self:add_in_context(w, ctx, "redeclared key " .. tostring(key) .. " (previously declared at " .. self.filename .. ":" .. s.y .. ":" .. s.x .. ")")
-      else
-         seen_keys[key] = w
-      end
-   end
-end
-
-return type_errors
 
 end
 

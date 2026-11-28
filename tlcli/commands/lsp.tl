@@ -969,19 +969,27 @@ local function error_diagnostic(document: Document, err: TealError, severity: in
       local word = line:sub(x):match("^[%a_][%w_]*")
       length = word and #word or 1
    end
+   local range = make_range(document.lines, y, x, length)
+   if err.end_y and err.end_x then
+      range["end"] = make_range(document.lines, err.end_y, err.end_x, 0).start
+   end
    return {
-      range = make_range(document.lines, y, x, length),
+      range = range,
       severity = severity,
-      code = err.tag or category,
+      code = err.code or err.tag or category,
       source = "tl",
       message = err.msg or category,
    }
 end
 
+local diagnostic_severities <total>: {teal.DiagnosticSeverity: integer} = {
+   ["error"] = 1, ["warning"] = 2, ["info"] = 3, ["hint"] = 4,
+}
+
 local function append_diagnostics(document: Document, out: AnyArray, errors: {TealError}, severity: integer, category: string, server: Server)
    for _, err in ipairs(errors or {}) do
       if category ~= "warning" or not server.tlconfig._disabled_warnings_set[err.tag] then
-         local actual_severity = severity
+         local actual_severity = diagnostic_severities[err.severity] or severity
          if category == "warning" and server.tlconfig._warning_errors_set[err.tag] then
             actual_severity = 1
          end
@@ -1081,7 +1089,7 @@ local function analyze_document(server: Server, document: Document): Document
 
    local compiler = server.compiler
    if not compiler then
-      compiler = driver.setup_compiler(server.tlconfig)
+      compiler = driver.setup_compiler(server.tlconfig, true)
       compiler:enable_type_reporting(true)
       server.compiler = compiler
    end
@@ -1119,6 +1127,7 @@ local function analyze_document(server: Server, document: Document): Document
       append_diagnostics(document, diagnostics, check_error.syntax_errors, 1, "syntax", server)
       append_diagnostics(document, diagnostics, check_error.type_errors, 1, "type", server)
       append_diagnostics(document, diagnostics, check_error.warnings, 2, "warning", server)
+      append_diagnostics(document, diagnostics, check_error.diagnostics, 2, "diagnostic", server)
    end
 
    analyze_syntax(document, tokens)

@@ -11,7 +11,8 @@ local type parser = require("teal.parser")
 local type require_file = require("teal.check.require_file")
 local type input = require("teal.input")
 local type targets = require("teal.gen.targets")
-local type type_errors = require("teal.type_errors")
+local type type_errors = require("teal.diagnostics.type_errors")
+local type diagnostics = require("teal.diagnostics.model")
 local type type_reporter = require("teal.type_reporter")
 
 --------------------------------------------------------------------------------
@@ -46,6 +47,8 @@ local record v2
       feat_strict_nil: Feat
       gen_compat: GenCompat
       gen_target: GenTarget
+      diagnostics: diagnostics.Options
+      diagnostic_target: GenTarget
    end
 
    record EnvOptions
@@ -103,6 +106,8 @@ local function env_from_check_options(opts?: CheckOptions): Env
       feat_strict_nil = opts.feat_strict_nil,
       gen_compat = opts.gen_compat,
       gen_target = opts.gen_target,
+      diagnostics = opts.diagnostics,
+      diagnostic_target = opts.diagnostic_target,
    })
 end
 
