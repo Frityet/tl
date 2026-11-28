@@ -109,4 +109,32 @@ local invalid = 2.e + 1]])
       assert.same({}, errors.type_errors)
       assert.same({}, errors.warnings)
    end)
+
+   for _, case in ipairs({
+      {'macroexp body', 'emit!()', 'expand(1)'},
+      {'macroexp argument', 'x', 'expand(1 + emit!())'},
+   }) do
+      it('recovers when an unexpanded macro is in a ' .. case[1], function()
+         local source = ([[local macro emit!(): Expression return `1` end
+local macroexp expand(x: integer): integer
+   return %s
+end
+local invalid = []
+print(%s)
+local after: integer = "wrong"
+print(after)]]):format(case[2], case[3])
+         local errors = check(source)
+         assert.equals(1, #errors.syntax_errors)
+         assert.equals(5, errors.syntax_errors[1].y)
+         assert.equals(1, #errors.type_errors)
+         assert.equals(7, errors.type_errors[1].y)
+      end)
+   end
+
+   it('recovers from a macroexp with a missing return expression', function()
+      local errors = check([[local record Point
+   tostring: function(self): string = macroexp(self: self): string]])
+      assert.is_true(#errors.syntax_errors > 0)
+      assert.same({}, errors.type_errors)
+   end)
 end)

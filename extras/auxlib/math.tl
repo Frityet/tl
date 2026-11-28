@@ -1,19 +1,7 @@
 local tables = require("auxlib.tables")
 local macro (|>)! = tables.(|>)!
 
-local record Math
-   clamp: function(number, number, number): number
-   clamp_int: function(number, integer, integer): integer
-   lerp: function(number, number, number): number
-   inv_lerp: function(number, number, number): number
-   remap: function(number, number, number, number, number): number
-   round: function(number, ? integer | nil): number
-   sigmoid: function(number): number
-   smooth_damp: function(number, number, number, number): number
-   ease_out_quad: function(number): number
-   ease_out_cubic: function(number): number
-   ease_in_out_cubic: function(number): number
-end
+local record Math end
 
 function Math.clamp(v: number, lo: number, hi: number): number
    if v < lo then return lo end

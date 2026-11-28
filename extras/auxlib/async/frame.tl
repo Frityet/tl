@@ -30,7 +30,7 @@ local record Frame
    record FrameLoop is RunLoop where self.__name == "frame"
       __name: string
       advance: function(self: FrameLoop, dt: number): integer
-      tick: function(self: FrameLoop, scheduler: Async.Scheduler, dt: number, max_steps?: integer | nil): integer
+      tick: function(self: FrameLoop, scheduler: Async.Scheduler, dt: number, max_steps?: integer): integer
       now: function(self: FrameLoop): number
       pending_timers: function(self: FrameLoop): integer
       _elapsed: number

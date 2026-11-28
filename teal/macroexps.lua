@@ -62,7 +62,7 @@ local function traverse_macroexp(macroexp, on_arg_id, on_node)
    return traverse_nodes(nil, root, visit_node, {})
 end
 
-function macroexps.expand(orignode, args, macroexp)
+function macroexps.expand(orignode, args, macroexp, render_preview)
    local on_arg_id = function(node, i)
       if node.kind == '...' then
 
@@ -109,7 +109,9 @@ function macroexps.expand(orignode, args, macroexp)
 
    local p = traverse_macroexp(macroexp, on_arg_id, on_node)
    orignode.expanded = p[2]
-   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
+   if render_preview then
+      orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
+   end
 end
 
 function macroexps.check_arg_use(ck, macroexp)

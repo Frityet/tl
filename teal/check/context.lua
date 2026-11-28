@@ -178,6 +178,7 @@ local context = { Context = {} }
 
 
 
+
 local Context = context.Context
 
 
@@ -1525,7 +1526,7 @@ do
          else
             argexps = e2
          end
-         macroexps.expand(node, argexps, f.macroexp)
+         macroexps.expand(node, argexps, f.macroexp, not self.has_syntax_errors)
          if self.collector and node.macro_expansion then
             self.collector.store_macro_expansion(node.y, node.x, node.macro_expansion)
          end

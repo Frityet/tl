@@ -331,10 +331,8 @@ function ParseTree:check(module_name)
       return nil, check_err
    end
 
-   local result = check.check(self.ast, self.env, self.filename)
+   local result = check.check(self.ast, self.env, self.filename, self.syntax_errors)
    if result then
-      result.syntax_errors = self.syntax_errors
-
       lua_compat.apply(result)
 
       if module_name then

@@ -107,7 +107,7 @@ local enum ParseTypeListMode
 end
 
 local parse_type: function(state: ParseState, block: Block): Type
-local parse_type_list: function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer
+local parse_type_list: function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer, {integer: boolean}
 local parse_typeargs_if_any: function(state: ParseState, block: Block): {TypeArgType}
 
 local record Node
@@ -178,7 +178,7 @@ local record Node
    if_block_n: integer
    if_blocks: {Node}
    if_widens: {string: boolean}
-   block_returns: boolean
+   block_exits: boolean
 
    -- fornum
    var: Node
@@ -281,7 +281,7 @@ local record ast
 
    -- Type parsing functions
    parse_type: function(state: ParseState, block: Block): Type
-   parse_type_list: function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer
+   parse_type_list: function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer, {integer: boolean}
 end
 
 local attributes <total>: {Attribute: boolean} = {
@@ -1737,7 +1737,7 @@ parse_fns.macroexp = function(state: ParseState, block: Block): Node
    local r: TupleType
    r = parse_type_list(state, block[idx + 1], "rets")
    node.rets = r
-   node.exp = parse_expression(state, block[idx + 2])
+   node.exp = parse_expression(state, block[idx + 2]) or new_node(state, block, "error_node")
 
    return node
 end
@@ -1871,10 +1871,11 @@ end
 parse_function_type = function(state: ParseState, block: Block): FunctionType
    local typ = new_type(state, block, "function") as FunctionType
 
-   local args, maybemet, min_arity = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.ARGS], "decltuple")
+   local args, maybemet, min_arity, opt_args = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.ARGS], "decltuple")
    typ.args = args
    typ.maybe_method = maybemet
    typ.min_arity = min_arity
+   typ.opt_args = opt_args
    local rets: TupleType
    rets = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.RETS], "rets")
    typ.rets = rets
@@ -2289,14 +2290,15 @@ parse_type = function(state: ParseState, block: Block): Type
    return bt
 end
 
-parse_type_list = function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer
+parse_type_list = function(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer, {integer: boolean}
    local t, list = new_tuple(state, block or { y = 1, x = 1, tk = "", kind = "type_list"}) -- Ensure block is not nil for new_tuple
    local maybe_method = false
    local min_arity = 0
+   local opt_args: {integer: boolean}
 
    -- When no tuple was provided simply return an empty tuple
    if not block then
-      return t, maybe_method, min_arity
+      return t, maybe_method, min_arity, opt_args
    end
 
    assert(block.kind == "tuple_type")
@@ -2320,6 +2322,11 @@ parse_type_list = function(state: ParseState, block: Block, mode: ParseTypeListM
             table.insert(list, typ)
          else
             fail(state, item, "invalid type in list")
+         end
+
+         if arg_opt then
+            opt_args = opt_args or {}
+            opt_args[#list] = true
          end
 
          if arg_va and idx < #type_list_block then
@@ -2356,14 +2363,14 @@ parse_type_list = function(state: ParseState, block: Block, mode: ParseTypeListM
       end
    end
 
-   return t, maybe_method, min_arity
+   return t, maybe_method, min_arity, opt_args
 end
 
 function ast.parse_type(state: ParseState, block: Block): Type
    return parse_type(state, block)
 end
 
-function ast.parse_type_list(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer
+function ast.parse_type_list(state: ParseState, block: Block, mode: ParseTypeListMode): TupleType, boolean, integer, {integer: boolean}
    return parse_type_list(state, block, mode)
 end
 

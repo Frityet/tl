@@ -1737,7 +1737,7 @@ parse_fns.macroexp = function(state, block)
    local r
    r = parse_type_list(state, block[idx + 1], "rets")
    node.rets = r
-   node.exp = parse_expression(state, block[idx + 2])
+   node.exp = parse_expression(state, block[idx + 2]) or new_node(state, block, "error_node")
 
    return node
 end
@@ -1871,10 +1871,11 @@ end
 parse_function_type = function(state, block)
    local typ = new_type(state, block, "function")
 
-   local args, maybemet, min_arity = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.ARGS], "decltuple")
+   local args, maybemet, min_arity, opt_args = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.ARGS], "decltuple")
    typ.args = args
    typ.maybe_method = maybemet
    typ.min_arity = min_arity
+   typ.opt_args = opt_args
    local rets
    rets = parse_type_list(state, block[BLOCK_INDEXES.FUNCTION_TYPE.RETS], "rets")
    typ.rets = rets
@@ -2293,10 +2294,11 @@ parse_type_list = function(state, block, mode)
    local t, list = new_tuple(state, block or { y = 1, x = 1, tk = "", kind = "type_list" })
    local maybe_method = false
    local min_arity = 0
+   local opt_args
 
 
    if not block then
-      return t, maybe_method, min_arity
+      return t, maybe_method, min_arity, opt_args
    end
 
    assert(block.kind == "tuple_type")
@@ -2320,6 +2322,11 @@ parse_type_list = function(state, block, mode)
             table.insert(list, typ)
          else
             fail(state, item, "invalid type in list")
+         end
+
+         if arg_opt then
+            opt_args = opt_args or {}
+            opt_args[#list] = true
          end
 
          if arg_va and idx < #type_list_block then
@@ -2356,7 +2363,7 @@ parse_type_list = function(state, block, mode)
       end
    end
 
-   return t, maybe_method, min_arity
+   return t, maybe_method, min_arity, opt_args
 end
 
 function ast.parse_type(state, block)

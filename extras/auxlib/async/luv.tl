@@ -34,8 +34,8 @@ local record Timer
 end
 
 local record UV
-   new_timer: function(): Timer | nil, string | nil
-   run: function(Luv.RunMode | nil): boolean
+   new_timer: function(): Timer?, string?
+   run: function(Luv.RunMode?): boolean
    update_time: function()
 end
 

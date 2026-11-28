@@ -11,6 +11,7 @@ local type Env = environment.Env
 local type Result = environment.Result
 
 local type errors = require("teal.errors")
+local type Error = errors.Error
 local type Where = errors.Where
 
 local type parser = require("teal.parser")
@@ -37,7 +38,7 @@ local visit_node = visitors.visit_node
 local visit_type = visitors.visit_type
 
 local record check
-   check: function(ast: Node, env: Env, filename: string): Result
+   check: function(ast: Node, env: Env, filename: string, syntax_errors?: {Error}): Result
 end
 
 local function extension_type_after(fn: VisitorAfter<Context, Node, Type>): VisitorAfter<Context, Node, Type>
@@ -123,10 +124,11 @@ local function patch_visitors(my_visit_node: Visitor<Context, NodeKind, Node, Ty
    return my_visit_node, my_visit_type
 end
 
-function check.check(ast: Node, env: Env, filename: string): Result
+function check.check(ast: Node, env: Env, filename: string, syntax_errors?: {Error}): Result
    assert(filename)
 
    local self = Context.new(env, filename)
+   self.has_syntax_errors = syntax_errors and #syntax_errors > 0
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
@@ -161,6 +163,7 @@ function check.check(ast: Node, env: Env, filename: string): Result
       env = env,
       type = self.module_type or a_type(ast, "boolean", {}),
       filename = filename,
+      syntax_errors = syntax_errors,
       warnings = self.errs.warnings,
       type_errors = self.errs.errors,
       dependencies = self.dependencies,

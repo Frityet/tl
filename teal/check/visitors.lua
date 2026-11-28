@@ -1026,6 +1026,30 @@ local function non_nil_type(self, node, t)
    return t
 end
 
+local function has_unresolved_nominal(t)
+   if t.typename == "nominal" then
+      return not t.found
+   elseif t.typename == "union" then
+      for _, ut in ipairs(t.types) do
+         if has_unresolved_nominal(ut) then
+            return true
+         end
+      end
+   end
+   return false
+end
+
+local function add_optional_nil(self, w, t)
+   if t.typename == "any" or t.typename == "unknown" or t.typename == "nil" or t.typename == "invalid" then
+      return t
+   end
+   local niltype = a_type(w, "nil", {})
+   if has_unresolved_nominal(t) or not self:is_a(niltype, t) then
+      return unite(w, { t, niltype }, nil, false)
+   end
+   return t
+end
+
 local function count_scope_vars(self)
    local n = 0
    for i = 1, #self.st do
@@ -1055,6 +1079,10 @@ visit_node.cbs = {
          end
       end,
       after = function(self, node, _children)
+         if #node > 0 and node[#node].block_exits then
+            node.block_exits = true
+         end
+
 
          if #self.st == 2 then
             self.errs:fail_unresolved_labels(self.st[2])
@@ -1262,16 +1290,18 @@ visit_node.cbs = {
             self:widen_all(node.if_widens, {})
          end
 
-         local all_return = true
          for _, b in ipairs(node.if_blocks) do
-            if not b.block_returns then
-               all_return = false
-               break
+            if not b.block_exits then
+               return NONE
             end
          end
-         if all_return then
-            node.block_returns = true
+
+
+
+         if node.if_blocks[#node.if_blocks].exp then
             self:infer_negation_of_if_blocks(node, node, #node.if_blocks)
+         else
+            node.block_exits = true
          end
 
          return NONE
@@ -1297,9 +1327,7 @@ visit_node.cbs = {
 
          self:end_scope(node)
 
-         if #node.body > 0 and node.body[#node.body].block_returns then
-            node.block_returns = true
-         end
+         node.block_exits = node.body.block_exits
 
          return NONE
       end,
@@ -1513,7 +1541,7 @@ visit_node.cbs = {
          local got_t = got.tuple
          local n_got = #got_t
 
-         node.block_returns = true
+         node.block_exits = true
          local return_var = self:find_var("@return", "check_only")
          local short = return_var and return_var.declared_at
          if short and short.infer_returns then
@@ -2780,10 +2808,7 @@ visit_node.cbs = {
             end
             t = a_vararg(node, { t })
          elseif node.opt and self.feat_strict_nil then
-            local niltype = a_type(node, "nil", {})
-            if not self:is_a(niltype, t) then
-               t = unite(node, { t, niltype }, nil, false)
-            end
+            t = add_optional_nil(self, node, t)
          end
 
          local arg_var = self:add_var(node, node.tk, t)
@@ -2843,12 +2868,22 @@ visit_node.cbs = {
 }
 
 visit_node.cbs["break"] = {
-   after = function(_self, _node, _children)
+   after = function(_self, node, _children)
+      node.block_exits = true
       return NONE
    end,
 }
-visit_node.cbs["do"] = visit_node.cbs["break"]
-visit_node.cbs["continue"] = visit_node.cbs["break"]
+visit_node.cbs["do"] = {
+   after = function(_self, node, _children)
+      node.block_exits = node.body.block_exits
+      return NONE
+   end,
+}
+visit_node.cbs["continue"] = {
+   after = function()
+      return NONE
+   end,
+}
 
 local function after_literal(self, node)
    self.fdb:set_truthy(node)
@@ -3002,6 +3037,14 @@ visit_type.cbs = {
    },
    ["function"] = {
       after = function(self, typ, _children)
+         if self.feat_strict_nil and typ.opt_args then
+            for i, argt in ipairs(typ.args.tuple) do
+               if typ.opt_args[i] then
+                  typ.args.tuple[i] = add_optional_nil(self, argt, argt)
+               end
+            end
+            typ.opt_args = nil
+         end
          if self.feat_arity == false then
             typ.min_arity = 0
          end

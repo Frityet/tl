@@ -48,7 +48,7 @@ describe("flow typing in 'if' statements", function()
       if x is string then
          if a > 10 then
             return "bye"
-         elseif a < 10 then
+         else
             return "wat"
          end
       elseif x is boolean then
@@ -103,7 +103,7 @@ describe("flow typing in 'if' statements", function()
       elseif x is boolean then
          if a > 10 then
             return "bye"
-         elseif a < 10 then
+         else
             return "wat"
          end
       end

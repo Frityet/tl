@@ -17,6 +17,7 @@ local errors = require("teal.errors")
 
 
 
+
 local traversal = require("teal.traversal")
 
 
@@ -123,10 +124,11 @@ local function patch_visitors(my_visit_node,
    return my_visit_node, my_visit_type
 end
 
-function check.check(ast, env, filename)
+function check.check(ast, env, filename, syntax_errors)
    assert(filename)
 
    local self = Context.new(env, filename)
+   self.has_syntax_errors = syntax_errors and #syntax_errors > 0
 
    local visit_node, visit_type = patch_visitors(visit_node, extension_type_after)
    if env.opts.run_internal_compiler_checks then
@@ -161,6 +163,7 @@ function check.check(ast, env, filename)
       env = env,
       type = self.module_type or a_type(ast, "boolean", {}),
       filename = filename,
+      syntax_errors = syntax_errors,
       warnings = self.errs.warnings,
       type_errors = self.errs.errors,
       dependencies = self.dependencies,

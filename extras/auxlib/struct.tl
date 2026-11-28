@@ -148,7 +148,7 @@ end
 ---       default = 1;
 ---       invariant = x -> x > 0;
 ---       get = x -> x * 10;
----       set = new -> do field = new end;
+---       set = function(new: integer) field = new end;
 ---    };
 --- }
 --- local counter = Counter:create()

@@ -26,6 +26,71 @@ describe("strict nil", function()
       { msg = "in local declaration: n: got nil, expected integer" }
    }))
 
+   it("narrows an assigned nullable value after a guarded break", util.check([[
+      --#pragma strict_nil on
+      local record Node
+         value: integer
+         next: Node?
+      end
+
+      local function walk(head: Node)
+         local n: Node? = head
+         while n do
+            n = n.next
+            if not n then break end
+            print(n.value)
+         end
+      end
+   ]]))
+
+   it("narrows after a branch that exits by either break or return", util.check([[
+      --#pragma strict_nil on
+      local function walk(n: string?, stop: boolean)
+         while true do
+            if not n then
+               if stop then
+                  do break end
+               else
+                  return
+               end
+            end
+            local value: string = n
+            print(value)
+            break
+         end
+      end
+   ]]))
+
+   it("keeps a value nullable if a nested break can be bypassed", util.check_type_error([[
+      --#pragma strict_nil on
+      local function walk(n: string?, stop: boolean)
+         while true do
+            if not n then
+               if stop then break end
+            end
+            local value: string = n
+            print(value)
+            break
+         end
+      end
+   ]], {
+      { y = 7, msg = "in local declaration: value: got string | nil, expected string" },
+   }))
+
+   it("keeps a value nullable after a loop whose guard can break", util.check_type_error([[
+      --#pragma strict_nil on
+      local function walk(n: string?)
+         while true do
+            if not n then break end
+            break
+         end
+         local value: string = n
+         print(value)
+      end
+   ]], {
+      { y = 7, msg = "in local declaration: value: got string | nil, expected string" },
+   }))
+
    it("requires non-nilable record fields in literals", util.check_type_error([[
       --#pragma strict_nil on
       local record R<S>
@@ -98,4 +163,75 @@ local value: string? | number?
       read()
       read(nil)
    ]]))
+
+   it("implicitly makes optional parameter types nilable", util.check([[
+      --#pragma strict_nil on
+      local read: function(string?): string? = function(value?: string): string?
+         return value
+      end
+      local fn_type: function(x?: string): string? = read
+      local anon_type: function(? string): string? = function(value?: string?): string?
+         return value
+      end
+      local from_short = |x?: string|: string? -> x
+      read(nil)
+      fn_type()
+      fn_type(nil)
+      fn_type("ok")
+      anon_type()
+      anon_type(nil)
+      anon_type("ok")
+      from_short()
+      from_short(nil)
+      from_short("ok")
+
+      local generic_opt: function<T>(x?: T): T? = function<T>(x?: T): T?
+         return x
+      end
+      local g1 = generic_opt()
+      local g2 = generic_opt(nil)
+      local g3 = generic_opt(42)
+
+      local record ForwardHolder
+         method: function(ForwardHolder, x?: ForwardTarget): string?
+      end
+      local record ForwardTarget
+         label: string
+      end
+      local fh: ForwardHolder = {
+         method = function(_self: ForwardHolder, x?: ForwardTarget): string?
+            return x and x.label or nil
+         end
+      }
+      fh:method()
+      fh:method(nil)
+      fh:method({ label = "ok" })
+
+      assert(table.concat({ "a", "b" }, nil, 2) == "b")
+      local _tb: string = debug.traceback(nil, 2)
+   ]]))
+
+   it("rejects treating contextually inferred optional parameters as non-nilable", util.check_type_error([[
+      --#pragma strict_nil on
+      local fn: function(x?: integer) = function(x)
+         local n: integer = x
+         local _ = n
+      end
+   ]], {
+      { y = 3, msg = "in local declaration: n: got integer | nil" },
+   }))
+
+   it("treats (name?: T) as identical to (name?: T?) in error types", util.check_type_error([[
+      --#pragma strict_nil on
+      local f1: function(x?: integer) = function(x?: integer)
+         local n: integer = x
+      end
+      local f2: function(x?: integer) = function(x: string)
+      end
+      local f3: function(x?: integer) = 1
+   ]], {
+      { y = 3, msg = "in local declaration: n: got integer | nil, expected integer" },
+      { y = 5, msg = "in local declaration: f2: argument 1: got string, expected integer | nil" },
+      { y = 7, msg = "in local declaration: f3: got integer, expected function(? integer | nil)" },
+   }))
 end)

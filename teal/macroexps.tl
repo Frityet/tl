@@ -19,7 +19,7 @@ local shallow_copy_table = util.shallow_copy_table
 local lua_generator = require("teal.gen.lua_generator")
 
 local record macroexps
-   expand: function(orignode: Node, args: {Node}, macroexp: types.Node)
+   expand: function(orignode: Node, args: {Node}, macroexp: types.Node, render_preview: boolean)
    apply: function(orignode: Node)
 end
 
@@ -62,7 +62,7 @@ local function traverse_macroexp<T>(macroexp: Node, on_arg_id: OnArgId<T>, on_no
    return traverse_nodes(nil, root, visit_node, {})
 end
 
-function macroexps.expand(orignode: Node, args: {Node}, macroexp: types.Node)
+function macroexps.expand(orignode: Node, args: {Node}, macroexp: types.Node, render_preview: boolean)
    local on_arg_id = function(node: Node, i: integer): {Node, Node}
       if node.kind == '...' then
          -- we have to handle varargs specifically
@@ -109,7 +109,9 @@ function macroexps.expand(orignode: Node, args: {Node}, macroexp: types.Node)
 
    local p = traverse_macroexp(macroexp as Node, on_arg_id, on_node)
    orignode.expanded = p[2]
-   orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
+   if render_preview then
+      orignode.macro_expansion = lua_generator.generate(p[2], "5.1", lua_generator.default_opts)
+   end
 end
 
 function macroexps.check_arg_use(ck: TypeChecker, macroexp: Node)

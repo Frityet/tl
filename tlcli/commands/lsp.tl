@@ -1988,7 +1988,7 @@ local function hover(server: Server, document: Document, position: Position): An
             end
          end
       end
-      if not expansion and document.module then
+      if not expansion and document.module and #document.module.parse_tree.syntax_errors == 0 then
          document.generated = document.generated or document.module:gen()
          local generated_line = split_lines(document.generated)[token.y]
          expansion = generated_line and generated_line:match("^%s*(.-)%s*$")

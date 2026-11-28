@@ -28,7 +28,7 @@ local record parser
    operator: function(ast.Node, integer, string): ast.Operator
 
    parse_type: function(state: any, block: Block): Type
-   parse_type_list: function(state: any, block: Block, mode: any): TupleType, boolean, integer
+   parse_type_list: function(state: any, block: Block, mode: any): TupleType, boolean, integer, {integer: boolean}
 
    node_is_funcall: function(ast.Node): boolean
    node_is_require_call: function(ast.Node): string

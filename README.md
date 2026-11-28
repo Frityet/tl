@@ -100,6 +100,15 @@ or a schema's `configure` callback to use Lua argparse features such as mutually
 exclusive options and custom actions. See [the CI job report](example/showcase.tl)
 for a complete script.
 
+### Test suites with `auxlib.testing`
+
+Create a suite with `testing.suite(name)` and add tests with `suite:test` or
+the `tests!` macro. The runner executes every selected case and reports
+failures with source locations, expected and actual values, and any context
+the tests attach. It returns a structured summary and supports Unicode,
+plain text, and TAP output. See the [testing guide](docs/src/auxlib_testing.md)
+for examples, hooks, and assertion helpers.
+
 ## Running
 
 ### Using the compiler directly

@@ -22,11 +22,7 @@ function input.check(env, filename, code)
       return environment.register_failed(env, filename, syntax_errors)
    end
 
-   local result = check.check(program, env, filename)
-
-   result.syntax_errors = syntax_errors
-
-   return result
+   return check.check(program, env, filename, syntax_errors)
 end
 
 return input

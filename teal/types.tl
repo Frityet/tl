@@ -313,6 +313,7 @@ local record types
       maybe_method: boolean
       is_record_function: boolean
       min_arity: integer
+      opt_args: {integer: boolean}
       args: TupleType
       rets: TupleType
       macroexp: Node
@@ -1014,6 +1015,7 @@ types.map = function<S>(self: S, ty: Type, fns: types.TypeFunctionMap<S>): Type,
          local mapped = copy as FunctionType
          mapped.macroexp = t.macroexp
          mapped.min_arity = t.min_arity
+         mapped.opt_args = t.opt_args
          mapped.is_method = t.is_method
          mapped.is_record_function = t.is_record_function
          mapped.args, same = resolve(t.args, same) as (TupleType, boolean)
@@ -1507,6 +1509,7 @@ function types.drop_constant_values(t: Type, keep_typedecls: boolean): Type
          assert(copy is FunctionType)
          copy.macroexp = typ.macroexp
          copy.min_arity = typ.min_arity
+         copy.opt_args = typ.opt_args
          copy.is_method = typ.is_method
          copy.is_record_function = typ.is_record_function
          copy.args = drop(typ.args, in_typedecl) as TupleType

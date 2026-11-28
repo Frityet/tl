@@ -419,6 +419,7 @@ local types = { GenericType = {}, StringType = {}, IntegerType = {}, NumberType 
 
 
 
+
 function is_numeric_type(t)
    return t.typename == "number" or t.typename == "integer"
 end
@@ -1014,6 +1015,7 @@ types.map = function(self, ty, fns)
          local mapped = copy
          mapped.macroexp = t.macroexp
          mapped.min_arity = t.min_arity
+         mapped.opt_args = t.opt_args
          mapped.is_method = t.is_method
          mapped.is_record_function = t.is_record_function
          mapped.args, same = resolve(t.args, same)
@@ -1507,6 +1509,7 @@ function types.drop_constant_values(t, keep_typedecls)
          assert(copy.typename == "function")
          copy.macroexp = typ.macroexp
          copy.min_arity = typ.min_arity
+         copy.opt_args = typ.opt_args
          copy.is_method = typ.is_method
          copy.is_record_function = typ.is_record_function
          copy.args = drop(typ.args, in_typedecl)

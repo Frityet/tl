@@ -9,6 +9,8 @@ do
    package.path = script_path .. "/?.lua;" .. script_path .. "/?/init.lua;" ..
       script_path .. "/extras/?.lua;" .. script_path .. "/extras/?/init.lua;" .. package.path
 
+   pcall(require, "luarocks.loader")
+
    -- Make the public API available to programs that use tl run.
    require("teal")
 
