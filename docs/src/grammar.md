@@ -112,7 +112,7 @@ precedence, see below.
 
 *  basetype ::= ‘string’ | ‘boolean’ | ‘nil’ | ‘number’ |
 *      ‘{’ type {',' type} ‘}’ | ‘{’ type ‘:’ type ‘}’ | functiontype
-*      | nominal | ‘typeof’ (Name | ‘...’) {‘.’ Name | ‘[’ exp ‘]’ | ‘(’ [explist] ‘)’} | typeofmacro
+*      | nominal | typeofmacro
 
 *  typelist ::= type {‘,’ type}
 

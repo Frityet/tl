@@ -256,7 +256,6 @@ local read_type_list: function(ReadState, integer, BlockTypeListMode): integer, 
 local read_typeargs_if_any: function(ps: ReadState, i: integer): integer, Block
 local read_expression: function(ReadState, integer): integer, Block, integer
 local read_prefix_expression: function(ReadState, integer): integer, Block
-local read_typeof_operand: function(ReadState, integer): integer, Block
 local read_short_function: function(ReadState, integer): integer, Block
 local read_argument: function(ReadState, integer): integer, Block, integer
 local read_expression_and_tk: function(ps: ReadState, i: integer, tk: string): integer, Block
@@ -1773,25 +1772,15 @@ end
 
 local function read_base_type(ps: ReadState, i: integer): integer, Block, integer
    local tk = ps.tokens[i].tk
-   if tk == "typeof" and ps.read_lang ~= "lua" then
-      local next_token = ps.tokens[i + 1]
-      local macro = next_token.tk == "!"
-      if macro or (next_token.y == ps.tokens[i].y and (next_token.kind == "identifier"
-         or next_token.tk == "..." or (ps.allow_macro_vars and next_token.tk == "$"))) then
-         local typ = new_type(ps, i, "typeof_type")
-         local exp: Block
-         if macro then
-            i, exp = read_typeof_macro_operand(ps, i)
-         else
-            i, exp = read_typeof_operand(ps, i + 1)
-         end
-         if not exp then return i end
-         typ[BLOCK_INDEXES.TYPEOF_TYPE.EXP] = exp
-         end_at(typ, ps.tokens[i - 1])
-         return i, typ
-      end
-   end
-   if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and tk == "$") then
+   if tk == "typeof" and ps.tokens[i + 1].tk == "!" and ps.read_lang ~= "lua" then
+      local typ = new_type(ps, i, "typeof_type")
+      local exp: Block
+      i, exp = read_typeof_macro_operand(ps, i)
+      if not exp then return i end
+      typ[BLOCK_INDEXES.TYPEOF_TYPE.EXP] = exp
+      end_at(typ, ps.tokens[i - 1])
+      return i, typ
+   elseif ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and tk == "$") then
       return read_simple_type_or_nominal(ps, i)
    elseif ps.tokens[i].kind == "string" then
       local node = new_block(ps, i, "string")
@@ -2392,7 +2381,7 @@ do
       return paren
    end
 
-   local function P(ps: ReadState, i: integer, type_operand?: boolean): integer, Block
+   local function P(ps: ReadState, i: integer): integer, Block
       local t1 = ps.tokens[i]
       if t1.kind == "$EOF$" then
          return i
@@ -2460,11 +2449,6 @@ do
       end
 
       while true do
-         if type_operand then
-            local tk = ps.tokens[i].tk
-            -- Leave type separators and infix expressions to the surrounding grammar.
-            if tk ~= "." and tk ~= "[" and tk ~= "(" and tk ~= "!" then break end
-         end
          if ps.custom_operators then
             local infix = find_operator(ps, i, "infix")
             local postfix, postfix_width = find_operator(ps, i, "postfix")
@@ -2701,10 +2685,6 @@ do
          fail(ps, i, "operator macro references require '!()' or a local macro import")
       end
       return i, e1
-   end
-
-   read_typeof_operand = function(ps: ReadState, i: integer): integer, Block
-      return P(ps, i, true)
    end
 
    read_prefix_expression = function(ps: ReadState, i: integer): integer, Block

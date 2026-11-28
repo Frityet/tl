@@ -16,9 +16,9 @@ describe("typeof", function()
    it("reuses the static type and exposes descriptions in the reflection namespace", function()
       local equal, text, kind = run([[
          local a = 10
-         local b: typeof a = 20
+         local b: typeof!(a) = 20
          local c: typeof!(a + b) = 30
-         local map: {typeof a: string} = { [a] = "ten" }
+         local map: {typeof!(a): string} = { [a] = "ten" }
          local info: reflection.TypeInfo = typeof!(b)
          local kind: reflection.Kind = info.kind
          return typeof!(a) == info and info == typeof!(c) and typeof!(map).kind == "map", tostring(info), kind
@@ -59,7 +59,7 @@ describe("typeof", function()
             children: {Tree<T>}
          end
          local value: Tree<integer> = { value = 1, children = {} }
-         local type Copy = typeof value
+         local type Copy = typeof!(value)
          local copy: Copy = value
          local strings: Tree<string> = { value = "one", children = {} }
          assert(typeof!(value) == typeof!(copy))
@@ -81,7 +81,7 @@ describe("typeof", function()
          local enum State
             "ready" "paused"
          end
-         local function identity<T>(value: T): typeof value
+         local function identity<T>(value: T): typeof!(value)
             return value
          end
          local function inspect(a: integer | string, b: string | integer, state: State): (reflection.TypeInfo, boolean, reflection.TypeInfo)
@@ -153,8 +153,16 @@ describe("typeof", function()
       end
       local _, errors = compiler:input("return typeof!(missing)", "operand.tl"):check()
       assert.matches("unknown variable: missing", errors.type_errors[1].msg, 1, true)
-      local _, recursive = compiler:input("local type Alias = typeof Alias", "recursive.tl"):check()
+      local _, recursive = compiler:input("local type Alias = typeof!(Alias)", "recursive.tl"):check()
       assert.equals("The typeof operand refers to a type query that has no result yet.", recursive.type_errors[1].msg)
+   end)
+
+   it("requires macro syntax in type annotations", function()
+      local _, errors = teal.compiler():input("local x = 1; local xs: {typeof x} = {x}", "bare.tl"):parse()
+      assert.is_table(errors)
+      assert.is_true(#errors > 0)
+
+      assert.equals(4, run("local type typeof = integer; local x: typeof = 4; return x"))
    end)
 
    it("keeps a hashbang on the first line and emits no helper for type annotations alone", function()
@@ -164,7 +172,7 @@ describe("typeof", function()
       })
       assert.matches("^#!/usr/bin/env lua\nlocal __tl_typeof", code)
       assert.equals("integer", tostring(assert(loadstring(code:match("\n(.*)")))()))
-      local annotation = compile("local n = 1; local m: typeof n = 2; return m")
+      local annotation = compile("local n = 1; local m: typeof!(n) = 2; return m")
       assert.is_nil(annotation:find("__tl_typeof", 1, true))
    end)
 end)

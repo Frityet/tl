@@ -19711,7 +19711,6 @@ local read_type_list
 local read_typeargs_if_any
 local read_expression
 local read_prefix_expression
-local read_typeof_operand
 local read_short_function
 local read_argument
 local read_expression_and_tk
@@ -21228,25 +21227,15 @@ end
 
 local function read_base_type(ps, i)
    local tk = ps.tokens[i].tk
-   if tk == "typeof" and ps.read_lang ~= "lua" then
-      local next_token = ps.tokens[i + 1]
-      local macro = next_token.tk == "!"
-      if macro or (next_token.y == ps.tokens[i].y and (next_token.kind == "identifier" or
-         next_token.tk == "..." or (ps.allow_macro_vars and next_token.tk == "$"))) then
-         local typ = new_type(ps, i, "typeof_type")
-         local exp
-         if macro then
-            i, exp = read_typeof_macro_operand(ps, i)
-         else
-            i, exp = read_typeof_operand(ps, i + 1)
-         end
-         if not exp then return i end
-         typ[BLOCK_INDEXES.TYPEOF_TYPE.EXP] = exp
-         end_at(typ, ps.tokens[i - 1])
-         return i, typ
-      end
-   end
-   if ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and tk == "$") then
+   if tk == "typeof" and ps.tokens[i + 1].tk == "!" and ps.read_lang ~= "lua" then
+      local typ = new_type(ps, i, "typeof_type")
+      local exp
+      i, exp = read_typeof_macro_operand(ps, i)
+      if not exp then return i end
+      typ[BLOCK_INDEXES.TYPEOF_TYPE.EXP] = exp
+      end_at(typ, ps.tokens[i - 1])
+      return i, typ
+   elseif ps.tokens[i].kind == "identifier" or (ps.allow_macro_vars and tk == "$") then
       return read_simple_type_or_nominal(ps, i)
    elseif ps.tokens[i].kind == "string" then
       local node = new_block(ps, i, "string")
@@ -21847,7 +21836,7 @@ do
       return paren
    end
 
-   local function P(ps, i, type_operand)
+   local function P(ps, i)
       local t1 = ps.tokens[i]
       if t1.kind == "$EOF$" then
          return i
@@ -21915,11 +21904,6 @@ do
       end
 
       while true do
-         if type_operand then
-            local tk = ps.tokens[i].tk
-
-            if tk ~= "." and tk ~= "[" and tk ~= "(" and tk ~= "!" then break end
-         end
          if ps.custom_operators then
             local infix = find_operator(ps, i, "infix")
             local postfix, postfix_width = find_operator(ps, i, "postfix")
@@ -22156,10 +22140,6 @@ do
          fail(ps, i, "operator macro references require '!()' or a local macro import")
       end
       return i, e1
-   end
-
-   read_typeof_operand = function(ps, i)
-      return P(ps, i, true)
    end
 
    read_prefix_expression = function(ps, i)
